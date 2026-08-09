@@ -199,6 +199,7 @@ pier <branch> [base]      new session off base (default HEAD), then attach
     --no-park             shorthand for --idle never
 pier ls                   plain list (pipeable)
 pier attach <session>     attach (parked sessions auto-resume, ~20-60s)
+pier logs <session>       show the setup script log (-f follows)
 pier rm <session> [-f]    destroy the session and its disk
 pier keep <session>       pin: disable idle self-park
 pier resize <session> <type>   grow/shrink the VM (~1-2 min, same CPU arch)
@@ -374,6 +375,8 @@ checkout, dirty patch, and `.pier-include` files are in place. The outcome
 always surfaces:
 
 - `pier ls` and the TUI show `(setup running)` or `(setup failed)`
+- `pier logs <session>` prints the log from anywhere, no attach needed
+  (`-f` follows, `l` in the TUI)
 - `~/.pier-setup.log` ends with `pier setup: done` or `pier setup: FAILED (exit N)`
 - a failed window renames to `setup-failed` and stays open instead of vanishing
 

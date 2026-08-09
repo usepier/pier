@@ -58,6 +58,7 @@ const usage = `usage:
       --no-park               shorthand for --idle never
   pier ls                   list sessions
   pier attach <session>     attach (auto-resumes if parked)
+  pier logs <session>       show the setup script log (-f follows)
   pier mcp login <session>  authenticate every MCP server that still needs it
                             (one browser approval each; add a server name to redo one)
   pier proxy                every running session as <session>.pier — open ports
@@ -87,6 +88,8 @@ func main() {
 		cmdLS()
 	case "attach":
 		cmdAttach(args[1:])
+	case "logs":
+		cmdLogs(args[1:])
 	case "mcp":
 		cmdMCP(args[1:])
 	case "proxy":
@@ -387,7 +390,7 @@ func cmdLS() {
 		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`"))
 	}
 	if anySetupFailed {
-		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" setup failed = the setup script exited nonzero — attach and read ~/.pier-setup.log"))
+		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" setup failed = the setup script exited nonzero — `pier logs <session>` shows why"))
 	}
 }
 
@@ -513,6 +516,51 @@ func cmdAttach(args []string) {
 	requireReady(s)
 	resumeIfParked(drv, s)
 	attach(drv, s.ID)
+}
+
+// cmdLogs prints the session's setup script log without an attach — the
+// first question after "(setup failed)" is always "what broke". -f follows
+// a still-running setup live.
+func cmdLogs(args []string) {
+	follow := false
+	var rest []string
+	for _, a := range args {
+		if a == "-f" || a == "--follow" {
+			follow = true
+		} else {
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) != 1 {
+		fatal(fmt.Errorf("usage: pier logs <session> [-f]"))
+	}
+	_, drv := loadDriver()
+	showLogs(drv, match(drv, rest[0]), follow)
+}
+
+// showLogs is the shared core of `pier logs` and the TUI's l key.
+func showLogs(drv driver.Driver, s driver.Session, follow bool) {
+	requireReady(s)
+	if s.State == driver.StateParked {
+		resumeIfParked(drv, s)
+		if err := waitReachable(drv, s.ID, 4*time.Minute); err != nil {
+			fatal(err)
+		}
+	}
+	remote := `[ -f ~/.pier-setup.log ] && cat ~/.pier-setup.log || echo "no setup log — this session ran no setup script"`
+	if follow {
+		remote = `[ -f ~/.pier-setup.log ] && exec tail -n +1 -f ~/.pier-setup.log || echo "no setup log — this session ran no setup script"`
+	}
+	opts, dest, err := drv.SSHTarget(context.Background(), s.ID)
+	if err != nil {
+		fatal(err)
+	}
+	cmd := exec.Command("ssh", append(opts, dest, remote)...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	// A followed log ends with ctrl-c; that interrupt is not an error.
+	if err := cmd.Run(); err != nil && !follow {
+		fatal(fmt.Errorf("logs: %w", err))
+	}
 }
 
 // requireReady refuses commands against a still-creating session — cleanly,
@@ -909,6 +957,8 @@ func cmdTUI() {
 		attach(drv, action.Session.ID)
 	case tui.ActionNew:
 		cmdNew([]string{action.Branch})
+	case tui.ActionLogs:
+		showLogs(drv, action.Session, false)
 	}
 }
 

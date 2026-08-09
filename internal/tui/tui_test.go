@@ -150,3 +150,27 @@ func TestEnterOnCreatingSession(t *testing.T) {
 		t.Errorf("want a friendly notice, got status=%q bad=%v", gm.status, gm.statusBad)
 	}
 }
+
+func TestLogsKey(t *testing.T) {
+	m := model{loaded: true, sessions: []driver.Session{
+		{Name: "half-built", Repo: "myapp", State: driver.StateCreating},
+	}}
+	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if cmd != nil {
+		t.Fatal("l on a creating session must not quit — there is no log yet")
+	}
+	gm := got.(model)
+	if !strings.Contains(gm.status, "still setting up") || gm.statusBad {
+		t.Errorf("want a friendly notice, got status=%q bad=%v", gm.status, gm.statusBad)
+	}
+
+	m.sessions[0].State = driver.StateRunning
+	got, cmd = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if cmd == nil {
+		t.Fatal("l on a running session must quit to show the log")
+	}
+	gm = got.(model)
+	if gm.action.Kind != ActionLogs || gm.action.Session.Name != "half-built" {
+		t.Errorf("want ActionLogs for half-built, got kind=%v session=%q", gm.action.Kind, gm.action.Session.Name)
+	}
+}

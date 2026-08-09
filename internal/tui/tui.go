@@ -39,6 +39,7 @@ const (
 	ActionNone ActionKind = iota
 	ActionAttach
 	ActionNew
+	ActionLogs
 )
 
 // Action is what the user picked; attach/new run after the TUI returns the
@@ -237,6 +238,22 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.action = Action{Kind: ActionAttach, Session: m.sessions[m.cursor]}
+			return m, tea.Quit
+		}
+	case "l":
+		// The setup log needs the terminal back (it can be long, and a parked
+		// session resumes first), so it runs after the TUI exits, like attach.
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.cursor]
+			if s.State == driver.StateCreating {
+				m.status, m.statusBad = s.Name+" is still setting up — logs once it shows running", false
+				return m, nil
+			}
+			if s.State == driver.StateDeleting {
+				m.status, m.statusBad = s.Name+" is being deleted", false
+				return m, nil
+			}
+			m.action = Action{Kind: ActionLogs, Session: s}
 			return m, tea.Quit
 		}
 	case "n":
@@ -496,7 +513,7 @@ func (m model) View() string {
 				b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
 			}
 		}
-		b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "m", "resize", "s", "settings", "r", "refresh", "q", "quit") + "\n")
+		b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "m", "resize", "l", "logs", "s", "settings", "r", "refresh", "q", "quit") + "\n")
 	}
 	return b.String()
 }
