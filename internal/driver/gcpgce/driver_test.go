@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+// gcloud crashes print multi-paragraph "run gcloud feedback" boilerplate;
+// only the ERROR line may reach the TUI status line and CLI errors.
+func TestGcloudErr(t *testing.T) {
+	crash := "WARNING: something minor\nERROR: gcloud crashed (SSLError): HTTPSConnectionPool(host='compute.googleapis.com', port=443): Max retries exceeded\n\nIf you would like to report this issue, please run the following command:\n  gcloud feedback\n\nTo check gcloud for common problems, please run the following command:\n  gcloud info --run-diagnostics\n"
+	if got := gcloudErr(crash); got != "ERROR: gcloud crashed (SSLError): HTTPSConnectionPool(host='compute.googleapis.com', port=443): Max retries exceeded" {
+		t.Errorf("gcloudErr(crash) = %q", got)
+	}
+	// No ERROR line: fall back to the first non-empty line.
+	if got := gcloudErr("\nsome failure\ndetail\n"); got != "some failure" {
+		t.Errorf("gcloudErr(no ERROR) = %q", got)
+	}
+}
+
 // The instance name is the session ID and a GCE resource name: it must stay
 // under 63 chars, never end in "-" before the hash, and differ per principal
 // so two devs on one project can hold the same session name.

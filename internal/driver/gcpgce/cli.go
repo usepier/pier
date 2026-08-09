@@ -26,9 +26,29 @@ func (d *Driver) gcloud(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		n := min(len(args), 3)
-		return "", fmt.Errorf("gcloud %s: %s", strings.Join(args[:n], " "), strings.TrimSpace(errb.String()))
+		return "", fmt.Errorf("gcloud %s: %s", strings.Join(args[:n], " "), gcloudErr(errb.String()))
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// gcloudErr compacts gcloud's stderr to its ERROR line. Crashes append
+// multi-paragraph "run gcloud feedback" boilerplate that would otherwise
+// land verbatim in the TUI status line and the CLI's one-line errors.
+func gcloudErr(stderr string) string {
+	first := ""
+	for _, line := range strings.Split(stderr, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" {
+			continue
+		}
+		if strings.HasPrefix(l, "ERROR:") {
+			return l
+		}
+		if first == "" {
+			first = l
+		}
+	}
+	return first
 }
 
 // user returns the caller identity used for label namespacing: the active
