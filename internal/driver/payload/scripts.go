@@ -172,7 +172,14 @@ fi
 
 # SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
 # first attach forwards an agent; harmless when it never does).
-tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
+# The server starts through sudo because group membership is snapshotted at
+# login: on a stock image cloud-init's "usermod -aG docker agent" lands after
+# this ssh session began, so a server started directly here would carry a
+# pre-docker group set for its whole life — and every window forks from the
+# server, so .pier-setup.sh and the user's shells all get docker.sock denied.
+# sudo re-runs initgroups, picking up /etc/group as it stands after the
+# cloud-init wait above.
+tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
 # Background setup, after checkout + patch + .pier-include extras are all in
 # place: the repo's .pier-setup.sh, unless a PIER_SETUP_SCRIPT override rode
 # the tar (outer double quotes expand $setup now, into the single-quoted

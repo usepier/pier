@@ -175,6 +175,11 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// resolved to the attached client's current window and mislabeled
 		// the user's shell as setup-failed.
 		`tmux rename-window -t \$TMUX_PANE setup-failed`,
+		// The tmux server must start through sudo, which re-runs initgroups:
+		// the bootstrap's own login predates cloud-init's usermod -aG docker
+		// on stock images, and every window inherits groups from the server
+		// (docker.sock denied in .pier-setup.sh otherwise).
+		`sudo -u agent tmux new-session -d -s main`,
 	} {
 		if !strings.Contains(origin, want) {
 			t.Errorf("origin-mode bootstrap missing %q", want)
