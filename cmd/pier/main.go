@@ -6,6 +6,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -310,10 +311,10 @@ func attach(drv driver.Driver, id string) {
 		if runErr == nil {
 			return
 		}
-		// A session that was interactive and then dropped fails slow; only an
-		// instant failure reads as "not online yet" — and only once: if it
-		// still fails after reachability was confirmed, waiting won't fix it.
-		if retried || time.Since(start) > 15*time.Second {
+		// ssh uses 255 for a transport failure. Other quick failures came from
+		// the remote command (for example tmux rejecting TERM), so waiting for
+		// reachability would only hide the real error and run it a second time.
+		if retried || !retryAttach(runErr, time.Since(start)) {
 			fmt.Fprintln(os.Stderr, ui.Bad.Render("pier:"), "attach:", runErr)
 			return
 		}
@@ -323,6 +324,11 @@ func attach(drv driver.Driver, id string) {
 			fatal(err)
 		}
 	}
+}
+
+func retryAttach(err error, elapsed time.Duration) bool {
+	var exitErr *exec.ExitError
+	return elapsed <= 15*time.Second && errors.As(err, &exitErr) && exitErr.ExitCode() == 255
 }
 
 // waitReachable polls a no-op exec until ssh-over-SSM answers.
