@@ -25,6 +25,7 @@ const (
 	StateWorking  State = "working"  // reachable, detached, agent actively working
 	StateIdle     State = "idle"     // reachable, quiet; park countdown running
 	StateParked   State = "parked"   // instance stopped, disk persists
+	StateDeleting State = "deleting" // destroy issued; the cloud is still removing it
 	StateDead     State = "dead"     // terminated/crashed outside our control
 )
 

@@ -41,17 +41,18 @@ import (
 )
 
 const (
-	FirewallRule = "pier-allow-iap-ssh"
-	FirewallDeny = "pier-deny-ingress"
-	IAPRange     = "35.235.240.0/20"
-	NetworkTag   = "pier-session"
-	LabelManaged = "pier-managed"
-	LabelUser    = "pier-user"
-	LabelReady   = "pier-ready" // create's last act: bootstrap done, attachable
-	MetaSession  = "pier-session"
-	MetaRepo     = "pier-repo"
-	MetaBranch   = "pier-branch"
-	MetaUser     = "pier-user" // full principal; the label form is lossy
+	FirewallRule  = "pier-allow-iap-ssh"
+	FirewallDeny  = "pier-deny-ingress"
+	IAPRange      = "35.235.240.0/20"
+	NetworkTag    = "pier-session"
+	LabelManaged  = "pier-managed"
+	LabelUser     = "pier-user"
+	LabelReady    = "pier-ready"    // create's last act: bootstrap done, attachable
+	LabelDeleting = "pier-deleting" // destroy's first act: the delete itself takes a minute+
+	MetaSession   = "pier-session"
+	MetaRepo      = "pier-repo"
+	MetaBranch    = "pier-branch"
+	MetaUser      = "pier-user" // full principal; the label form is lossy
 
 	stockImageProject = "ubuntu-os-cloud"
 	stockImageFamily  = "ubuntu-2404-lts-%s" // amd64 | arm64
@@ -184,21 +185,28 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 		if owner != me {
 			continue
 		}
-		switch in.Status {
-		case "PROVISIONING", "STAGING":
-			s.State = driver.StateCreating
-		case "RUNNING":
-			// GCE says RUNNING long before the session is usable. The ready
-			// label is the create's last act, so its absence means
-			// still-creating — a truthful state with no probe.
-			s.State = driver.StateRunning // enriched to working/idle by the caller
-			if in.Labels[LabelReady] != "1" {
+		if in.Labels[LabelDeleting] == "1" {
+			// A GCE delete takes a minute+, and mid-delete the status reads
+			// STOPPING/TERMINATED — indistinguishable from parking. Destroy
+			// labels first so the list can tell going-away from waiting.
+			s.State = driver.StateDeleting
+		} else {
+			switch in.Status {
+			case "PROVISIONING", "STAGING":
 				s.State = driver.StateCreating
+			case "RUNNING":
+				// GCE says RUNNING long before the session is usable. The ready
+				// label is the create's last act, so its absence means
+				// still-creating — a truthful state with no probe.
+				s.State = driver.StateRunning // enriched to working/idle by the caller
+				if in.Labels[LabelReady] != "1" {
+					s.State = driver.StateCreating
+				}
+			case "STOPPING", "SUSPENDING", "SUSPENDED", "TERMINATED":
+				s.State = driver.StateParked
+			default:
+				s.State = driver.StateDead
 			}
-		case "STOPPING", "SUSPENDING", "SUSPENDED", "TERMINATED":
-			s.State = driver.StateParked
-		default:
-			s.State = driver.StateDead
 		}
 		// creationTimestamp survives stop/start (unlike EC2 launch time), so
 		// AGE never goes backward and no created tag is needed.
@@ -221,7 +229,7 @@ func costNote(st driver.State, machineType string) string {
 	switch st {
 	case driver.StateParked:
 		return "~$4/mo"
-	case driver.StateDead:
+	case driver.StateDeleting, driver.StateDead:
 		return ""
 	}
 	for _, m := range Machines(machineType) {
@@ -298,6 +306,11 @@ func (d *Driver) Resize(ctx context.Context, id, machineType string) error {
 }
 
 func (d *Driver) Destroy(ctx context.Context, id string) error {
+	// Label first, best-effort: the delete below takes a minute+ and a
+	// mid-delete instance otherwise lists as parked. If the delete then
+	// fails, the row shows deleting and a retry re-runs both calls.
+	_, _ = d.gcloud(ctx, "compute", "instances", "add-labels", id,
+		"--zone", d.Zone, "--labels", LabelDeleting+"=1")
 	// The boot disk auto-deletes with the instance (create-time default).
 	if _, err := d.gcloud(ctx, "compute", "instances", "delete", id, "--zone", d.Zone); err != nil {
 		return err

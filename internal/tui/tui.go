@@ -232,6 +232,9 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if s := m.sessions[m.cursor]; s.State == driver.StateCreating {
 				m.status, m.statusBad = s.Name+" is still setting up — attach when it shows running", false
 				return m, nil
+			} else if s.State == driver.StateDeleting {
+				m.status, m.statusBad = s.Name+" is being deleted", false
+				return m, nil
 			}
 			m.action = Action{Kind: ActionAttach, Session: m.sessions[m.cursor]}
 			return m, tea.Quit
@@ -259,6 +262,10 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s := m.sessions[m.cursor]
 			if s.State == driver.StateCreating {
 				m.status, m.statusBad = s.Name+" is still setting up — resize once it shows running", false
+				return m, nil
+			}
+			if s.State == driver.StateDeleting {
+				m.status, m.statusBad = s.Name+" is being deleted", false
 				return m, nil
 			}
 			m.machines = m.opts.Machines(s)
@@ -582,6 +589,7 @@ func stateCell(s driver.Session) string {
 		driver.StateWorking:  "●",
 		driver.StateIdle:     "●",
 		driver.StateParked:   "◌",
+		driver.StateDeleting: "◌",
 		driver.StateDead:     "✗",
 	}
 	dot, ok := dots[s.State]
@@ -617,7 +625,7 @@ func stateStyle(s driver.Session) lipgloss.Style {
 		return ui.Warn
 	case driver.StateDead:
 		return ui.Bad
-	default: // parked
+	default: // parked, deleting
 		return ui.Dim
 	}
 }

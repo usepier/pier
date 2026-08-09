@@ -522,6 +522,9 @@ func requireReady(s driver.Session) {
 	if s.State == driver.StateCreating {
 		fatal(fmt.Errorf("%s is still setting up — try again when `pier ls` shows it running", s.Name))
 	}
+	if s.State == driver.StateDeleting {
+		fatal(fmt.Errorf("%s is being deleted", s.Name))
+	}
 }
 
 var mcpServerName = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)

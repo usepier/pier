@@ -407,6 +407,8 @@ The cloud says "running" long before a session is usable, so pier doesn't:
   instance ready (a tag on AWS, a label on GCP).
 - Attaching early gets a plain "still setting up", not a raw connection error.
 - TUI creates run in the background and the row flips when ready.
+- A deleted session lists as `deleting` until the cloud actually removes it.
+  GCE takes a minute there and would otherwise read as parked.
 - A create that fails cleans up its own instance.
 
 ## Caveats

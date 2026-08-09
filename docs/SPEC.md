@@ -95,6 +95,10 @@ in provider APIs + tags/labels — **no server, no database, no laptop daemon**.
   (`pier-managed`, `pier-user`, ...) for server-side filtering; the label
   charset is strict, so exact values (the caller's principal, repo, branch)
   live in instance metadata and are verified after the filtered list.
+- Destroy labels `pier-deleting=1` before the delete call: a GCE delete
+  takes a minute+ and mid-delete statuses (STOPPING/TERMINATED) would list
+  as parked. The label maps to a `deleting` state instead. EC2 needs none
+  of this — its `shutting-down`/`terminated` states are filtered out.
 
 ## 4. Attach (and every other byte to the VM)
 
