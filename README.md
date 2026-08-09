@@ -211,25 +211,35 @@ resuming checkout-flow (~20-30s)...
 
 ## Making your repo pier-ready
 
-Three optional files at the repo root, all committed:
+Four optional files at the repo root, all committed:
 
 | File | Runs / read | Contains |
 |---|---|---|
 | `.pier-setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
 | `.pier-include` | At create | Untracked/ignored files to carry (env files, local certs) |
 | `.pier-bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
+| `.pier.toml` | At create | Repo-specific behavior, including the Docker Compose opt-out |
 
 ```bash
 # .pier-setup.sh (cwd is the repo root, logs to ~/.pier-setup.log)
 set -euo pipefail
 pnpm install
-docker compose up -d
-pnpm db:migrate
+pnpm build
 ```
 
-Prefer `docker compose up -d` for services. A bare background process must
-fully detach with `setsid cmd </dev/null >log 2>&1 &` or it dies when the
-setup window closes.
+When a conventional Compose file is present (`compose.yaml`, `compose.yml`,
+`docker-compose.yaml`, or `docker-compose.yml`), pier runs `docker compose up
+-d` automatically after the setup hook succeeds. For a repo that must control
+the order itself, opt out and put the Compose command in `.pier-setup.sh`:
+
+```toml
+# .pier.toml
+[docker]
+auto_up = false
+```
+
+A bare background process must fully detach with `setsid cmd </dev/null >log
+2>&1 &` or it dies when the setup window closes.
 
 ```
 # .pier-include: one path or glob per line (no **), a directory carries its subtree
@@ -249,7 +259,7 @@ COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack install -g pnpm@10.6.5
 
 Don't write those files by hand. This repo ships
 [`skills/pier-onboard`](skills/pier-onboard/SKILL.md), a skill that teaches
-a coding agent to inspect your repo and write all three files with the right
+a coding agent to inspect your repo and write the applicable files with the right
 boundaries.
 
 ```
@@ -339,8 +349,9 @@ supersedes the old image, and `pier teardown` sweeps them all by tag.
 ### Setup that can't fail silently
 
 `.pier-setup.sh` runs async in its own tmux window on first boot, after the
-checkout, dirty patch, and `.pier-include` files are in place. The outcome
-always surfaces:
+checkout, dirty patch, and `.pier-include` files are in place. If it succeeds,
+pier then starts a detected Docker Compose project unless `.pier.toml` opts
+out. The outcome of the whole sequence always surfaces:
 
 - `pier ls` and the TUI show `(setup running)` or `(setup failed)`
 - `~/.pier-setup.log` ends with `pier setup: done` or `pier setup: FAILED (exit N)`

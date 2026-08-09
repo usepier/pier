@@ -564,23 +564,64 @@ fi
 # first attach forwards an agent; harmless when it never does).
 tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
 # Background setup, after checkout + patch + .pier-include extras are all in
-# place: the repo's .pier-setup.sh, unless a PIER_SETUP_SCRIPT override rode
-# the tar (outer double quotes expand $setup now, into the single-quoted
-# bash -c; \$ defers the rest to run time). The outcome must be impossible to
-# miss — a failed setup used to vanish with its window: ~/.pier-setup.status
-# holds "running" then the exit code (the supervisor beacons it to ls/TUI),
-# the log's last line says done/FAILED, and a failed window renames to
-# setup-failed and stays open instead of closing. The rename targets its own
-# pane id: with a client attached, a bare rename-window can resolve "current
-# window" to the attached client's window and mislabel the user's shell.
+# place. Run the repo hook first, then start Docker Compose automatically when
+# one of its conventional files is present. A repo can opt out in .pier.toml.
+# Keeping this in a script (rather than a nested bash -c one-liner) makes the
+# order and failure behavior explicit and leaves something useful to inspect.
 setup=./.pier-setup.sh
 if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
-# Presence is the signal, not the exec bit: git only carries +x when the
-# author remembered chmod, and gating on -x skipped a committed 0644
-# .pier-setup.sh with no trace — the one silent failure setup promises not
-# to have. bash runs it either way.
-if [ -f "$setup" ]; then
-  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; bash $setup 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE setup-failed; exec sleep infinity; fi'"
+auto_compose={{AUTO_COMPOSE}}
+compose_file=
+if [ "$auto_compose" = 1 ]; then
+  for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+    if [ -f "$candidate" ]; then compose_file="$candidate"; break; fi
+  done
+fi
+# Presence is the signal for a setup hook, not its exec bit: bash can run a
+# committed 0644 script. Don't create a setup window when neither action is
+# needed.
+if [ -f "$setup" ] || [ -n "$compose_file" ]; then
+  mkdir -p "$HOME/.config/pier"
+  cat > "$HOME/.config/pier/run-setup.sh" <<'PIER_SETUP'
+#!/usr/bin/env bash
+set -uo pipefail
+set -a; . "$HOME/.config/pier/env" 2>/dev/null || true; set +a
+cd "$HOME/work/{{REPO}}" || exit 1
+
+setup=./.pier-setup.sh
+if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
+auto_compose={{AUTO_COMPOSE}}
+
+run_setup() {
+  if [ -f "$setup" ]; then
+    bash "$setup" || return $?
+  fi
+  if [ "$auto_compose" = 1 ]; then
+    for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+      if [ -f "$candidate" ]; then
+        echo "pier setup: starting docker compose ($candidate)"
+        docker compose up -d
+        return $?
+      fi
+    done
+  fi
+  return 0
+}
+
+echo running > "$HOME/.pier-setup.status"
+run_setup 2>&1 | tee "$HOME/.pier-setup.log"
+c=${PIPESTATUS[0]}
+echo "$c" > "$HOME/.pier-setup.status"
+if [ "$c" -eq 0 ]; then
+  echo "pier setup: done" >> "$HOME/.pier-setup.log"
+else
+  echo "pier setup: FAILED (exit $c)" | tee -a "$HOME/.pier-setup.log"
+  tmux rename-window -t "$TMUX_PANE" setup-failed
+  exec sleep infinity
+fi
+PIER_SETUP
+  chmod 0700 "$HOME/.config/pier/run-setup.sh"
+  tmux new-window -d -t main -n setup "bash ~/.config/pier/run-setup.sh"
 fi
 
 # Attach gates on this marker: nobody lands in a half-set-up session. Written
@@ -607,6 +648,10 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
 	}
 	line("config", "user.name")
 	line("config", "user.email")
+	autoCompose := "1"
+	if spec.DisableAutoCompose {
+		autoCompose = "0"
+	}
 	return strings.NewReplacer(
 		"{{REPO}}", filepath.Base(spec.Repo),
 		"{{BRANCH}}", spec.Branch,
@@ -615,6 +660,7 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
 		"{{SHA}}", sha,
 		"{{ORIGIN}}", origin,
 		"{{EXPORTREF}}", exportRef(spec.Name),
+		"{{AUTO_COMPOSE}}", autoCompose,
 	).Replace(bootstrapTmpl)
 }
 

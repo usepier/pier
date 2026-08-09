@@ -157,24 +157,27 @@ func TestRenderBootstrapModes(t *testing.T) {
 		"git remote add origin 'https://github.com/o/r'",
 		"git reset -q --hard abc123",
 		`[projects."/home/agent/work/myrepo"]`, // codex pre-trust
-		// Setup outcome must be written for the beacon and the log, and its
-		// shell variables must survive rendering escaped — they belong to the
-		// tmux window's bash, not to the bootstrap shell.
-		`echo running > ~/.pier-setup.status`,
+		// Setup outcome must be written for the beacon and the log.
+		`echo running > "$HOME/.pier-setup.status"`,
 		// Runs on presence via bash: a committed 0644 .pier-setup.sh (git
 		// only carries +x when the author set it) must not skip silently.
-		`if [ -f "$setup" ]; then`,
-		`bash $setup 2>&1`,
+		`if [ -f "$setup" ] || [ -n "$compose_file" ]; then`,
+		`bash "$setup"`,
+		// Compose is automatic by default and recognizes every conventional
+		// filename while letting Docker apply its own precedence rules.
+		`auto_compose=1`,
+		`docker compose up -d`,
+		`compose.yaml compose.yml docker-compose.yaml docker-compose.yml`,
 		// The cloud-init wait must guard on binaries the stock image LACKS
 		// (Ubuntu ships git/tmux, so those never triggered the wait and
 		// setup raced the installs it depends on).
 		`command -v docker >/dev/null && command -v node >/dev/null && command -v claude >/dev/null || sudo cloud-init status --wait`,
-		`c=\${PIPESTATUS[0]}`,
-		`pier setup: FAILED (exit \$c)`,
+		`c=${PIPESTATUS[0]}`,
+		`pier setup: FAILED (exit $c)`,
 		// The failure rename must target its own pane: a bare rename-window
 		// resolved to the attached client's current window and mislabeled
 		// the user's shell as setup-failed.
-		`tmux rename-window -t \$TMUX_PANE setup-failed`,
+		`tmux rename-window -t "$TMUX_PANE" setup-failed`,
 	} {
 		if !strings.Contains(origin, want) {
 			t.Errorf("origin-mode bootstrap missing %q", want)
@@ -183,12 +186,34 @@ func TestRenderBootstrapModes(t *testing.T) {
 	if strings.Contains(origin, "origin) git fetch -q /tmp/pier.bundle") {
 		t.Error("origin mode must not fetch a bundle")
 	}
+	if hook, compose := strings.Index(origin, `bash "$setup"`), strings.Index(origin, "docker compose up -d"); hook < 0 || compose < 0 || hook > compose {
+		t.Error("repository setup hook must run before docker compose")
+	}
+
+	disabledSpec := spec
+	disabledSpec.DisableAutoCompose = true
+	disabled := renderBootstrap(disabledSpec, "origin", "abc123", "https://github.com/o/r")
+	if !strings.Contains(disabled, "auto_compose=0") || strings.Contains(disabled, "auto_compose=1") {
+		t.Error("DisableAutoCompose must render the runtime opt-out")
+	}
 
 	full := renderBootstrap(spec, "full", "abc123", "")
 	// The ref carries the session name: concurrent creates in one repo must
 	// not race on a shared refs/pier/export.
 	if !strings.Contains(full, "git fetch -q /tmp/pier.bundle refs/pier/export-x") {
 		t.Error("full-mode bootstrap must fetch the bundle by this create's export ref")
+	}
+}
+
+func TestRenderBootstrapShellSyntax(t *testing.T) {
+	script := renderBootstrap(
+		driver.CreateSpec{Name: "x", Repo: "/tmp/myrepo", Branch: "feat"},
+		"origin", "abc123", "https://github.com/o/r",
+	)
+	cmd := exec.Command("bash", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("rendered bootstrap is not valid bash: %v\n%s", err, out)
 	}
 }
 

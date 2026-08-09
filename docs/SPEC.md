@@ -252,10 +252,14 @@ numbers in §14).
    secrets tar while it boots; push and bootstrap the moment sshd answers;
    `.pier-setup.sh` runs asynchronously in a background tmux window while you
    type to the agent — it starts only after the checkout, dirty patch, and
-   `.pier-include` extras are all in place. `PIER_SETUP_SCRIPT`
+   `.pier-include` extras are all in place. After the hook succeeds, a repo
+   with `compose.yaml`, `compose.yml`, `docker-compose.yaml`, or
+   `docker-compose.yml` is started with `docker compose up -d`. This defaults
+   on; `[docker] auto_up = false` in repo-root `.pier.toml` opts out.
+   `PIER_SETUP_SCRIPT`
    points it at a different script — relative to the repo root or `~` —
    which travels in the tar and takes precedence over the repo's own.
-   The outcome is never silent: the window writes `~/.pier-setup.status`
+   The outcome of the hook-plus-Compose sequence is never silent: the window writes `~/.pier-setup.status`
    ("running", then the exit code — the supervisor beacons it, so `ls`/TUI
    show "(setup running)"/"(setup failed)"), ends `~/.pier-setup.log` with
    `pier setup: done`/`FAILED (exit N)`, and on failure renames itself to

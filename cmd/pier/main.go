@@ -212,6 +212,10 @@ func cmdNew(args []string) {
 
 	cfg, drv := loadDriver()
 	repo := repoRoot()
+	repoCfg, err := config.LoadRepo(repo)
+	if err != nil {
+		fatal(err)
+	}
 	// ctrl-c mid-create must cancel the ctx (not just kill the process) so
 	// Create's deferred cleanup can terminate the half-made instance.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -249,7 +253,8 @@ func cmdNew(args []string) {
 		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(repo), base)))
 	sess, err := drv.Create(ctx, driver.CreateSpec{
 		Name: branch, Repo: repo, Branch: branch, BaseRef: base, Image: image,
-		IdleTimeout: idle, UnattendedCap: cap_,
+		DisableAutoCompose: !repoCfg.AutoCompose(),
+		IdleTimeout:        idle, UnattendedCap: cap_,
 		Progress: func(step string) { fmt.Println(ui.Step(step)) },
 	})
 	if err != nil {

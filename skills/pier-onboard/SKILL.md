@@ -1,22 +1,23 @@
 ---
 name: pier-onboard
-description: Set up a repository for pier — inspect the project and write its .pier-setup.sh, .pier-include, and .pier-bake.sh so pier sessions boot ready to work. Use when asked to set up, onboard, or configure pier for a repo.
+description: Set up a repository for pier — inspect the project and write its .pier-setup.sh, .pier-include, .pier-bake.sh, and optional .pier.toml so pier sessions boot ready to work. Use when asked to set up, onboard, or configure pier for a repo.
 ---
 
 # Onboard a repository to pier
 
 pier runs coding-agent sessions as micro-VMs on the user's own AWS account.
 When a session is created, the repo is checked out on the VM, uncommitted
-edits arrive as a patch, and three optional repo-root files control the rest:
+edits arrive as a patch, and four optional repo-root files control the rest:
 
 | File | When it runs / travels | What belongs in it |
 |---|---|---|
 | `.pier-bake.sh` | Once, during `pier bake`, on a throwaway instance that becomes the repo's AMI | **Toolchains** — language runtimes, package managers |
 | `.pier-setup.sh` | On every session's first boot, async, after the repo lands | **Repo state** — dependency install, services, migrations, seeds |
 | `.pier-include` | List read at create time; matching files ride to the VM | **Untracked/ignored files** dev needs — env files, local certs |
+| `.pier.toml` | Read at create time | **Repo behavior** — currently the Docker Compose auto-start opt-out |
 
 Your job: inspect this repo, write the files that apply, and tell the user
-what to run next. All three are optional — write only what the repo needs.
+what to run next. All four are optional — write only what the repo needs.
 
 ## Step 1 — inspect the repo
 
@@ -32,8 +33,8 @@ From that, determine:
    reinstall these. Anything else the build needs — pnpm/yarn, python,
    uv, rust, java — goes in `.pier-bake.sh`.
 2. **The dev-setup sequence** — the commands a human runs after a fresh
-   clone (install deps, start services, migrate, seed). That's
-   `.pier-setup.sh`.
+   clone (install deps, migrate, seed). That's `.pier-setup.sh`. Pier starts a
+   conventional Docker Compose project after that hook succeeds.
 3. **Files git doesn't carry** that dev needs — usually `.env*`. That's
    `.pier-include`. Nothing untracked or gitignored ships unless listed
    here; pier prints which env files it is *not* carrying at create time.
@@ -80,13 +81,23 @@ duplicating its steps. Typical shape:
 # boot, cwd = repo root. Logs to ~/.pier-setup.log.
 set -euo pipefail
 pnpm install
-docker compose up -d
-pnpm db:migrate
+pnpm build
 ```
 
 Everything must be non-interactive — no prompts, no `sudo` that asks, no
-watch-mode/foreground processes. Run services with `docker compose up -d`
-where possible. A bare background process must fully detach —
+watch-mode/foreground processes. If the repo contains `compose.yaml`,
+`compose.yml`, `docker-compose.yaml`, or `docker-compose.yml`, pier runs
+`docker compose up -d` automatically after this hook succeeds. If setup must
+control the Compose ordering itself, also write:
+
+```toml
+# .pier.toml
+[docker]
+auto_up = false
+```
+
+Then put `docker compose up -d` in `.pier-setup.sh` at the required point. A
+bare background process must fully detach —
 `setsid cmd </dev/null >log 2>&1 &` — because the setup tmux window closes
 when the script ends and SIGHUPs its process group (`nohup` alone does not
 detach it).

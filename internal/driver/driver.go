@@ -57,14 +57,17 @@ type Machine struct {
 // is attach-ready; code push and .pier-setup.sh continue asynchronously in
 // the session (the async create pipeline) with steps streamed via Progress.
 type CreateSpec struct {
-	Name          string
-	Repo          string        // local repo root; the bundle source
-	Branch        string        // new branch, off BaseRef
-	BaseRef       string        // default: HEAD
-	Image         string        // the repo's baked image ID; "" = stock (guarded cloud-init installs everything)
-	IdleTimeout   time.Duration // 0 = never auto-park
-	UnattendedCap time.Duration // 0 = no runaway cap
-	Progress      func(step string)
+	Name    string
+	Repo    string // local repo root; the bundle source
+	Branch  string // new branch, off BaseRef
+	BaseRef string // default: HEAD
+	Image   string // the repo's baked image ID; "" = stock (guarded cloud-init installs everything)
+	// DisableAutoCompose opts a repository out of the default first-boot
+	// `docker compose up -d` when a Compose file is present.
+	DisableAutoCompose bool
+	IdleTimeout        time.Duration // 0 = never auto-park
+	UnattendedCap      time.Duration // 0 = no runaway cap
+	Progress           func(step string)
 }
 
 // BakeSpec describes one repo's image bake. Images are repo-specific: the
