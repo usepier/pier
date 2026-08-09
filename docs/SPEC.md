@@ -1,8 +1,8 @@
 # pier — v1 design spec
 
-Status: implemented and shipping (v0.2.x). The design below was settled
-2026-07-30 and stands as the record of the trade-offs. Where code and spec
-disagree, the code won.
+Status: implemented and shipping (v0.2.x), both drivers. The design below
+was settled 2026-07-30 (the GCP driver landed 2026-08-08) and stands as the
+record of the trade-offs. Where code and spec disagree, the code won.
 
 ## 1. Product
 
@@ -12,10 +12,10 @@ left off. The daily loop:
 
 ```
 cd ~/code/myapp
-pier payments-retry     # new cloud session on branch payments-retry, attached in ~60-90s
+pier payments-retry     # new cloud session on branch payments-retry, attached in ~1-2 min
 # ... work with claude/codex in the remote tmux, detach or close the tab ...
 # the session parks itself once it goes quiet
-pier                    # TUI: sessions + states; pick one to reattach (~30s from parked)
+pier                    # TUI: sessions + states; pick one to reattach (~30-60s from parked)
 ```
 
 A session comes prepacked with: the repo on a fresh branch, the dev
@@ -36,7 +36,8 @@ Session = **one micro-VM + its persistent disk**. Park = native instance stop
 (disk persists, RAM lost). Resume = instance start. Destroy = terminate +
 delete disk. Resize = the same park/resume cycle with an instance-type change
 in between (providers only allow type changes while stopped — so a strained
-session grows with ~40s of downtime, same CPU arch only). This is why VMs beat
+session grows with a minute or two of downtime, same CPU arch only). This is
+why VMs beat
 the container services for this product:
 
 - ECS/Fargate: tasks are immutable and can't stop/resume with local state.
@@ -77,13 +78,23 @@ in provider APIs + tags/labels — **no server, no database, no laptop daemon**.
 - No AWS SDK: the driver shells out to `aws --output json` (the CLI is already
   required for the SSM plugin, and SSO/profiles/MFA come for free).
 
-### gcp-gce (parked — implemented after AWS is fully E2E-tested)
-- e2-medium default (~$0.033/h), Ubuntu 24.04, pd-balanced 40GB.
-- Default network + public IP; single firewall rule `pier-allow-iap-ssh`
-  (35.235.240.0/20 → :22, target tag `pier-session`).
+### gcp-gce
+- e2-medium default (2 vCPU / 4GB, ~$0.033/h), Ubuntu 24.04, pd-balanced
+  40GB. The same cloud-init user-data as EC2: GCE's Ubuntu images consume
+  the `user-data` metadata key, so the create pipeline is shared.
+- Default network + external IP (egress only). Two pier-owned firewall
+  rules, both scoped to the `pier-session` network tag:
+  `pier-allow-iap-ssh` (ALLOW tcp:22 from Google's IAP range
+  35.235.240.0/20, priority 999) and `pier-deny-ingress` (DENY all from
+  0.0.0.0/0, priority 1000). The deny outranks the permissive rules shared
+  networks carry (default networks ship `default-allow-ssh` open to the
+  world), so nothing but the IAP tunnel reaches a session.
 - Instances run with **no service account, no scopes**.
 - `shutdown -h now` lands in TERMINATED with disks intact (= parked).
-- Labels mirror the AWS tags (`pier-managed`, `pier-user`, ...).
+- The instance name is the session id. Labels mirror the AWS tags
+  (`pier-managed`, `pier-user`, ...) for server-side filtering; the label
+  charset is strict, so exact values (the caller's principal, repo, branch)
+  live in instance metadata and are verified after the filtered list.
 
 ## 4. Attach (and every other byte to the VM)
 
@@ -91,8 +102,10 @@ One mechanism: **OpenSSH over the SSM tunnel** — `ProxyCommand aws ssm
 start-session --document-name AWS-StartSSHSession`. Attach is `ssh -t agent@<id>
 tmux new -A -s main`; exec is one-shot ssh; file push is scp. Each session
 gets its own ed25519 keypair, generated at create, pubkey injected via
-cloud-init, private key under `~/.config/pier/keys/`. (GCP equivalent later:
-`gcloud compute ssh --tunnel-through-iap`.)
+cloud-init, private key under `~/.config/pier/keys/`. (GCP: the same raw
+OpenSSH with a `gcloud compute start-iap-tunnel --listen-on-stdin`
+ProxyCommand and the pubkey in instance metadata — deliberately not
+`gcloud compute ssh`, which rides the operator's personal key.)
 
 Zero inbound networking; every connection is IAM-authenticated and audited
 (CloudTrail). Inside the VM, work happens as user `agent` in a tmux session
@@ -228,7 +241,8 @@ only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
 ## 7. Speed
 
 Targets: **create → attached 60–90s; resume → attached ~30s** (measured
-numbers in §14).
+numbers in §14; GCP runs about a minute behind AWS on each — GCE stop/start
+and the IAP tunnel are simply slower).
 
 1. **`pier bake`** — prebaked **per-repo** image: agent user, tmux, git, gh,
    docker (with compose + buildx — docker.io alone is the bare engine; the
@@ -243,7 +257,8 @@ numbers in §14).
    pnpm/python belong here, repo state in `.pier-setup.sh`; a failed hook
    aborts the bake). Pier deliberately doesn't chase language ecosystems in
    the default image — the hook is the user's channel. Images are keyed by
-   repo basename in config (`[aws.baked_amis]`), tagged `pier:repo`; a
+   repo basename in config (`[aws.baked_amis]` / `[gcp.baked_images]`),
+   tagged `pier:repo`; a
    re-bake supersedes and deregisters the repo's previous image, and
    teardown sweeps every `pier:managed`-tagged image. ~$1/mo snapshot
    storage per repo. Offered as the wizard's last step when it runs inside
@@ -337,7 +352,7 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 ## 9. Setup wizard
 
 `pier setup` — plain stdin prompts (no TUI form), four phases, under 3
-minutes. v1 is AWS-only:
+minutes:
 
 1. **Detect** — CLIs, profiles/projects, plugin, gh, harness configs; all
    found values become defaults.
@@ -346,7 +361,8 @@ minutes. v1 is AWS-only:
 3. **Apply** — idempotent groundwork, printed before it's touched:
    - AWS: role+profile `pier-session` (SSM core policy), SG
      `pier-egress-only` in the default VPC.
-   - GCP: enable compute + IAP APIs, firewall `pier-allow-iap-ssh`.
+   - GCP: enable compute + IAP APIs, firewall rules `pier-allow-iap-ssh`
+     + `pier-deny-ingress`.
    `--print-admin` emits exactly this list for an admin when the dev lacks
    IAM rights. `pier teardown` reverses it.
 4. **Doctor** — quota headroom, connectivity, plugin; writes
@@ -397,8 +413,15 @@ profile       = "default"
 region        = "eu-central-1"
 instance_type = "t4g.medium"
 disk_gib      = 40
-# subnet      = "subnet-..."  # only for orgs without a default VPC
-# baked_ami   = "ami-..."     # written by `pier bake`
+# subnet      = "subnet-..."   # only for orgs without a default VPC
+# [aws.baked_amis]             # written by `pier bake`, keyed by repo
+
+[gcp]                          # when driver = "gcp-gce"
+project      = "my-project"
+zone         = "europe-west3-a"
+machine_type = "e2-medium"
+disk_gib     = 40
+# [gcp.baked_images]           # written by `pier bake`, keyed by repo
 
 [secrets]
 manifest = [".codex/auth.json", ".codex/config.toml", ".claude/settings.json", ".claude/CLAUDE.md"]
@@ -407,10 +430,11 @@ manifest = [".codex/auth.json", ".codex/config.toml", ".claude/settings.json", "
 
 ## 13. v1 cut line
 
-In: AWS driver, TUI, wizard (+print-admin, teardown), bake, overlapped create,
-supervisor parking (+keep/pin), one-way secrets copy, doctor, quota UX.
-Out (v1.1+): GCP driver (parked until AWS is fully E2E-tested), warm pools,
-hibernate/suspend park, k8s driver, `ls --all`, Windows.
+In: AWS + GCP drivers, TUI, wizard (+print-admin, teardown), bake,
+overlapped create, supervisor parking (+keep/pin), one-way secrets copy,
+doctor, quota UX.
+Out (v1.1+): warm pools, hibernate/suspend park, k8s driver, `ls --all`,
+Windows.
 
 ## 14. Load-bearing bets → spikes
 
@@ -423,12 +447,22 @@ the verdicts stand as the record.
 | boot → SSM-ready time supports 60–90s TTFI                 | aws spike | **PASS** — 29s stock AMI |
 | stop → start → ready ≈ 30s resume                          | aws spike | **PASS** — 21s |
 | SSM interactive TTY feels like ssh (manual, `--keep` mode) | aws spike | superseded — v1 uses real ssh over the SSM tunnel |
-| GCE: same four on IAP + TERMINATED-with-disks              | gcp spike | parked with the GCP driver |
+| GCE: same four on IAP + TERMINATED-with-disks              | gcp spike | **PASS** — cold IAP-ssh-ready 73s, in-VM shutdown → TERMINATED 58s, resume 56s |
 
-Measured 2026-07-30 in eu-central-1.
+Measured 2026-07-30 in eu-central-1 (AWS) and 2026-08-08 in europe-west3
+(GCP).
 
-Full v1 E2E (same day, same region, t4g.medium): stock create → ready 42s
+Full v1 E2E (2026-07-30, eu-central-1, t4g.medium): stock create → ready 42s
 (harnesses finish async under cloud-init); idle self-park fired at
 idle_timeout+tick; resume → ready 23s; `pier bake` 8m19s once; **baked create
 → attach-ready 52s** — inside the 60-90s TTFI target. keep/pin, ls state
 enrichment (beacon), rm, and teardown all verified; account swept clean after.
+
+Full GCP E2E (2026-08-08, europe-west3-a, e2-medium): wizard + setup laid the
+groundwork green; stock create → ready ~6 min (the shared user-data works
+unchanged — GCE's Ubuntu images consume the `user-data` metadata key, so the
+harness install rides the same cloud-init); `pier bake` once, then **baked
+create → attach-ready 1m44s**; resume → ready 56s; running resize 1m42s with
+creationTimestamp (AGE) preserved; the deny rule verified live — public :22
+probes fail while IAP attach works; rm and teardown swept the project back
+to pristine.

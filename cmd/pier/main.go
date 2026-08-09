@@ -67,11 +67,11 @@ const usage = `usage:
                             (3000 = same both sides, 8080:3000 = local:session)
   pier rm <session> [-f]    destroy session and its disk
   pier keep <session>       pin: disable idle self-park
-  pier resize <session> <type>  grow/shrink the VM (running: ~40s park+resume; same arch only)
+  pier resize <session> <type>  grow/shrink the VM (running: ~1-2 min park+resume; same arch only)
   pier setup                first-run wizard (creates cloud groundwork)
       --print-admin           print the admin-runnable setup commands instead
   pier doctor               environment + account checks
-  pier bake                 prebake this repo's session image (~60-90s creates)
+  pier bake                 prebake this repo's session image (~1-2 min creates)
   pier teardown             remove all pier groundwork from the account
   pier version              print the pier version
 `
@@ -334,7 +334,7 @@ func attach(drv driver.Driver, id string) {
 			return
 		}
 		retried = true
-		fmt.Println(ui.Dim.Render("not reachable yet — waiting for the session to come online (fresh VMs take ~30s)"))
+		fmt.Println(ui.Dim.Render("not reachable yet — waiting for the session to come online (fresh VMs take ~30-60s)"))
 		if err := waitReachable(drv, id, 4*time.Minute); err != nil {
 			fatal(err)
 		}
@@ -694,7 +694,7 @@ func freePort() (int, error) {
 
 func resumeIfParked(drv driver.Driver, s driver.Session) {
 	if s.State == driver.StateParked {
-		fmt.Println(ui.Dim.Render("resuming " + s.Name + " (~20-30s)..."))
+		fmt.Println(ui.Dim.Render("resuming " + s.Name + " (~20-60s)..."))
 		if err := drv.Resume(context.Background(), s.ID); err != nil {
 			fatal(err)
 		}
@@ -759,7 +759,7 @@ func cmdResize(args []string) {
 	if s.State == driver.StateParked {
 		fmt.Printf("%s %s\n", ui.Bold.Render("resizing "+s.Name+" to "+itype), ui.Dim.Render("(parked — stays parked)"))
 	} else {
-		fmt.Printf("%s %s\n", ui.Bold.Render("resizing "+s.Name+" to "+itype), ui.Dim.Render("(parks, resizes, resumes ~40-60s)"))
+		fmt.Printf("%s %s\n", ui.Bold.Render("resizing "+s.Name+" to "+itype), ui.Dim.Render("(parks, resizes, resumes ~1-2 min)"))
 	}
 	if err := drv.Resize(context.Background(), s.ID, itype); err != nil {
 		fatal(err)
@@ -832,7 +832,7 @@ func cmdBake() {
 	if err := cfg.Save(); err != nil {
 		fatal(err)
 	}
-	fmt.Println(ui.OK.Render("baked "+img) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~60-90s"))
+	fmt.Println(ui.OK.Render("baked "+img) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~1-2 min"))
 }
 
 func cmdTeardown() {

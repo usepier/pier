@@ -217,8 +217,8 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	// inside a repo; otherwise point at `pier bake` from one.
 	fmt.Println()
 	if repo := gitToplevel(); repo == "" {
-		fmt.Println(ui.Dim.Render("  (images bake per repo: cd <repo> && pier bake — ~5 min once, cuts creates to ~60-90s)"))
-	} else if name := filepath.Base(repo); yes(in, "bake the session image for "+name+" now? (~5 min once; cuts creates to ~60-90s)", true) {
+		fmt.Println(ui.Dim.Render("  (images bake per repo: cd <repo> && pier bake — ~5 min once, cuts creates to ~1-2 min)"))
+	} else if name := filepath.Base(repo); yes(in, "bake the session image for "+name+" now? (~5 min once; cuts creates to ~1-2 min)", true) {
 		// ctrl-c mid-bake must cancel the ctx so Bake's deferred cleanup can
 		// terminate the temporary instance — it has no supervisor, so a
 		// leaked one never parks itself.
