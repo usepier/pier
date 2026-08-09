@@ -41,6 +41,18 @@ func TestSSHOptsTransports(t *testing.T) {
 	}
 }
 
+func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
+	d := &Driver{StateDir: t.TempDir()}
+	cmd, err := d.AttachCommand(context.Background(), "i-0abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := cmd.Args[len(cmd.Args)-1]
+	if !strings.Contains(remote, `infocmp "$TERM"`) || !strings.Contains(remote, "export TERM=xterm-256color") {
+		t.Errorf("attach must fall back when the VM lacks the client's terminfo entry, got %q", remote)
+	}
+}
+
 // Park, resume and resize invalidate the probe cache — a cached success
 // otherwise points connections at the old public IP for up to a TTL after
 // the instance comes back on a new one.
