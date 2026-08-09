@@ -56,12 +56,30 @@ func (d *Driver) SetupOnce(ctx context.Context) (driver.SetupReport, error) {
 			"--network", "default",
 			"--direction", "INGRESS", "--action", "ALLOW", "--rules", "tcp:22",
 			"--source-ranges", IAPRange,
+			"--priority", "999",
 			"--target-tags", NetworkTag); err != nil {
 			return rep, err
 		}
-		note(true, "firewall rule "+FirewallRule+" (IAP range -> :22 only)")
+		note(true, "firewall rule "+FirewallRule+" (IAP range -> :22)")
 	} else {
 		note(false, "firewall rule "+FirewallRule)
+	}
+	// The deny (1000) sits under the allow (999) but over any permissive rule
+	// the shared network carries — default networks ship default-allow-ssh
+	// open to the world, and pier VMs hold an external IP for egress.
+	if _, err := d.gcloud(ctx, "compute", "firewall-rules", "describe", FirewallDeny,
+		"--format", "value(name)"); err != nil {
+		if _, err := d.gcloud(ctx, "compute", "firewall-rules", "create", FirewallDeny,
+			"--network", "default",
+			"--direction", "INGRESS", "--action", "DENY", "--rules", "all",
+			"--source-ranges", "0.0.0.0/0",
+			"--priority", "1000",
+			"--target-tags", NetworkTag); err != nil {
+			return rep, err
+		}
+		note(true, "firewall rule "+FirewallDeny+" (everything else stays out)")
+	} else {
+		note(false, "firewall rule "+FirewallDeny)
 	}
 	return rep, nil
 }
@@ -77,10 +95,12 @@ func (d *Driver) Teardown(ctx context.Context) error {
 		return fmt.Errorf("%d session(s) still exist — `pier rm` them first", len(sessions))
 	}
 
-	if _, err := d.gcloud(ctx, "compute", "firewall-rules", "describe", FirewallRule,
-		"--format", "value(name)"); err == nil {
-		if _, err := d.gcloud(ctx, "compute", "firewall-rules", "delete", FirewallRule); err != nil {
-			return err
+	for _, rule := range []string{FirewallRule, FirewallDeny} {
+		if _, err := d.gcloud(ctx, "compute", "firewall-rules", "describe", rule,
+			"--format", "value(name)"); err == nil {
+			if _, err := d.gcloud(ctx, "compute", "firewall-rules", "delete", rule); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -128,12 +148,15 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	}
 	checks = append(checks, driver.Check{Name: "GCP credentials", OK: true, Detail: me + " / " + d.Project})
 
-	// One probe covers project reachability, the compute API enable, and the
-	// firewall rule — the groundwork `pier setup` lays down.
-	_, fwErr := d.gcloud(ctx, "compute", "firewall-rules", "describe", FirewallRule,
+	// One probe covers project reachability, the compute API enable, and both
+	// firewall rules — the groundwork `pier setup` lays down. The deny rule
+	// matters: without it sessions on a default network face the internet.
+	_, allowErr := d.gcloud(ctx, "compute", "firewall-rules", "describe", FirewallRule,
 		"--format", "value(name)")
-	c := driver.Check{Name: "groundwork (APIs, firewall rule)", OK: fwErr == nil}
-	if fwErr != nil {
+	_, denyErr := d.gcloud(ctx, "compute", "firewall-rules", "describe", FirewallDeny,
+		"--format", "value(name)")
+	c := driver.Check{Name: "groundwork (APIs, firewall rules)", OK: allowErr == nil && denyErr == nil}
+	if !c.OK {
 		c.Detail = "run `pier setup`"
 	}
 	checks = append(checks, c)

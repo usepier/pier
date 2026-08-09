@@ -61,7 +61,13 @@ gcloud services enable compute.googleapis.com iap.googleapis.com --project <proj
 gcloud compute firewall-rules create pier-allow-iap-ssh \
   --project <project> --network default \
   --direction INGRESS --action ALLOW --rules tcp:22 \
-  --source-ranges 35.235.240.0/20 --target-tags pier-session
+  --source-ranges 35.235.240.0/20 --priority 999 --target-tags pier-session
+# The deny outranks permissive shared-network rules (default-allow-ssh is
+# open to the world) for pier VMs only.
+gcloud compute firewall-rules create pier-deny-ingress \
+  --project <project> --network default \
+  --direction INGRESS --action DENY --rules all \
+  --source-ranges 0.0.0.0/0 --priority 1000 --target-tags pier-session
 
 # Devs then need roles/compute.instanceAdmin.v1 (instances, disks, images,
 # metadata, labels) and roles/iap.tunnelResourceAccessor (the SSH tunnel).
@@ -119,7 +125,7 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		if err := askGCP(in, &cfg); err != nil {
 			return err
 		}
-		groundwork = "compute + IAP APIs, one IAP-only ssh firewall rule"
+		groundwork = "compute + IAP APIs, IAP-only firewall rules"
 	default:
 		return fmt.Errorf("unknown cloud — aws or gcp")
 	}

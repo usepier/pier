@@ -4,9 +4,12 @@
 //   - Session = one GCE instance (default e2-medium, Ubuntu 24.04) with a
 //     pd-balanced root disk (default 40GB). Instance stop/start = park/resume;
 //     an in-VM `shutdown -h now` lands in TERMINATED with the disk intact.
-//   - Networking: default network, ephemeral external IP for egress only, one
-//     firewall rule allowing Google's IAP range (35.235.240.0/20) -> :22,
-//     target-tagged to pier VMs. Nothing else reaches the instance.
+//   - Networking: default network, ephemeral external IP for egress only.
+//     Two firewall rules target-tagged to pier VMs: allow Google's IAP range
+//     (35.235.240.0/20) -> :22 at priority 999, deny all other ingress at
+//     1000. The deny outranks any permissive rule the shared network carries
+//     (default networks ship default-allow-ssh open to the world), so
+//     nothing but the IAP tunnel reaches the instance.
 //   - Instances run with NO service account and no scopes: zero cloud
 //     permissions inside the VM, ever.
 //   - Attach and every other remote op is raw OpenSSH through a
@@ -39,6 +42,7 @@ import (
 
 const (
 	FirewallRule = "pier-allow-iap-ssh"
+	FirewallDeny = "pier-deny-ingress"
 	IAPRange     = "35.235.240.0/20"
 	NetworkTag   = "pier-session"
 	LabelManaged = "pier-managed"
