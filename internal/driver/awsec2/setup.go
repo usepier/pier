@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/kerem-kaynak/pier/internal/driver/payload"
 )
 
 const (
@@ -165,7 +166,7 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	// private repos ship the slow full bundle and sessions can't push.
 	gh := driver.Check{Name: "github credential", OK: true}
 	switch {
-	case GitHubToken() != "":
+	case payload.GitHubToken() != "":
 		gh.Detail = "token found — private-repo fast fetch + push from sessions"
 	case exec.Command("ssh-add", "-l").Run() == nil:
 		gh.Detail = "ssh agent only — fast fetch relays it; pushes work while attached (`gh auth login` for detached pushes)"

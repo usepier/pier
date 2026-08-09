@@ -34,7 +34,6 @@ const (
 	TagBranch     = "pier:branch"
 	TagReady      = "pier:ready"   // create's last act: bootstrap done, attachable
 	TagCreated    = "pier:created" // RFC3339 create time; launch time resets on every resume
-	Workspace     = "/home/agent/work"
 	amiParamBase  = "/aws/service/canonical/ubuntu/server/24.04/stable/current/%s/hvm/ebs-gp3/ami-id"
 )
 

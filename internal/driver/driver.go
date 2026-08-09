@@ -129,6 +129,11 @@ type Driver interface {
 	// List returns only the caller's sessions (identity-filtered tags/labels).
 	List(ctx context.Context) ([]Session, error)
 
+	// Machines is the curated resize-picker catalog: same-architecture types
+	// compatible with currentType, with shape and rough cost. nil means no
+	// catalog — `pier resize <session> <type>` still takes any type.
+	Machines(currentType string) []Machine
+
 	// AttachCommand hands the terminal over: `aws ssm start-session` via
 	// session-manager-plugin, or `gcloud compute ssh --tunnel-through-iap`.
 	AttachCommand(ctx context.Context, id string) (*exec.Cmd, error)

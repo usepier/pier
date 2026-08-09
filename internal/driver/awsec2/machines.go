@@ -31,3 +31,9 @@ func Machines(currentType string) []driver.Machine {
 		{Type: "m7i.4xlarge", CPU: "16", Mem: "64", Cost: "~$0.86/h"},
 	}
 }
+
+// Machines implements the driver interface by delegating to the package
+// catalog (which the TUI tests call directly).
+func (d *Driver) Machines(currentType string) []driver.Machine {
+	return Machines(currentType)
+}

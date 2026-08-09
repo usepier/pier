@@ -27,6 +27,7 @@ import (
 	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
 	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
+	"github.com/kerem-kaynak/pier/internal/driver/payload"
 	"github.com/kerem-kaynak/pier/internal/proxy"
 	"github.com/kerem-kaynak/pier/internal/tui"
 	"github.com/kerem-kaynak/pier/internal/ui"
@@ -155,7 +156,7 @@ func sessionEnv(cfg config.Config) map[string]string {
 	if t := cfg.Secrets.ClaudeOAuthToken; t != "" {
 		env["CLAUDE_CODE_OAUTH_TOKEN"] = t
 	}
-	if t := awsec2.GitHubToken(); t != "" {
+	if t := payload.GitHubToken(); t != "" {
 		env["GH_TOKEN"] = t
 	}
 	return env
@@ -264,7 +265,7 @@ func cmdNew(args []string) {
 	// OAuth-backed MCPs need one browser approval each (tokens can't be
 	// copied — they rotate); offer the sweep now, while a human is present.
 	home, _ := os.UserHomeDir()
-	if names := awsec2.OAuthRemotes(home, repo); len(names) > 0 && stdinIsTTY() {
+	if names := payload.OAuthRemotes(home, repo); len(names) > 0 && stdinIsTTY() {
 		if confirm(fmt.Sprintf("mcp %s: run the one-time browser logins now?", strings.Join(names, ", ")), true) {
 			loginAll(drv, *sess)
 		} else {
@@ -551,7 +552,7 @@ func loginAll(drv driver.Driver, s driver.Session) {
 	}
 	cfgRaw, credRaw, _ := strings.Cut(out, "---PIER-SPLIT---")
 	var pending []string
-	for _, n := range awsec2.OAuthRemoteNames([]byte(cfgRaw), awsec2.Workspace+"/"+s.Repo) {
+	for _, n := range payload.OAuthRemoteNames([]byte(cfgRaw), payload.Workspace+"/"+s.Repo) {
 		if !mcpAuthed(credRaw, n) {
 			pending = append(pending, n)
 		}
@@ -885,10 +886,7 @@ func cmdTUI() {
 			return drv.Resize(context.Background(), s.ID, itype)
 		},
 		Machines: func(s driver.Session) []driver.Machine {
-			if drv.Name() != "aws-ec2" {
-				return nil // no curated catalog yet — pier resize still works
-			}
-			return awsec2.Machines(s.InstanceType)
+			return drv.Machines(s.InstanceType)
 		},
 		CreateDetached: spawnCreate,
 	})

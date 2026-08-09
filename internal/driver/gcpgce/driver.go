@@ -79,6 +79,11 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	return nil, errNotImplemented
 }
 
+func (d *Driver) Machines(currentType string) []driver.Machine {
+	// TODO: curated e2/n2 catalog (all GCE families are amd64 here, no arch split).
+	return nil
+}
+
 func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port int) (*exec.Cmd, error) {
 	return nil, errNotImplemented
 }

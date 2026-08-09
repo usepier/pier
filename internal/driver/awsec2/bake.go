@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/kerem-kaynak/pier/internal/driver/payload"
 	"github.com/kerem-kaynak/pier/internal/ui"
 )
 
@@ -47,7 +48,7 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error)
 	}
 	defer os.RemoveAll(work)
 	udPath := filepath.Join(work, "user-data.yaml")
-	if err := os.WriteFile(udPath, []byte(renderUserData(cspec, pub)), 0o600); err != nil {
+	if err := os.WriteFile(udPath, []byte(payload.RenderUserData(cspec, pub)), 0o600); err != nil {
 		return "", err
 	}
 
@@ -100,7 +101,7 @@ exit 1`
 	if _, err := d.aws(ctx, "ec2", "wait", "instance-stopped", "--instance-ids", id); err != nil {
 		return "", err
 	}
-	repo := sanitize(spec.RepoName)
+	repo := payload.Sanitize(spec.RepoName)
 	name := "pier-" + repo + "-" + time.Now().Format("20060102-1504")
 	tags := "Tags=[{Key=pier:managed,Value=1},{Key=pier:repo,Value=" + repo + "}]"
 	img, err := d.aws(ctx, "ec2", "create-image", "--instance-id", id, "--name", name,
