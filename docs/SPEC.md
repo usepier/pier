@@ -60,7 +60,7 @@ v1.1 upgrade: EC2 hibernate / GCE suspend to preserve RAM across park.
 
 ## 3. Drivers
 
-One Go interface (`internal/driver`), two v1 implementations. All state lives
+One Go interface (`cli/internal/driver`), two v1 implementations. All state lives
 in provider APIs + tags/labels — **no server, no database, no laptop daemon**.
 
 ### aws-ec2
@@ -157,9 +157,9 @@ The beacon additionally lists the session's listening TCP ports (one
 A session either exists fully set up or not at all — no half-states:
 
 - The create's **last act** is a `pier:ready` tag on the instance (written
-  after the VM-side bootstrap touches `~/.pier-bootstrapped`; the marker
-  stays as the raw-ssh backstop, before the async `.pier-setup.sh`
-  finishes). EC2 reports `running` well before the session is usable — SSM
+  after the VM-side bootstrap touches `~/.pier-bootstrapped` and the client
+  has followed `.pier-setup.sh` to its exit; the marker stays as the raw-ssh
+  backstop). EC2 reports `running` well before the session is usable — SSM
   registration alone lags ~30s — so ls/TUI read running-without-the-tag as
   `creating`: truthful state from the first second, no probe, no SSM
   dependency. Attach and other session commands **refuse cleanly** on a
@@ -177,7 +177,7 @@ A session either exists fully set up or not at all — no half-states:
 `pier proxy` (foreground, ctrl-c to stop) gives every **running** session its
 own hostname: `http://<session>.pier:3000` in the browser, `psql -h
 <session>.pier` — real port numbers, any TCP client, zero per-port commands.
-All machinery lives in `internal/proxy`; the rest of the product contributes
+All machinery lives in `cli/internal/proxy`; the rest of the product contributes
 only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
 
 - **Names**: a ~100-line UDP responder answers A queries for `*.pier`,
@@ -250,12 +250,14 @@ numbers in §14).
    a repo; `pier bake` refreshes it.
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
-   `.pier-setup.sh` runs asynchronously in a background tmux window while you
-   type to the agent — it starts only after the checkout, dirty patch, and
-   `.pier-include` extras are all in place. `PIER_SETUP_SCRIPT`
+   `.pier-setup.sh` runs in a background tmux window after the checkout,
+   dirty patch, and `.pier-include` extras are all in place. Create follows
+   its durable log live and withholds the ready tag until it exits.
+   `PIER_SETUP_SCRIPT`
    points it at a different script — relative to the repo root or `~` —
    which travels in the tar and takes precedence over the repo's own.
-   The outcome is never silent: the window writes `~/.pier-setup.status`
+   The outcome is never silent: CLI and native Setup views show its live
+   output and final exit status; the window writes `~/.pier-setup.status`
    ("running", then the exit code — the supervisor beacons it, so `ls`/TUI
    show "(setup running)"/"(setup failed)"), ends `~/.pier-setup.log` with
    `pier setup: done`/`FAILED (exit N)`, and on failure renames itself to

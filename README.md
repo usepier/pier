@@ -211,11 +211,12 @@ resuming checkout-flow (~20-30s)...
 
 ## Making your repo pier-ready
 
-Three optional files at the repo root, all committed:
+Three optional files at the repo root, normally committed. Pier always carries
+the current local `.pier-setup.sh`, including an untracked or ignored copy:
 
 | File | Runs / read | Contains |
 |---|---|---|
-| `.pier-setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
+| `.pier-setup.sh` | Every session's first boot, in a `setup` tmux window with live output during create | Repo state: deps, services, migrations, seeds |
 | `.pier-include` | At create | Untracked/ignored files to carry (env files, local certs) |
 | `.pier-bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
 
@@ -338,10 +339,12 @@ supersedes the old image, and `pier teardown` sweeps them all by tag.
 
 ### Setup that can't fail silently
 
-`.pier-setup.sh` runs async in its own tmux window on first boot, after the
-checkout, dirty patch, and `.pier-include` files are in place. The outcome
-always surfaces:
+`.pier-setup.sh` runs in its own tmux window on first boot, after the checkout,
+dirty patch, and `.pier-include` files are in place. Create follows its output
+live in both the CLI and native app and waits for its exit. The outcome always
+surfaces:
 
+- the create command and native Setup tab show the live script log and exit status
 - `pier ls` and the TUI show `(setup running)` or `(setup failed)`
 - `~/.pier-setup.log` ends with `pier setup: done` or `pier setup: FAILED (exit N)`
 - a failed window renames to `setup-failed` and stays open instead of vanishing

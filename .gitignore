@@ -3,4 +3,7 @@
 /bin/
 /dist/
 .DS_Store
-cmd/pier/assets/pier-supervisor-*
+cli/cmd/pier/assets/pier-supervisor-*
+/app/logs/
+/app/Frameworks/PierCore.xcframework/
+/app/.env.local

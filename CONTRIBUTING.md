@@ -8,7 +8,7 @@ change is to keep it that way.
 ```
 make          # cross-compiles the in-VM supervisor, embeds it, builds ./pier
 make install  # install to $(go env GOPATH)/bin
-go test ./...
+make test
 ```
 
 Always build with `make`, not `go build` — the supervisor binaries must be
@@ -16,6 +16,14 @@ embedded or session creation fails at runtime.
 
 Requires: Go, `aws` CLI v2, `session-manager-plugin`, `git`, OpenSSH.
 `pier doctor` checks the runtime dependencies.
+
+## Repository layout
+
+- `cli/` is the Go module, including the `pier` and `pier-supervisor`
+  commands and their internal packages. `make` writes the CLI to `./pier`.
+- `app/` contains the shared SwiftUI app and XcodeGen specification for the
+  native iOS and macOS targets.
+- `docs/` and `skills/` are shared project resources.
 
 ## Design ground rules
 
@@ -43,12 +51,12 @@ open decisions — TODOs in code point there. The short version:
 
 ## Code conventions
 
-- Command output goes through `internal/ui` (one accent color, ANSI palette,
+- Command output goes through `cli/internal/ui` (one accent color, ANSI palette,
   lots of dim). Long-running commands print a bold header, `ui.Step` lines,
   and a green completion. `pier ls` output stays plain so it pipes cleanly;
   the TUI is the pretty view.
 - Comments explain *why*, not *what*. Match the density already there.
-- `go vet ./...` and `gofmt` clean before sending a PR. Some `modernize`
+- `make test` and `gofmt` clean before sending a PR. Some `modernize`
   suggestions (e.g. `SplitSeq`) are deliberately not applied.
 
 ## Sending changes

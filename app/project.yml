@@ -1,0 +1,121 @@
+name: Pier
+
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+  developmentLanguage: en
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CLANG_ENABLE_MODULES: YES
+
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    exactVersion: 1.11.2
+
+targets:
+  PierIOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/Shared
+      - path: Sources/iOS
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - package: SwiftTerm
+      - framework: Frameworks/PierCore.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: Pier
+        PRODUCT_BUNDLE_IDENTIFIER: com.pier.ios
+        PRODUCT_MODULE_NAME: PierIOS
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Pier
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Pier connects to development sessions in your AWS account.
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        ASSETCATALOG_COMPILER_APPICON_NAME: Anchor
+        CODE_SIGN_ENTITLEMENTS: Config/PierIOS.entitlements
+
+  PierMacOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Shared
+      - path: Sources/macOS
+      - path: Resources
+        buildPhase: resources
+    postCompileScripts:
+      - name: Build bundled Pier CLI
+        script: '/bin/sh "$SRCROOT/Scripts/build-cli.sh"'
+        basedOnDependencyAnalysis: false
+    dependencies:
+      - package: SwiftTerm
+    settings:
+      base:
+        PRODUCT_NAME: Pier
+        PRODUCT_BUNDLE_IDENTIFIER: com.pier.mac
+        PRODUCT_MODULE_NAME: PierMacOS
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Pier
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_LSMinimumSystemVersion: "15.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: Anchor
+        CODE_SIGN_ENTITLEMENTS: Config/PierMacOS.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+
+  PierTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: PierMacOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pier.mac.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Pier.app/Contents/MacOS/Pier
+        BUNDLE_LOADER: $(TEST_HOST)
+
+schemes:
+  Pier iOS:
+    build:
+      targets:
+        PierIOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  Pier macOS:
+    build:
+      targets:
+        PierMacOS: all
+        PierTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - PierTests
+    archive:
+      config: Release

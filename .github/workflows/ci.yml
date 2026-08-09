@@ -12,10 +12,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l .)
+          unformatted=$(gofmt -l cli)
           if [ -n "$unformatted" ]; then
             echo "gofmt needed on:" && echo "$unformatted" && exit 1
           fi
@@ -38,7 +39,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
       - name: pack a release-style tarball
         run: git archive --format=tar.gz --prefix=pier-smoke/ -o "$RUNNER_TEMP/pier-smoke.tar.gz" HEAD
       - name: build from the tarball like the formula does
@@ -52,3 +54,20 @@ jobs:
           echo "$out"
           test "$out" = "pier v0.0.0-smoke"
           "$RUNNER_TEMP/pier-smoke/pier" help >/dev/null
+
+  native-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - name: install XcodeGen
+        run: brew install xcodegen
+      - name: test macOS app
+        run: make -C app test DERIVED_DATA="$RUNNER_TEMP/pier-app-build"
+      - name: install iOS Go binder
+        run: cd cli && go install golang.org/x/mobile/cmd/gomobile golang.org/x/mobile/cmd/gobind
+      - name: build iOS app
+        run: make -C app ios-build DERIVED_DATA="$RUNNER_TEMP/pier-app-build"
