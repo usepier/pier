@@ -1,6 +1,7 @@
 package gcpgce
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -65,5 +66,17 @@ func TestArchAndRegion(t *testing.T) {
 	}
 	if got := regionOf("europe-west3-a"); got != "europe-west3" {
 		t.Fatalf("regionOf: got %q", got)
+	}
+}
+
+func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
+	d := &Driver{Project: "p", Zone: "z", StateDir: t.TempDir()}
+	cmd, err := d.AttachCommand(context.Background(), "pier-x-abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := cmd.Args[len(cmd.Args)-1]
+	if !strings.Contains(remote, `infocmp "$TERM"`) || !strings.Contains(remote, "export TERM=xterm-256color") {
+		t.Errorf("attach must fall back when the VM lacks the client's terminfo entry, got %q", remote)
 	}
 }
