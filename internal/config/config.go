@@ -17,6 +17,7 @@ type Config struct {
 	IdleTimeout   string  `toml:"idle_timeout"`   // duration or "never"
 	UnattendedCap string  `toml:"unattended_cap"` // duration or "never"
 	AWS           AWS     `toml:"aws"`
+	GCP           GCP     `toml:"gcp"`
 	Secrets       Secrets `toml:"secrets"`
 }
 
@@ -40,6 +41,17 @@ type AWS struct {
 	BakedAMIs map[string]string `toml:"baked_amis,omitempty"`
 }
 
+type GCP struct {
+	Project     string `toml:"project"`
+	Zone        string `toml:"zone"`
+	MachineType string `toml:"machine_type"`
+	DiskGiB     int    `toml:"disk_gib"`
+	// BakedImages: repo basename -> image, written by `pier bake` (run from
+	// the repo). Each repo bakes its own image so .pier-bake.sh toolchains
+	// don't bleed across projects.
+	BakedImages map[string]string `toml:"baked_images,omitempty"`
+}
+
 type Secrets struct {
 	// Manifest: files/dirs under $HOME copied one-way into each session's
 	// home at create. Repo files listed in a repo-root .pier-include travel
@@ -59,6 +71,11 @@ func Default() Config {
 			InstanceType: "t4g.medium",
 			DiskGiB:      40,
 			Direct:       true,
+		},
+		GCP: GCP{
+			Zone:        "europe-west3-a",
+			MachineType: "e2-medium",
+			DiskGiB:     40,
 		},
 	}
 }
@@ -93,6 +110,60 @@ func (c Config) Save() error {
 	return toml.NewEncoder(f).Encode(c)
 }
 
+// gcp reports whether the active driver is gcp-gce (anything else falls to
+// aws-ec2, matching newDriver's default).
+func (c Config) gcp() bool { return c.Driver == "gcp-gce" }
+
+// BakedImage is repo's baked image under the active driver ("" = launch from
+// stock, guarded cloud-init installs live). aws-ec2 falls back to the legacy
+// shared AMI from pre-repo-specific bakes.
+func (c Config) BakedImage(repo string) string {
+	if c.gcp() {
+		return c.GCP.BakedImages[repo]
+	}
+	if img := c.AWS.BakedAMIs[repo]; img != "" {
+		return img
+	}
+	return c.AWS.BakedAMI
+}
+
+// BakedReplaces lists the images a fresh bake of repo supersedes.
+func (c Config) BakedReplaces(repo string) []string {
+	if c.gcp() {
+		return []string{c.GCP.BakedImages[repo]}
+	}
+	return []string{c.AWS.BakedAMIs[repo], c.AWS.BakedAMI}
+}
+
+// RecordBake stores repo's new image under the active driver. It merges into
+// the map — replacing it would strand other repos' images as unreferenced
+// (but still billing) artifacts.
+func (c *Config) RecordBake(repo, image string) {
+	if c.gcp() {
+		if c.GCP.BakedImages == nil {
+			c.GCP.BakedImages = map[string]string{}
+		}
+		c.GCP.BakedImages[repo] = image
+		return
+	}
+	if c.AWS.BakedAMIs == nil {
+		c.AWS.BakedAMIs = map[string]string{}
+	}
+	c.AWS.BakedAMIs[repo] = image
+	c.AWS.BakedAMI = ""
+}
+
+// ClearBakes drops the active driver's baked-image references (teardown
+// deleted the images themselves).
+func (c *Config) ClearBakes() {
+	if c.gcp() {
+		c.GCP.BakedImages = nil
+		return
+	}
+	c.AWS.BakedAMI = ""
+	c.AWS.BakedAMIs = nil
+}
+
 // ParkDuration parses "30m" / "8h" / "never" (or "0") into a duration;
 // 0 means disabled.
 func ParkDuration(s string) (time.Duration, error) {
@@ -120,6 +191,10 @@ var Settings = []Setting{
 	{"aws.disk_gib", ""},
 	{"aws.subnet", "optional"},
 	{"aws.direct", "ssh straight to the VM, fast — false forces the ssm tunnel"},
+	{"gcp.project", ""},
+	{"gcp.zone", ""},
+	{"gcp.machine_type", "machine for new sessions"},
+	{"gcp.disk_gib", ""},
 }
 
 // Get returns the current value of a settable key ("" for unknown keys).
@@ -143,6 +218,14 @@ func Get(c Config, key string) string {
 		return c.AWS.Subnet
 	case "aws.direct":
 		return strconv.FormatBool(c.AWS.Direct)
+	case "gcp.project":
+		return c.GCP.Project
+	case "gcp.zone":
+		return c.GCP.Zone
+	case "gcp.machine_type":
+		return c.GCP.MachineType
+	case "gcp.disk_gib":
+		return strconv.Itoa(c.GCP.DiskGiB)
 	}
 	return ""
 }
@@ -176,6 +259,18 @@ func Set(c *Config, key, val string) error {
 		c.AWS.DiskGiB = n
 	case "aws.subnet":
 		c.AWS.Subnet = val
+	case "gcp.project":
+		c.GCP.Project = val
+	case "gcp.zone":
+		c.GCP.Zone = val
+	case "gcp.machine_type":
+		c.GCP.MachineType = val
+	case "gcp.disk_gib":
+		n, err := strconv.Atoi(val)
+		if err != nil || n < 10 {
+			return fmt.Errorf("gcp.disk_gib: want a whole number of GiB, at least 10 (got %q)", val)
+		}
+		c.GCP.DiskGiB = n
 	case "aws.direct":
 		switch strings.ToLower(val) {
 		case "true", "yes", "on":

@@ -27,6 +27,7 @@ import (
 	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
 	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
+	"github.com/kerem-kaynak/pier/internal/driver/gcpgce"
 	"github.com/kerem-kaynak/pier/internal/driver/payload"
 	"github.com/kerem-kaynak/pier/internal/proxy"
 	"github.com/kerem-kaynak/pier/internal/tui"
@@ -142,7 +143,22 @@ func newDriver(cfg config.Config) (driver.Driver, error) {
 			SupervisorBin: supervisorBin,
 		}, nil
 	case "gcp-gce":
-		return nil, fmt.Errorf("the gcp-gce driver is parked for v1 — set driver = \"aws-ec2\"")
+		// An empty project would fall through to the operator's active gcloud
+		// config — pier must never create resources in whatever project
+		// happens to be active.
+		if cfg.GCP.Project == "" {
+			return nil, fmt.Errorf("gcp.project is not set — run `pier setup`")
+		}
+		return &gcpgce.Driver{
+			Project:       cfg.GCP.Project,
+			Zone:          cfg.GCP.Zone,
+			MachineType:   cfg.GCP.MachineType,
+			DiskGiB:       cfg.GCP.DiskGiB,
+			StateDir:      config.Dir(),
+			Manifest:      cfg.Secrets.Manifest,
+			SessionEnv:    sessionEnv(cfg),
+			SupervisorBin: supervisorBin,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unknown driver %q", cfg.Driver)
 	}
@@ -240,12 +256,9 @@ func cmdNew(args []string) {
 		fatal(fmt.Errorf("--cap: %w", err))
 	}
 
-	// Images are repo-specific; a repo that never baked falls back to the
-	// legacy shared image, then to stock (guarded cloud-init installs live).
-	image := cfg.AWS.BakedAMIs[filepath.Base(repo)]
-	if image == "" {
-		image = cfg.AWS.BakedAMI
-	}
+	// Images are repo-specific; a repo that never baked launches from stock
+	// (guarded cloud-init installs live).
+	image := cfg.BakedImage(filepath.Base(repo))
 	fmt.Printf("%s %s\n", ui.Bold.Render("creating "+branch),
 		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(repo), base)))
 	sess, err := drv.Create(ctx, driver.CreateSpec{
@@ -296,9 +309,10 @@ func repoRoot() string {
 }
 
 // attach runs the interactive ssh+tmux. A fresh or just-resumed VM reports
-// EC2-running before its SSM agent has registered (~30s window), so an ssh
-// attempt that dies instantly gets one bounded wait-for-reachability and a
-// retry instead of a raw TargetNotConnected dump.
+// cloud-running before its transport answers (EC2's SSM agent takes ~30s to
+// register; GCE's IAP tunnel has the same window), so an ssh attempt that
+// dies instantly gets one bounded wait-for-reachability and a retry instead
+// of a raw transport error dump.
 func attach(drv driver.Driver, id string) {
 	fmt.Println(ui.Dim.Render("attaching — detach with C-b d (session keeps running)"))
 	retried := false
@@ -332,7 +346,7 @@ func retryAttach(err error, elapsed time.Duration) bool {
 	return elapsed <= 15*time.Second && errors.As(err, &exitErr) && exitErr.ExitCode() == 255
 }
 
-// waitReachable polls a no-op exec until ssh-over-SSM answers.
+// waitReachable polls a no-op exec until the driver's ssh transport answers.
 func waitReachable(drv driver.Driver, id string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -502,8 +516,8 @@ func cmdAttach(args []string) {
 }
 
 // requireReady refuses commands against a still-creating session — cleanly,
-// before any ssh is spawned, so the user never sees a raw TargetNotConnected
-// from the SSM window between EC2-running and actually-attachable.
+// before any ssh is spawned, so the user never sees a raw transport error
+// from the window between cloud-running and actually-attachable.
 func requireReady(s driver.Session) {
 	if s.State == driver.StateCreating {
 		fatal(fmt.Errorf("%s is still setting up — try again when `pier ls` shows it running", s.Name))
@@ -796,48 +810,41 @@ func cmdBake() {
 	name := filepath.Base(repo)
 	hook := driver.BakeHook(repo)
 	fmt.Printf("%s %s\n", ui.Bold.Render("baking "+name),
-		ui.Dim.Render("(one temporary instance ~5 min, then an AMI — ~$1-2/mo storage)"))
+		ui.Dim.Render("(one temporary instance ~5 min, then an image — ~$1-2/mo storage)"))
 	if hook != "" {
 		fmt.Println(ui.Step(".pier-bake.sh found — its toolchains bake in"))
 	}
-	// This bake supersedes the repo's previous image and, once per config,
-	// the legacy shared one.
-	replaces := []string{cfg.AWS.BakedAMIs[name], cfg.AWS.BakedAMI}
+	// This bake supersedes the repo's previous image (and on aws-ec2, once
+	// per config, the legacy shared one).
+	replaces := cfg.BakedReplaces(name)
 	// ctrl-c mid-bake must cancel the ctx (not just kill the process) so
 	// Bake's deferred cleanup can terminate the temporary instance — it has
 	// no supervisor, so a leaked one never parks itself.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ami, err := drv.Bake(ctx, driver.BakeSpec{
+	img, err := drv.Bake(ctx, driver.BakeSpec{
 		RepoName: name, HookPath: hook, Replaces: replaces,
 	})
 	if err != nil {
 		fatal(err)
 	}
-	if cfg.AWS.BakedAMIs == nil {
-		cfg.AWS.BakedAMIs = map[string]string{}
-	}
-	cfg.AWS.BakedAMIs[name] = ami
-	cfg.AWS.BakedAMI = ""
+	cfg.RecordBake(name, img)
 	if err := cfg.Save(); err != nil {
 		fatal(err)
 	}
-	fmt.Println(ui.OK.Render("baked "+ami) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~60-90s"))
+	fmt.Println(ui.OK.Render("baked "+img) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~60-90s"))
 }
 
 func cmdTeardown() {
 	cfg, drv := loadDriver()
-	if !confirm("remove all pier groundwork (role, instance profile, security group, baked AMIs) from the account?", false) {
+	if !confirm("remove all pier groundwork and baked images from the account?", false) {
 		return
 	}
 	if err := drv.Teardown(context.Background()); err != nil {
 		fatal(err)
 	}
-	if cfg.AWS.BakedAMI != "" || len(cfg.AWS.BakedAMIs) > 0 {
-		cfg.AWS.BakedAMI = ""
-		cfg.AWS.BakedAMIs = nil
-		cfg.Save()
-	}
+	cfg.ClearBakes()
+	cfg.Save()
 	fmt.Println(ui.OK.Render("groundwork removed — the account is clean"))
 }
 

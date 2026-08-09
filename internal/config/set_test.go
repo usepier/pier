@@ -61,9 +61,21 @@ func TestSet(t *testing.T) {
 		t.Errorf("secret key must be rejected with the settable list, got %v", err)
 	}
 
-	// Every advertised setting must round-trip through Get.
+	if err := Set(&cfg, "gcp.disk_gib", "9"); err == nil {
+		t.Error("gcp disk below 10 GiB must not apply")
+	}
+	if err := Set(&cfg, "gcp.project", "my-project"); err != nil {
+		t.Fatal(err)
+	}
+	if Get(cfg, "gcp.project") != "my-project" {
+		t.Errorf("gcp.project reads back %q", Get(cfg, "gcp.project"))
+	}
+
+	// Every advertised setting must round-trip through Get. Keys with no
+	// sensible default (credentials, org-specific ids) are empty until setup.
+	emptyOK := map[string]bool{"aws.profile": true, "aws.region": true, "aws.subnet": true, "gcp.project": true}
 	for _, s := range Settings {
-		if Get(cfg, s.Key) == "" && s.Key != "aws.profile" && s.Key != "aws.region" && s.Key != "aws.subnet" {
+		if Get(cfg, s.Key) == "" && !emptyOK[s.Key] {
 			t.Errorf("Get(%q) is empty on a default config", s.Key)
 		}
 	}

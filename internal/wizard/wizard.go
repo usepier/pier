@@ -26,7 +26,7 @@ import (
 
 // adminDoc is for devs without IAM rights: the exact groundwork their admin
 // must create (equivalent to what SetupOnce does).
-const adminDoc = `# pier groundwork — run with an account that can manage IAM + EC2.
+const adminDoc = `# pier groundwork on AWS — run with an account that can manage IAM + EC2.
 # Everything pier creates is tagged pier:managed=1. Removal: pier teardown.
 
 aws iam create-role --role-name pier-session \
@@ -54,9 +54,30 @@ aws ec2 create-security-group --group-name pier-egress-only \
 # display reads servicequotas get-service-quota (optional, degrades politely).
 `
 
+const gcpAdminDoc = `# pier groundwork on GCP — run with a project owner or editor.
+# Removal: pier teardown.
+
+gcloud services enable compute.googleapis.com iap.googleapis.com --project <project>
+gcloud compute firewall-rules create pier-allow-iap-ssh \
+  --project <project> --network default \
+  --direction INGRESS --action ALLOW --rules tcp:22 \
+  --source-ranges 35.235.240.0/20 --target-tags pier-session
+
+# Devs then need roles/compute.instanceAdmin.v1 (instances, disks, images,
+# metadata, labels) and roles/iap.tunnelResourceAccessor (the SSH tunnel).
+# Sessions run with no service account, so no serviceAccountUser grant is
+# needed. The CPU headroom display reads compute regions describe (covered
+# by instanceAdmin).
+`
+
 func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bool) error {
 	if printAdminOnly {
-		fmt.Print(adminDoc)
+		// The doc matches the configured cloud; without a config, AWS.
+		if cfg, err := config.Load(); err == nil && cfg.Driver == "gcp-gce" {
+			fmt.Print(gcpAdminDoc)
+		} else {
+			fmt.Print(adminDoc)
+		}
 		return nil
 	}
 	in := bufio.NewReader(os.Stdin)
@@ -64,13 +85,11 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 
 	// 1. detect
 	fmt.Println("\n " + ui.Title.Render("⚓ pier setup") +
-		ui.Dim.Render("  sessions run on your own AWS account; nothing leaves it"))
+		ui.Dim.Render("  sessions run on your own cloud account; nothing leaves it"))
 	fmt.Println()
 	for bin, hint := range map[string]string{
-		"aws":                    "brew install awscli",
-		"session-manager-plugin": "brew install --cask session-manager-plugin",
-		"ssh-keygen":             "install OpenSSH",
-		"git":                    "install git",
+		"ssh-keygen": "install OpenSSH",
+		"git":        "install git",
 	} {
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("%s not found — %s, then re-run `pier setup`", bin, hint)
@@ -82,24 +101,28 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		cfg = existing // re-running keeps previous answers as defaults
 	}
 
-	// 2. ask
-	if profiles, err := exec.Command("aws", "configure", "list-profiles").Output(); err == nil {
-		if p := strings.Fields(string(profiles)); len(p) > 0 {
-			fmt.Println(ui.Dim.Render("  aws profiles: " + strings.Join(p, ", ")))
+	// 2. ask — the cloud first, then that cloud's own few questions.
+	cloudDef := "aws"
+	if cfg.Driver == "gcp-gce" {
+		cloudDef = "gcp"
+	}
+	var groundwork string
+	switch strings.ToLower(ask(in, "cloud (aws / gcp)", cloudDef)) {
+	case "aws", "aws-ec2":
+		cfg.Driver = "aws-ec2"
+		if err := askAWS(in, &cfg); err != nil {
+			return err
 		}
+		groundwork = "IAM role + instance profile + egress-only security group"
+	case "gcp", "gcp-gce", "gce", "google":
+		cfg.Driver = "gcp-gce"
+		if err := askGCP(in, &cfg); err != nil {
+			return err
+		}
+		groundwork = "compute + IAP APIs, one IAP-only ssh firewall rule"
+	default:
+		return fmt.Errorf("unknown cloud — aws or gcp")
 	}
-	cfg.AWS.Profile = ask(in, "AWS profile", or(cfg.AWS.Profile, "default"))
-	arn, err := checkIdentity(in, cfg.AWS.Profile)
-	if err != nil {
-		return err
-	}
-	fmt.Println("  "+ui.Mark(true), "authenticated as", ui.Bold.Render(arn))
-	if cfg.AWS.Region == "" {
-		out, _ := exec.Command("aws", "configure", "get", "region", "--profile", cfg.AWS.Profile).Output()
-		cfg.AWS.Region = strings.TrimSpace(string(out))
-	}
-	cfg.AWS.Region = ask(in, "region", or(cfg.AWS.Region, "eu-central-1"))
-	cfg.AWS.InstanceType = ask(in, "instance type", cfg.AWS.InstanceType)
 	cfg.IdleTimeout = ask(in, "self-park after idling for (e.g. 30m, never)", cfg.IdleTimeout)
 
 	if len(cfg.Secrets.Manifest) == 0 {
@@ -134,7 +157,7 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		return err
 	}
 	fmt.Println("\n " + ui.Accent.Render("creating groundwork") +
-		ui.Dim.Render("  IAM role + instance profile + egress-only security group"))
+		ui.Dim.Render("  "+groundwork))
 	rep, err := drv.SetupOnce(ctx)
 	if err != nil && strings.Contains(err.Error(), "no default VPC") {
 		// Enterprise accounts routinely delete the default VPC. Without this
@@ -150,9 +173,15 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		}
 	}
 	if err != nil {
-		// Only blame IAM rights when it actually is a permissions error.
-		if low := strings.ToLower(err.Error()); strings.Contains(low, "accessdenied") || strings.Contains(low, "not authorized") {
-			return fmt.Errorf("%w\n\nno IAM rights? `pier setup --print-admin` prints the commands for your admin", err)
+		low := strings.ToLower(err.Error())
+		// Fresh GCP projects routinely have no billing account; enabling
+		// compute fails on it with a mouthful.
+		if strings.Contains(low, "billing") {
+			return fmt.Errorf("%w\n\nthe project has no billing account — link one (console.cloud.google.com/billing), then re-run `pier setup`", err)
+		}
+		// Only blame admin rights when it actually is a permissions error.
+		if strings.Contains(low, "accessdenied") || strings.Contains(low, "not authorized") || strings.Contains(low, "permission") {
+			return fmt.Errorf("%w\n\nno admin rights? `pier setup --print-admin` prints the commands for your admin", err)
 		}
 		return err
 	}
@@ -188,25 +217,19 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		// terminate the temporary instance — it has no supervisor, so a
 		// leaked one never parks itself.
 		bctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-		ami, err := drv.Bake(bctx, driver.BakeSpec{
+		img, err := drv.Bake(bctx, driver.BakeSpec{
 			RepoName: name, HookPath: driver.BakeHook(repo),
-			Replaces: []string{cfg.AWS.BakedAMIs[name], cfg.AWS.BakedAMI},
+			Replaces: cfg.BakedReplaces(name),
 		})
 		stop()
 		if err != nil {
 			return err
 		}
-		// Merge like `pier bake` does: replacing the whole map would strand
-		// other repos' images as unreferenced (but still billing) AMIs.
-		if cfg.AWS.BakedAMIs == nil {
-			cfg.AWS.BakedAMIs = map[string]string{}
-		}
-		cfg.AWS.BakedAMIs[name] = ami
-		cfg.AWS.BakedAMI = ""
+		cfg.RecordBake(name, img)
 		if err := cfg.Save(); err != nil {
 			return err
 		}
-		fmt.Println("  "+ui.Mark(true), "baked", ami, "for", name)
+		fmt.Println("  "+ui.Mark(true), "baked", img, "for", name)
 	} else {
 		fmt.Println(ui.Dim.Render("  (you can run `pier bake` in any repo, anytime)"))
 	}
@@ -214,6 +237,90 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	fmt.Println("\n " + ui.OK.Render("done") + " — try: " +
 		ui.Accent.Render("cd <some-repo> && pier my-branch"))
 	return nil
+}
+
+// askAWS: tool check, then profile (identity-checked immediately), region,
+// instance type. Everything detected becomes the prefilled default.
+func askAWS(in *bufio.Reader, cfg *config.Config) error {
+	for bin, hint := range map[string]string{
+		"aws":                    "brew install awscli",
+		"session-manager-plugin": "brew install --cask session-manager-plugin",
+	} {
+		if _, err := exec.LookPath(bin); err != nil {
+			return fmt.Errorf("%s not found — %s, then re-run `pier setup`", bin, hint)
+		}
+	}
+	if profiles, err := exec.Command("aws", "configure", "list-profiles").Output(); err == nil {
+		if p := strings.Fields(string(profiles)); len(p) > 0 {
+			fmt.Println(ui.Dim.Render("  aws profiles: " + strings.Join(p, ", ")))
+		}
+	}
+	cfg.AWS.Profile = ask(in, "AWS profile", or(cfg.AWS.Profile, "default"))
+	arn, err := checkIdentity(in, cfg.AWS.Profile)
+	if err != nil {
+		return err
+	}
+	fmt.Println("  "+ui.Mark(true), "authenticated as", ui.Bold.Render(arn))
+	if cfg.AWS.Region == "" {
+		out, _ := exec.Command("aws", "configure", "get", "region", "--profile", cfg.AWS.Profile).Output()
+		cfg.AWS.Region = strings.TrimSpace(string(out))
+	}
+	cfg.AWS.Region = ask(in, "region", or(cfg.AWS.Region, "eu-central-1"))
+	cfg.AWS.InstanceType = ask(in, "instance type", cfg.AWS.InstanceType)
+	return nil
+}
+
+// askGCP mirrors askAWS: fail fast on a dead login right after the tool
+// check, then project (access-checked immediately), zone, machine type.
+func askGCP(in *bufio.Reader, cfg *config.Config) error {
+	if _, err := exec.LookPath("gcloud"); err != nil {
+		return fmt.Errorf("gcloud not found — install the Google Cloud CLI (cloud.google.com/sdk/docs/install), then re-run `pier setup`")
+	}
+	acct, err := gcloudAccount()
+	if err != nil {
+		fmt.Println("  "+ui.Mark(false), "no active gcloud account")
+		if !yes(in, "run `gcloud auth login` now?", true) {
+			return fmt.Errorf("run `gcloud auth login`, then re-run `pier setup`")
+		}
+		login := exec.Command("gcloud", "auth", "login")
+		login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if login.Run() != nil || func() error { acct, err = gcloudAccount(); return err }() != nil {
+			return fmt.Errorf("login did not stick — run `gcloud auth login`, then re-run `pier setup`")
+		}
+	}
+	fmt.Println("  "+ui.Mark(true), "authenticated as", ui.Bold.Render(acct))
+
+	def := cfg.GCP.Project
+	if def == "" {
+		// The operator's active gcloud project is only ever a prompt default;
+		// pier itself always passes --project explicitly.
+		out, _ := exec.Command("gcloud", "config", "get-value", "project").Output()
+		if p := strings.TrimSpace(string(out)); p != "" && p != "(unset)" {
+			def = p
+		}
+	}
+	cfg.GCP.Project = ask(in, "GCP project", def)
+	if cfg.GCP.Project == "" {
+		return fmt.Errorf("pier needs a project — create one at console.cloud.google.com, then re-run `pier setup`")
+	}
+	if out, err := exec.Command("gcloud", "projects", "describe", cfg.GCP.Project,
+		"--format", "value(projectId)").CombinedOutput(); err != nil {
+		return fmt.Errorf("cannot access project %q: %s", cfg.GCP.Project, strings.TrimSpace(string(out)))
+	}
+	cfg.GCP.Zone = ask(in, "zone", cfg.GCP.Zone)
+	cfg.GCP.MachineType = ask(in, "machine type", cfg.GCP.MachineType)
+	return nil
+}
+
+// gcloudAccount is the active gcloud login, erroring when there is none.
+func gcloudAccount() (string, error) {
+	out, err := exec.Command("gcloud", "auth", "list",
+		"--filter=status:ACTIVE", "--format=value(account)").Output()
+	acct, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if err != nil || acct == "" {
+		return "", fmt.Errorf("no active gcloud account")
+	}
+	return acct, nil
 }
 
 // checkIdentity fails fast on dead credentials — right after the profile
