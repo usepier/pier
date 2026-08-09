@@ -96,7 +96,9 @@ detach it).
 One path or glob per line, relative to the repo root. `*`, `?`, `[]` match
 within a path segment — **no `**`**. A directory line carries its whole
 subtree. `#` starts a comment. Listed files travel exactly as they sit on
-disk and win over the checkout. Example:
+disk and win over the checkout. A file symlink matched directly by a line or
+glob is dereferenced into a regular file at the same repository path;
+directory symlinks are not followed. Example:
 
 ```
 # env files docker compose and the apps read

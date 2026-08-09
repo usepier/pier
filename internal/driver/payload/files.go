@@ -125,9 +125,12 @@ func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage 
 // ships without a line here (tracked content arrives via the fetch, dirty
 // edits to it via the patch). One path or glob per line (relative to the
 // root; * ? [] per segment, no **), # comments, a directory line carries its
-// whole subtree. A listed path travels as it sits on disk — no git-status
-// distinction — and the tar extracts after checkout + patch, so listed
-// content wins. No file, or an empty one, means nothing extra travels.
+// whole subtree. A file symlink directly matched by a line or glob is
+// dereferenced and carried as a regular file at the symlink's repo-relative
+// path; directory symlinks and nested symlinks discovered while walking a
+// directory are not followed. A listed path travels with no git-status
+// distinction, and the tar extracts after checkout + patch, so listed content
+// wins. No file, or an empty one, means nothing extra travels.
 func pierIncludeFiles(repoRoot string) []string {
 	b, err := os.ReadFile(filepath.Join(repoRoot, ".pier-include"))
 	if err != nil {
@@ -140,9 +143,12 @@ func pierIncludeFiles(repoRoot string) []string {
 			continue
 		}
 		// WalkDir on a glob match handles files and directories uniformly
-		// (a file path walks as just itself); .git and non-regular skipped.
+		// (a file path walks as just itself). Only a symlink that is itself a
+		// match is eligible: directory walks must not escape through links in
+		// their subtrees.
 		matches, _ := filepath.Glob(filepath.Join(repoRoot, line))
 		for _, m := range matches {
+			match := filepath.Clean(m)
 			_ = filepath.WalkDir(m, func(path string, e fs.DirEntry, err error) error {
 				if err != nil {
 					return nil
@@ -153,7 +159,12 @@ func pierIncludeFiles(repoRoot string) []string {
 					}
 					return nil
 				}
-				if !e.Type().IsRegular() {
+				if e.Type()&fs.ModeSymlink != 0 {
+					target, statErr := os.Stat(path)
+					if filepath.Clean(path) != match || statErr != nil || !target.Mode().IsRegular() {
+						return nil
+					}
+				} else if !e.Type().IsRegular() {
 					return nil
 				}
 				if rel, err := filepath.Rel(repoRoot, path); err == nil && filepath.IsLocal(rel) {
