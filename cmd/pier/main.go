@@ -950,6 +950,15 @@ func cmdTUI() {
 		Machines: func(s driver.Session) []driver.Machine {
 			return drv.Machines(s.InstanceType)
 		},
+		// The settings machine picker serves whichever field is selected, so it
+		// reads the catalog by driver id — not the active driver's — since a
+		// user on AWS may still edit the gcp machine default.
+		SettingsMachines: func(driverID, currentType string) []driver.Machine {
+			if driverID == "gcp-gce" {
+				return gcpgce.Machines(currentType)
+			}
+			return awsec2.Machines(currentType)
+		},
 		CreateDetached: spawnCreate,
 		FetchLog: func(s driver.Session) (string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

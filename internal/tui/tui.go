@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +37,10 @@ type Options struct {
 	// session so nobody memorizes type names. nil hides the key.
 	Resize   func(s driver.Session, instanceType string) error
 	Machines func(s driver.Session) []driver.Machine
+	// SettingsMachines is the machine catalog for the settings machine picker,
+	// given a driver id ("aws-ec2"/"gcp-gce") and the currently configured
+	// type. nil falls the machine fields back to free-text editing.
+	SettingsMachines func(driverID, currentType string) []driver.Machine
 	// FetchLog returns a session's setup log for the l key's in-place viewer.
 	// nil hides the key.
 	FetchLog func(s driver.Session) (string, error)
@@ -87,9 +92,13 @@ type model struct {
 	attachRetried bool           // one bounded reconnect per attach, like the CLI
 	// settings page state; cfg loads fresh each time s opens the page
 	cfg      *config.Config
-	setIdx   int
-	editing  bool
+	setIdx   int  // index into config.Settings (the selected field)
+	editing  bool // free-text editor open for the selected field
 	setInput string
+	// settings picker sub-state: a choice/machine field's dropdown
+	picking  bool
+	pickOpts []config.Option // options shown (machine catalog converted in)
+	pickIdx  int
 	// resize picker state; machines reload each time m opens the picker
 	machines []driver.Machine
 	machIdx  int
@@ -437,7 +446,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status, m.statusBad = err.Error(), true
 			return m, nil
 		}
-		m.cfg, m.setIdx, m.editing = &cfg, 0, false
+		m.cfg, m.setIdx, m.editing, m.picking = &cfg, 0, false, false
 		m.mode = modeSettings
 	case "r":
 		m.loading = true
@@ -463,32 +472,10 @@ func (m model) startAttach(s driver.Session) (tea.Model, tea.Cmd) {
 
 func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.editing {
-		switch msg.String() {
-		case "esc", "ctrl+c":
-			m.editing = false
-			m.status = ""
-		case "enter":
-			key := config.Settings[m.setIdx].Key
-			if err := config.Set(m.cfg, key, m.setInput); err != nil {
-				m.status, m.statusBad = err.Error(), true
-				return m, nil // stay editing so the value can be fixed
-			}
-			if err := m.cfg.Save(); err != nil {
-				m.status, m.statusBad = err.Error(), true
-				return m, nil
-			}
-			m.editing = false
-			m.status, m.statusBad = key+" saved — applies to new sessions", false
-		case "backspace":
-			if len(m.setInput) > 0 {
-				m.setInput = m.setInput[:len(m.setInput)-1]
-			}
-		default:
-			if msg.Type == tea.KeyRunes && !strings.ContainsRune(string(msg.Runes), ' ') {
-				m.setInput += string(msg.Runes)
-			}
-		}
-		return m, nil
+		return m.updateSettingEdit(msg)
+	}
+	if m.picking {
+		return m.updateSettingPick(msg)
 	}
 	m.status = ""
 	switch msg.String() {
@@ -503,10 +490,122 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setIdx++
 		}
 	case "enter":
-		m.editing = true
-		m.setInput = config.Get(*m.cfg, config.Settings[m.setIdx].Key)
+		return m.openSetting()
 	}
 	return m, nil
+}
+
+// openSetting opens the selected field for editing: a picker for choice and
+// machine fields, the free-text editor for the rest. A machine field with no
+// catalog wired (tests) falls back to the editor.
+func (m model) openSetting() (tea.Model, tea.Cmd) {
+	f := config.Settings[m.setIdx]
+	cur := config.Get(*m.cfg, f.Key)
+	switch f.Kind {
+	case config.KindChoice:
+		m.picking, m.pickOpts, m.pickIdx = true, f.Options, optIndex(f.Options, cur)
+	case config.KindMachine:
+		var cat []driver.Machine
+		if m.opts.SettingsMachines != nil {
+			cat = m.opts.SettingsMachines(driverID(f.Group), cur)
+		}
+		if len(cat) == 0 {
+			m.editing, m.setInput = true, cur
+			return m, nil
+		}
+		m.pickOpts = make([]config.Option, len(cat))
+		for i, mc := range cat {
+			m.pickOpts[i] = config.Option{Value: mc.Type, Desc: fmt.Sprintf("%2s vCPU · %3s GiB · %s", mc.CPU, mc.Mem, mc.Cost)}
+		}
+		m.picking, m.pickIdx = true, optIndex(m.pickOpts, cur)
+	default:
+		m.editing, m.setInput = true, cur
+	}
+	return m, nil
+}
+
+func (m model) updateSettingEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.editing, m.status = false, ""
+	case "enter":
+		return m.saveSetting(m.setInput)
+	case "backspace":
+		if len(m.setInput) > 0 {
+			m.setInput = m.setInput[:len(m.setInput)-1]
+		}
+	default:
+		if msg.Type == tea.KeyRunes && !strings.ContainsRune(string(msg.Runes), ' ') {
+			m.setInput += string(msg.Runes)
+		}
+	}
+	return m, nil
+}
+
+func (m model) updateSettingPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	f := config.Settings[m.setIdx]
+	last := len(m.pickOpts) // the "custom…" row sits one past the real options
+	if f.NoCustom {
+		last = len(m.pickOpts) - 1
+	}
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		m.picking, m.status = false, ""
+	case "up", "k":
+		if m.pickIdx > 0 {
+			m.pickIdx--
+		}
+	case "down", "j":
+		if m.pickIdx < last {
+			m.pickIdx++
+		}
+	case "enter":
+		if !f.NoCustom && m.pickIdx == len(m.pickOpts) { // custom… → free text
+			m.picking = false
+			m.editing, m.setInput = true, config.Get(*m.cfg, f.Key)
+			return m, nil
+		}
+		return m.saveSetting(m.pickOpts[m.pickIdx].Value)
+	}
+	return m, nil
+}
+
+// saveSetting validates val through config.Set (the single write path) and
+// persists it. A rejected value keeps the editor/picker open so it can be
+// fixed; the config on disk is never touched by a bad value.
+func (m model) saveSetting(val string) (tea.Model, tea.Cmd) {
+	f := config.Settings[m.setIdx]
+	if err := config.Set(m.cfg, f.Key, val); err != nil {
+		m.status, m.statusBad = err.Error(), true
+		return m, nil
+	}
+	if err := m.cfg.Save(); err != nil {
+		m.status, m.statusBad = err.Error(), true
+		return m, nil
+	}
+	m.editing, m.picking = false, false
+	m.status, m.statusBad = f.Label+" saved — applies to new sessions", false
+	return m, nil
+}
+
+// optIndex is the position of val in opts, or 0 (a custom value not in the
+// list simply lands the cursor on the first option).
+func optIndex(opts []config.Option, val string) int {
+	for i, o := range opts {
+		if o.Value == val {
+			return i
+		}
+	}
+	return 0
+}
+
+// driverID maps a settings group to the driver id whose machine catalog and
+// conventions it follows.
+func driverID(group string) string {
+	if group == "gcp" {
+		return "gcp-gce"
+	}
+	return "aws-ec2"
 }
 
 func (m model) updateResize(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -669,52 +768,284 @@ func (m model) View() string {
 	return b.String()
 }
 
-// settingsView is the s page: every settable config key with inline editing.
+// settingsView is the s page: fields grouped session → aws → gcp, the
+// inactive cloud dimmed but still editable, a detail footer for the selected
+// field, and a read-only section for what pier setup and pier bake manage.
 // Values save straight to config.toml and apply to new sessions.
 func (m model) settingsView() string {
-	var b strings.Builder
-	b.WriteString("\n " + ui.Title.Render("⚓ pier settings") + ui.Dim.Render("  "+config.Path()) + "\n\n")
-
-	keyW, valW := 3, 7
-	vals := make([]string, len(config.Settings))
-	for i, s := range config.Settings {
-		vals[i] = config.Get(*m.cfg, s.Key)
-		keyW = max(keyW, len(s.Key))
-		valW = max(valW, len(vals[i]))
+	if m.picking {
+		return m.pickerView()
 	}
-	for i, s := range config.Settings {
-		marker := "   "
-		key := fmt.Sprintf("%-*s", keyW, s.Key)
+	fields := config.Settings
+
+	labelW, valW := 0, len("(default VPC)")
+	disp := make([]string, len(fields))
+	for i, f := range fields {
+		disp[i] = f.Display(config.Get(*m.cfg, f.Key))
+		labelW = max(labelW, len(f.Label))
+		valW = max(valW, len(disp[i]))
+	}
+
+	header := []string{
+		"",
+		" " + ui.Title.Render("⚓ pier settings") +
+			ui.Dim.Render("  "+ui.Tilde(config.Path())+" · changes apply to new sessions"),
+		"",
+	}
+
+	var body []string
+	cursorLine, lastGroup := 0, ""
+	for i, f := range fields {
+		if f.Group != lastGroup {
+			if lastGroup != "" {
+				body = append(body, "")
+			}
+			body = append(body, m.groupHeader(f.Group))
+			lastGroup = f.Group
+		}
 		if i == m.setIdx {
-			marker = " " + ui.Accent.Render("▸") + " "
-			key = ui.Bold.Render(key)
+			cursorLine = len(body)
 		}
-		var val string
-		switch {
-		case i == m.setIdx && m.editing:
-			val = m.setInput + ui.Accent.Render("▌")
-		case vals[i] == "":
-			val = ui.Dim.Render(fmt.Sprintf("%-*s", valW, "(unset)"))
-		default:
-			val = fmt.Sprintf("%-*s", valW, vals[i])
-		}
-		fmt.Fprintf(&b, "%s%s  %s  %s\n", marker, key, val, ui.Dim.Render(s.Hint))
+		body = append(body, m.settingRow(i, f, disp[i], labelW, valW))
 	}
-	b.WriteString("\n " + ui.Dim.Render("secrets and baked images are managed by pier setup and pier bake") + "\n\n")
+	body = append(body, "")
+	body = append(body, m.readonlyLines()...)
 
+	var footer []string
+	footer = append(footer, m.detailFooter(fields[m.setIdx])...)
 	if m.status != "" {
 		if m.statusBad {
-			b.WriteString(" " + ui.Bad.Render("! "+m.status) + "\n")
+			footer = append(footer, " "+ui.Bad.Render("! "+m.status))
 		} else {
-			b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
+			footer = append(footer, " "+ui.Accent.Render("▸ "+m.status))
 		}
 	}
 	if m.editing {
-		b.WriteString(" " + ui.Keys("enter", "save", "esc", "cancel") + "\n")
+		footer = append(footer, " "+ui.Keys("enter", "save", "esc", "cancel"))
 	} else {
-		b.WriteString(" " + ui.Keys("enter", "edit", "esc", "back") + "\n")
+		verb := "edit"
+		if k := fields[m.setIdx].Kind; k == config.KindChoice || k == config.KindMachine {
+			verb = "choose"
+		}
+		footer = append(footer, " "+ui.Keys("↑↓", "move", "enter", verb, "esc", "back"))
 	}
+
+	body = m.windowBody(body, cursorLine, len(header)+len(footer))
+	return strings.Join(header, "\n") + "\n" +
+		strings.Join(body, "\n") + "\n" +
+		strings.Join(footer, "\n") + "\n"
+}
+
+// groupHeader labels a group; a cloud group that isn't the active driver reads
+// dim with a "used when…" note, matching its dimmed rows.
+func (m model) groupHeader(group string) string {
+	if group == "session" {
+		return " " + ui.Bold.Render("session")
+	}
+	if m.inactiveGroup(group) {
+		return " " + ui.Dim.Render(group+" — used when cloud is "+cloudName(group))
+	}
+	return " " + ui.Bold.Render(group)
+}
+
+// settingRow renders one field: accent cursor + bold when selected, the whole
+// line dimmed for the inactive cloud, the machine fields annotated with the
+// current type's specs. Padded as plain text before styling so the %-*s width
+// math survives (ANSI escapes would blow the column alignment).
+func (m model) settingRow(i int, f config.Field, disp string, labelW, valW int) string {
+	label := fmt.Sprintf("%-*s", labelW, f.Label)
+	hint := f.Hint
+	if f.Kind == config.KindMachine {
+		if h := m.machineHint(f); h != "" {
+			hint = h
+		}
+	}
+	if i == m.setIdx {
+		val := fmt.Sprintf("%-*s", valW, disp)
+		if m.editing {
+			val = m.setInput + ui.Accent.Render("▌")
+		}
+		return " " + ui.Accent.Render("▸") + " " + ui.Bold.Render(label) + "  " + val + "  " + ui.Dim.Render(hint)
+	}
+	val := fmt.Sprintf("%-*s", valW, disp)
+	if m.inactiveGroup(f.Group) {
+		return "   " + ui.Dim.Render(label+"  "+val+"  "+hint)
+	}
+	return "   " + label + "  " + val + "  " + ui.Dim.Render(hint)
+}
+
+// readonlyLines is the "managed elsewhere" section: what travels into sessions
+// and what's baked, shown so the answer to "what's carried?" doesn't require
+// opening config.toml. Strictly read-only — the write paths stay pier setup
+// and pier bake. The cursor never enters it.
+func (m model) readonlyLines() []string {
+	c := m.cfg
+
+	secrets := ui.Dim.Render("(none)")
+	if n := len(c.Secrets.Manifest); n > 0 {
+		show, more := c.Secrets.Manifest, ""
+		if n > 3 {
+			show, more = show[:3], fmt.Sprintf(" +%d more", n-3)
+		}
+		secrets = strings.Join(show, " · ") + more
+	}
+	token := "not set"
+	if c.Secrets.ClaudeOAuthToken != "" {
+		token = "set"
+	}
+	imgs := c.AWS.BakedAMIs
+	if c.Driver == "gcp-gce" {
+		imgs = c.GCP.BakedImages
+	}
+	baked := ui.Dim.Render("(none)")
+	if len(imgs) > 0 {
+		pairs := make([]string, 0, len(imgs))
+		for repo, img := range imgs {
+			pairs = append(pairs, repo+" → "+shorten(img, 22))
+		}
+		sort.Strings(pairs)
+		more := ""
+		if len(pairs) > 2 {
+			pairs, more = pairs[:2], fmt.Sprintf(" +%d more", len(pairs)-2)
+		}
+		baked = strings.Join(pairs, " · ") + more
+	}
+
+	// Pad by rune count, not bytes: "secrets → sessions" carries a multi-byte
+	// arrow, and %-*s would misalign the value column against the ASCII rows.
+	labelW := len([]rune("secrets → sessions"))
+	row := func(label, val, mgr string) string {
+		if pad := labelW - len([]rune(label)); pad > 0 {
+			label += strings.Repeat(" ", pad)
+		}
+		return "   " + ui.Dim.Render(label+"  ") + val + ui.Dim.Render("  ("+mgr+")")
+	}
+	return []string{
+		" " + ui.Dim.Render("managed elsewhere"),
+		row("secrets → sessions", secrets, "pier setup"),
+		row("claude token", token, "claude setup-token"),
+		row("baked images", baked, "pier bake"),
+	}
+}
+
+// detailFooter is the explanation panel for the selected field: a rule, the
+// label + prose, the underlying config key and default, another rule.
+func (m model) detailFooter(f config.Field) []string {
+	rule := ui.Dim.Render(strings.Repeat("─", m.ruleWidth()))
+	out := []string{rule}
+	lines := strings.Split(f.Detail, "\n")
+	out = append(out, " "+ui.Bold.Render(f.Label)+ui.Dim.Render(" — "+lines[0]))
+	for _, l := range lines[1:] {
+		out = append(out, " "+ui.Dim.Render(l))
+	}
+	meta := "config: " + f.Key
+	if f.Default != "" {
+		meta += " · default: " + f.Default
+	}
+	return append(out, " "+ui.Dim.Render(meta), rule)
+}
+
+// pickerView is the dropdown for a choice or machine field: the options with
+// their annotations, the current value marked, and (unless the field is a
+// closed enum) a custom… row that drops into the free-text editor.
+func (m model) pickerView() string {
+	f := config.Settings[m.setIdx]
+	var b strings.Builder
+	b.WriteString("\n " + ui.Title.Render("⚓ pier settings") + ui.Dim.Render("  "+f.Label) + "\n\n")
+	b.WriteString(" " + ui.Dim.Render(f.Label+" — "+strings.SplitN(f.Detail, "\n", 2)[0]) + "\n\n")
+
+	cur := config.Get(*m.cfg, f.Key)
+	leftW := 6
+	labels := make([]string, len(m.pickOpts))
+	for i, o := range m.pickOpts {
+		labels[i] = o.Label
+		if labels[i] == "" {
+			labels[i] = o.Value
+		}
+		leftW = max(leftW, len(labels[i]))
+	}
+	for i, o := range m.pickOpts {
+		row := fmt.Sprintf("%-*s", leftW, labels[i])
+		if o.Desc != "" {
+			row += "  " + o.Desc
+		}
+		if o.Value == cur {
+			row += "  (current)"
+		}
+		b.WriteString(m.pickRow(i, row))
+	}
+	if !f.NoCustom {
+		b.WriteString(m.pickRow(len(m.pickOpts), fmt.Sprintf("%-*s  ", leftW, "custom…")+"type your own"))
+	}
+	b.WriteString("\n " + ui.Keys("↑↓", "move", "enter", "select", "esc", "cancel") + "\n")
 	return b.String()
+}
+
+func (m model) pickRow(i int, row string) string {
+	if i == m.pickIdx {
+		return " " + ui.Accent.Render("▸") + " " + ui.Bold.Render(row) + "\n"
+	}
+	return "   " + row + "\n"
+}
+
+// windowBody trims the settings body to what the terminal can hold, centered
+// on the selected row — same idea as the session table, so the header and
+// footer never scroll off the alternate screen. height 0 (tests) renders all.
+func (m model) windowBody(body []string, cursorLine, chrome int) []string {
+	if m.height == 0 {
+		return body
+	}
+	budget := max(3, m.height-chrome-1)
+	if len(body) <= budget {
+		return body
+	}
+	lo := min(max(0, cursorLine-budget/2), len(body)-budget)
+	return body[lo : lo+budget]
+}
+
+func (m model) inactiveGroup(group string) bool {
+	if group != "aws" && group != "gcp" {
+		return false
+	}
+	active := m.cfg.Driver
+	if active == "" {
+		active = "aws-ec2"
+	}
+	return driverID(group) != active
+}
+
+func (m model) machineHint(f config.Field) string {
+	if m.opts.SettingsMachines == nil {
+		return ""
+	}
+	cur := config.Get(*m.cfg, f.Key)
+	for _, mc := range m.opts.SettingsMachines(driverID(f.Group), cur) {
+		if mc.Type == cur {
+			return fmt.Sprintf("%s vCPU · %s GiB · %s", mc.CPU, mc.Mem, mc.Cost)
+		}
+	}
+	return ""
+}
+
+func (m model) ruleWidth() int {
+	if m.width <= 0 {
+		return 58
+	}
+	return min(58, max(20, m.width-2))
+}
+
+func cloudName(group string) string {
+	if group == "gcp" {
+		return "GCP"
+	}
+	return "AWS"
+}
+
+func shorten(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 
 // listRows is the table's row budget: terminal height minus every non-row
