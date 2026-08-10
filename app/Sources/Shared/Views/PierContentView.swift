@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct PierContentView: View {
     @Environment(PierAppModel.self) private var model
@@ -14,6 +17,7 @@ struct PierContentView: View {
                     InstanceListView(selection: $model.selectedInstanceID)
                 }
                 .frame(minWidth: 240, idealWidth: 300, maxWidth: 380)
+                .background(MacSidebarVisualEffect())
 
                 Group {
                     if let instance = model.selectedInstance {
@@ -98,10 +102,26 @@ private struct MacSidebarTitlebar: View {
         .padding(.leading, 10)
         .padding(.trailing, 8)
         .frame(height: 43)
-        .background(.bar)
         .sheet(isPresented: $showsNewProject) {
             NewProjectView()
         }
+    }
+}
+
+private struct MacSidebarVisualEffect: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.isEmphasized = false
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = .sidebar
+        nsView.blendingMode = .behindWindow
+        nsView.state = .active
     }
 }
 #endif
@@ -118,6 +138,8 @@ private struct InstanceListView: View {
     @Binding var selection: PierInstance.ID?
     @State private var instancePendingRemoval: PierInstance?
     @State private var projectForNewSession: PierProject?
+    @State private var showsSignOutConfirmation = false
+    @State private var showsSettings = false
 
     private var projectGroups: [SidebarProjectGroup] {
         var projectsByID = Dictionary(uniqueKeysWithValues: model.projects.map { ($0.id, $0) })
@@ -131,7 +153,8 @@ private struct InstanceListView: View {
                     projectsByID[localID] = PierProject(
                         id: localID,
                         name: instance.projectName,
-                        path: instance.displayLocalPath
+                        path: instance.displayLocalPath,
+                        host: "AWS"
                     )
                 }
             } else if let registered = model.projects.first(where: { $0.name == instance.projectName }) {
@@ -141,7 +164,8 @@ private struct InstanceListView: View {
                 projectsByID[projectID] = PierProject(
                     id: projectID,
                     name: instance.projectName,
-                    path: instance.displayLocalPath
+                    path: instance.displayLocalPath,
+                    host: "AWS"
                 )
             }
             instancesByProject[projectID, default: []].append(instance)
@@ -162,11 +186,19 @@ private struct InstanceListView: View {
     var body: some View {
         List(selection: $selection) {
             if projectGroups.isEmpty && !model.isLoading && !model.isLoadingProjects {
+                #if os(macOS)
                 ContentUnavailableView(
                     "No Pier projects",
                     systemImage: "folder.badge.plus",
                     description: Text("Add a Git repository with the + button to get started.")
                 )
+                #else
+                ContentUnavailableView(
+                    "No Pier projects",
+                    systemImage: "folder",
+                    description: Text("Create a session from Pier on your Mac to make its project available here.")
+                )
+                #endif
             } else {
                 ForEach(projectGroups) { group in
                     Section {
@@ -244,6 +276,12 @@ private struct InstanceListView: View {
                 }
             }
         }
+        #if os(macOS)
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+        #else
+        .pierScrollSurface()
+        #endif
         #if !os(macOS)
         .navigationTitle("Instances")
         .refreshable {
@@ -260,16 +298,37 @@ private struct InstanceListView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
-                    Task { await model.refreshInstances() }
+                    showsSettings = true
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("Settings", systemImage: "gearshape")
                 }
-                Button {
-                    // Instance creation is added once repository sources are shared by the Go core.
+
+                Menu {
+                    Button(role: .destructive) {
+                        showsSignOutConfirmation = true
+                    } label: {
+                        Label("Sign Out of AWS", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
                 } label: {
-                    Label("New instance", systemImage: "plus")
+                    Label("AWS Account", systemImage: "person.crop.circle")
                 }
-                .disabled(true)
+            }
+        }
+        .confirmationDialog(
+            "Sign out of AWS?",
+            isPresented: $showsSignOutConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Sign Out", role: .destructive) {
+                Task { await model.signOutMobile() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Pier will remove its AWS session from this device. You can sign in again and choose another account or permission set.")
+        }
+        .sheet(isPresented: $showsSettings) {
+            NavigationStack {
+                PierSettingsView(showsDoneButton: true)
             }
         }
         #endif
@@ -281,10 +340,10 @@ private struct InstanceListView: View {
                 await model.loadProjects()
             }
         }
-        #if os(macOS)
         .sheet(item: $projectForNewSession) { project in
             NewInstanceView(project: project)
         }
+        #if os(macOS)
         .confirmationDialog(
             "Remove \(instancePendingRemoval?.displayBranch ?? "instance")?",
             isPresented: Binding(
@@ -320,17 +379,27 @@ private struct ProjectSectionHeader: View {
     let project: PierProject
     let createSession: () -> Void
 
-    private var hasLocalRepository: Bool {
+    private var canCreateSession: Bool {
+        #if os(macOS)
         project.id.hasPrefix("/")
+        #else
+        project.host == "AWS"
+        #endif
     }
 
     var body: some View {
         HStack(spacing: 5) {
+            if let repository = project.repository, !repository.isEmpty {
+                Text(repository)
+                    .fontWeight(.semibold)
+                Text("·")
+                    .foregroundStyle(.tertiary)
+            }
             Text(project.name)
                 .fontWeight(.semibold)
             Text("·")
                 .foregroundStyle(.tertiary)
-            Text(project.path)
+            Text(project.host ?? "AWS")
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -343,8 +412,8 @@ private struct ProjectSectionHeader: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(hasLocalRepository ? "New session for \(project.name)" : "Local repository unavailable")
-            .disabled(!hasLocalRepository)
+            .help(canCreateSession ? "New session for \(project.name)" : "Session creation unavailable")
+            .disabled(!canCreateSession)
         }
         .textCase(nil)
     }

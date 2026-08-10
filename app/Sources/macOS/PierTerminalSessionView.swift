@@ -4,6 +4,7 @@ import GhosttyKit
 import SwiftUI
 
 struct PierTerminalSessionView: NSViewRepresentable {
+    @AppStorage(PierTerminalFontSize.storageKey) private var fontSize = PierTerminalFontSize.defaultValue
     let instanceID: String
     let tabID: String
     let onTitleChange: (String) -> Void
@@ -25,12 +26,13 @@ struct PierTerminalSessionView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.black.cgColor
+        applyTerminalBackground(to: container)
 
         do {
             let terminal = try PierGhosttyMacSurfaceView(
                 instanceID: instanceID,
                 tabID: tabID,
+                fontSize: fontSize,
                 onTitleChange: { [weak coordinator = context.coordinator] title in
                     coordinator?.onTitleChange(title)
                 }
@@ -62,6 +64,8 @@ struct PierTerminalSessionView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.onTitleChange = onTitleChange
+        context.coordinator.terminal?.setFontSize(fontSize)
+        applyTerminalBackground(to: nsView)
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -80,10 +84,13 @@ final class PierGhosttyMacSurfaceView: NSView {
     init(
         instanceID: String,
         tabID: String,
+        fontSize: Double,
         onTitleChange: @escaping @MainActor (String) -> Void
     ) throws {
         surfaceContext = PierGhosttySurfaceContext(onTitleChange: onTitleChange)
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        wantsLayer = true
+        applyTerminalBackground(to: self)
 
         guard let app = PierGhosttyRuntime.shared.app else {
             throw PierGhosttyViewError.initialization(
@@ -106,7 +113,7 @@ final class PierGhosttyMacSurfaceView: NSView {
         ))
         config.userdata = surfaceContext.opaquePointer
         config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
-        config.font_size = 13
+        config.font_size = Float(PierTerminalFontSize.normalized(fontSize))
         config.wait_after_command = true
 
         let environment = PierProcessEnvironment.terminal().compactMap(PierGhosttyEnvironmentValue.init)
@@ -142,6 +149,11 @@ final class PierGhosttyMacSurfaceView: NSView {
         ghostty_surface_free(surface)
     }
 
+    func setFontSize(_ points: Double) {
+        guard let surface else { return }
+        pierGhosttySetFontSize(surface: surface, points: points)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateSurfaceGeometry()
@@ -161,6 +173,11 @@ final class PierGhosttyMacSurfaceView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         updateSurfaceGeometry()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTerminalBackground(to: self)
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -328,5 +345,12 @@ private enum PierGhosttyViewError: LocalizedError {
 
 private func pierShellQuote(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
+
+@MainActor
+private func applyTerminalBackground(to view: NSView) {
+    view.effectiveAppearance.performAsCurrentDrawingAppearance {
+        view.layer?.backgroundColor = PierTheme.nativeTerminalBackground.cgColor
+    }
 }
 #endif

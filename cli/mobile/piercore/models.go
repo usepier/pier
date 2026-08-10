@@ -86,6 +86,7 @@ type instance struct {
 	CostNote     string `json:"costNote"`
 	LocalPath    string `json:"localPath,omitempty"`
 	ProjectID    string `json:"projectID,omitempty"`
+	Repository   string `json:"repository,omitempty"`
 }
 
 type remoteInstance struct {
@@ -96,9 +97,11 @@ type remoteInstance struct {
 }
 
 type project struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Repository string `json:"repository,omitempty"`
+	Host       string `json:"host"`
 }
 
 type branchOptions struct {
@@ -152,10 +155,19 @@ func projectsFromInstances(instances []instance) []project {
 		name := projectName(item.Repo)
 		id := "aws:" + name
 		if seen[id] {
+			if item.Repository != "" {
+				for index := range projects {
+					if projects[index].ID == id && projects[index].Repository == "" {
+						projects[index].Repository = item.Repository
+					}
+				}
+			}
 			continue
 		}
 		seen[id] = true
-		projects = append(projects, project{ID: id, Name: name, Path: "AWS · " + name})
+		projects = append(projects, project{
+			ID: id, Name: name, Path: "AWS", Repository: item.Repository, Host: "AWS",
+		})
 	}
 	sort.Slice(projects, func(i, j int) bool {
 		return strings.ToLower(projects[i].Name) < strings.ToLower(projects[j].Name)

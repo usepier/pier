@@ -318,6 +318,40 @@ final class PierModelsTests: XCTestCase {
         XCTAssertFalse(model.isLoading)
         XCTAssertFalse(model.isInspectingInstance(first.id))
     }
+
+    @MainActor
+    func testMobileSignOutClearsVisibleSessionState() async {
+        let instance = PierInstance(
+            id: "i-signed-out",
+            name: "wrong-role-session",
+            repo: "pier",
+            branch: "main",
+            user: "developer",
+            driver: "aws-ec2",
+            state: .running,
+            strained: false,
+            setup: "",
+            instanceType: "t4g.medium",
+            createdAt: "2026-08-10T10:00:00Z",
+            costNote: "$0.034/h",
+            localPath: "~/Documents/pier",
+            projectID: "/tmp/pier"
+        )
+        let service = SynchronizationService(instance: instance)
+        let model = PierAppModel(service: service)
+        model.setupStatus = try! await service.setupStatus()
+        model.instances = [instance]
+        model.projects = [PierProject(id: "/tmp/pier", name: "pier", path: "~/Documents/pier")]
+        model.selectedInstanceID = instance.id
+
+        let signedOut = await model.signOutMobile()
+        XCTAssertTrue(signedOut)
+        XCTAssertFalse(model.setupStatus?.configured ?? true)
+        XCTAssertTrue(model.instances.isEmpty)
+        XCTAssertTrue(model.projects.isEmpty)
+        XCTAssertNil(model.selectedInstanceID)
+        XCTAssertTrue(model.showsOnboarding)
+    }
 }
 
 private actor SynchronizationService: PierServicing {
@@ -325,6 +359,7 @@ private actor SynchronizationService: PierServicing {
     private var tabs: [PierTab] = []
     private var unparkContinuation: CheckedContinuation<Void, any Error>?
     private var requestedUnparkIDs: [String] = []
+    private var signedOut = false
 
     init(instance: PierInstance) {
         instances = [instance]
@@ -336,7 +371,7 @@ private actor SynchronizationService: PierServicing {
     }
 
     func setupStatus() async throws -> PierSetupStatus {
-        PierSetupStatus(configured: true, configPath: "", cliVersion: "test", profiles: [], dependencies: [])
+        PierSetupStatus(configured: !signedOut, configPath: "", cliVersion: "test", profiles: [], dependencies: [])
     }
 
     func listInstances() async throws -> [PierInstance] { instances }
@@ -382,6 +417,7 @@ private actor SynchronizationService: PierServicing {
     }
     func closeTab(instanceID: String, tabID: String) async throws {}
     func signInAWS() async throws {}
+    func signOutMobile() async throws { signedOut = true }
 }
 
 private actor ControlledCreationService: PierServicing {

@@ -3,6 +3,16 @@ import SwiftUI
 struct PierRootView: View {
     @Environment(PierAppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var systemColorScheme
+    @AppStorage(PierAppearance.storageKey) private var appearanceValue = PierAppearance.system.rawValue
+
+    private var appearance: PierAppearance {
+        PierAppearance(rawValue: appearanceValue) ?? .system
+    }
+
+    private var terminalTheme: PierTerminalTheme {
+        appearance.terminalTheme(systemColorScheme: systemColorScheme)
+    }
 
     var body: some View {
         Group {
@@ -17,6 +27,12 @@ struct PierRootView: View {
         #if os(macOS)
         .ignoresSafeArea(.container, edges: .top)
         #endif
+        .background(PierTheme.canvas.ignoresSafeArea())
+        .tint(PierTheme.accent)
+        .preferredColorScheme(appearance.preferredColorScheme)
+        .task(id: terminalTheme) {
+            PierGhosttyRuntime.shared.apply(theme: terminalTheme)
+        }
         .task {
             await model.start()
         }

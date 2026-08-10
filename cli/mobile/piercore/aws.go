@@ -262,6 +262,7 @@ func loadRemoteInstances(ctx context.Context, session sessionState) ([]remoteIns
 					Driver: "aws-ec2", State: state, Setup: "",
 					InstanceType: string(value.InstanceType), CreatedAt: formatTime(value.LaunchTime),
 					CostNote: "AWS on-demand", ProjectID: "aws:" + projectName(repo),
+					Repository: firstNonempty(tags["pier:repository"], tags["repository"]),
 				}
 				host := firstNonempty(aws.ToString(value.PublicIpAddress), aws.ToString(value.PublicDnsName))
 				zone := ""

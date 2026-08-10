@@ -300,6 +300,7 @@ struct InstanceTabStrip: View {
                     .help("Unpark instance")
                     .disabled(model.isUnparkingInstance(instance.id))
                 } else {
+                    #if os(macOS)
                     Button {
                         Task { await model.inspect(instance) }
                     } label: {
@@ -310,6 +311,7 @@ struct InstanceTabStrip: View {
                     .buttonStyle(.plain)
                     .help("Refresh instance")
                     .disabled(instance.state == .creating)
+                    #endif
                 }
             }
             .padding(.horizontal, 10)
@@ -317,7 +319,7 @@ struct InstanceTabStrip: View {
             .animation(.snappy(duration: 0.24), value: orderedTabs.map(\.id))
         }
         .scrollIndicators(.hidden)
-        .background(AnyShapeStyle(.bar))
+        .background(PierTheme.surfaceSoft)
     }
 
     private func terminalIcon(for tab: PierTab) -> String {
@@ -476,6 +478,7 @@ private struct InstanceSetupView: View {
                 }
             }
         }
+        .pierScrollSurface()
     }
 
     @ViewBuilder
@@ -613,6 +616,7 @@ private struct InstanceInfoView: View {
             }
 
         }
+        .pierScrollSurface()
     }
 
     private func activate(_ port: PierPort) async {

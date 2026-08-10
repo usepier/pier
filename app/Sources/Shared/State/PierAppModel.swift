@@ -624,6 +624,32 @@ final class PierAppModel {
         }
     }
 
+    @discardableResult
+    func signOutMobile() async -> Bool {
+        isLoading = true
+        errorMessage = nil
+        requiresAWSLogin = false
+        defer { isLoading = false }
+        do {
+            try await service.signOutMobile()
+            setupStatus = try await service.setupStatus()
+            onboardingDismissed = false
+            instances = []
+            projects = []
+            branchOptions = nil
+            selectedInstanceID = nil
+            snapshots = [:]
+            mobileAuthorization = nil
+            mobileAccounts = []
+            mobileRoles = []
+            terminalTitles = [:]
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     func dismissError() {
         errorMessage = nil
         requiresAWSLogin = false

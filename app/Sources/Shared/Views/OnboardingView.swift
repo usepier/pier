@@ -91,6 +91,7 @@ private struct MobileOnboardingView: View {
     @State private var awsRegion = MobileOnboardingDefaults.awsRegion
     @State private var accountID = ""
     @State private var roleName = ""
+    @State private var showsSettings = false
 
     private var canSignIn: Bool {
         URL(string: startURL)?.scheme == "https" && !ssoRegion.isEmpty && !awsRegion.isEmpty
@@ -177,7 +178,22 @@ private struct MobileOnboardingView: View {
                     }
                 }
             }
+            .pierScrollSurface()
             .navigationTitle("Set up Pier")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showsSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                }
+            }
+            .sheet(isPresented: $showsSettings) {
+                NavigationStack {
+                    PierSettingsView(showsDoneButton: true)
+                }
+            }
         }
     }
 

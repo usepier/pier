@@ -62,6 +62,16 @@ struct PierProject: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let name: String
     let path: String
+    let repository: String?
+    let host: String?
+
+    init(id: String, name: String, path: String, repository: String? = nil, host: String? = nil) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.repository = repository
+        self.host = host
+    }
 }
 
 struct PierBranchOptions: Codable, Hashable, Sendable {

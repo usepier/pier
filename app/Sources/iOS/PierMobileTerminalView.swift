@@ -5,6 +5,7 @@ import SwiftUI
 import UIKit
 
 struct PierMobileTerminalView: UIViewRepresentable {
+    @AppStorage(PierTerminalFontSize.storageKey) private var fontSize = PierTerminalFontSize.defaultValue
     let instanceID: String
     let tabID: String
     let onTitleChange: (String) -> Void
@@ -51,6 +52,7 @@ struct PierMobileTerminalView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         do {
             let terminal = try PierGhosttyIOSSurfaceView(
+                fontSize: fontSize,
                 onTitleChange: { [weak coordinator = context.coordinator] title in
                     coordinator?.onTitleChange(title)
                 },
@@ -66,7 +68,7 @@ struct PierMobileTerminalView: UIViewRepresentable {
             return terminal
         } catch {
             let fallback = UIView()
-            fallback.backgroundColor = .black
+            fallback.backgroundColor = PierTheme.nativeTerminalBackground
             let label = UILabel()
             label.text = error.localizedDescription
             label.textColor = .secondaryLabel
@@ -85,6 +87,7 @@ struct PierMobileTerminalView: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.onTitleChange = onTitleChange
+        (uiView as? PierGhosttyIOSSurfaceView)?.setFontSize(fontSize)
     }
 
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
@@ -143,6 +146,7 @@ private actor PierMobileTerminalSession {
 final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
     private let surfaceContext: PierGhosttySurfaceContext
     nonisolated(unsafe) private var surface: ghostty_surface_t?
+    private weak var rendererLayer: CALayer?
     private var controlLatched = false
     private var optionLatched = false
     private var commandLatched = false
@@ -196,6 +200,7 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
     override var inputAccessoryView: UIView? { terminalAccessoryView }
 
     init(
+        fontSize: Double,
         onTitleChange: @escaping @MainActor (String) -> Void,
         write: @escaping @Sendable (Data) -> Void,
         resize: @escaping @Sendable (Int, Int) -> Void
@@ -206,7 +211,7 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
             resize: resize
         )
         super.init(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
-        backgroundColor = .black
+        backgroundColor = PierTheme.nativeTerminalBackground
         clipsToBounds = true
 
         guard let app = PierGhosttyRuntime.shared.app else {
@@ -227,7 +232,7 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
         ))
         config.userdata = surfaceContext.opaquePointer
         config.scale_factor = Double(UIScreen.main.scale)
-        config.font_size = 12
+        config.font_size = Float(PierTerminalFontSize.normalized(fontSize))
 
         let created = withUnsafePointer(to: &transport) { transportPointer in
             config.external_transport = transportPointer
@@ -237,6 +242,9 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
             throw PierGhosttyIOSViewError.initialization("Ghostty could not create the terminal surface.")
         }
         self.surface = surface
+        // libghostty attaches its IOSurface renderer as a sublayer. UIKit
+        // does not automatically resize that layer with its hosting view.
+        rendererLayer = layer.sublayers?.last
         surfaceContext.surface = surface
         surfaceContext.focusKeyboard = { [weak self] in _ = self?.becomeFirstResponder() }
 
@@ -276,6 +284,11 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
                 UInt(bytes.count)
             )
         }
+    }
+
+    func setFontSize(_ points: Double) {
+        guard let surface else { return }
+        pierGhosttySetFontSize(surface: surface, points: points)
     }
 
     override func didMoveToWindow() {
@@ -324,6 +337,7 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
+        let hadLatchedModifiers = controlLatched || optionLatched || commandLatched
         for press in presses {
             guard let key = press.key else { continue }
             let code = pierMacVirtualKeyCode(for: key.charactersIgnoringModifiers)
@@ -332,9 +346,10 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
             handled = sendKey(
                 code: code,
                 text: key.characters,
-                modifiers: modifiers(key.modifierFlags)
+                modifiers: modifiers(key.modifierFlags, includeLatched: true)
             ) || handled
         }
+        if hadLatchedModifiers, handled { clearLatchedModifiers() }
         if !handled { super.pressesBegan(presses, with: event) }
     }
 
@@ -467,6 +482,10 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
     private func updateSurfaceGeometry() {
         guard let surface, bounds.width > 0, bounds.height > 0 else { return }
         let scale = window?.screen.scale ?? UIScreen.main.scale
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        rendererLayer?.frame = bounds
+        CATransaction.commit()
         ghostty_surface_set_content_scale(surface, Double(scale), Double(scale))
         ghostty_surface_set_size(
             surface,
@@ -492,12 +511,15 @@ final class PierGhosttyIOSSurfaceView: UIView, UIKeyInput {
         )
     }
 
-    private func modifiers(_ flags: UIKeyModifierFlags) -> ghostty_input_mods_e {
+    private func modifiers(
+        _ flags: UIKeyModifierFlags,
+        includeLatched: Bool = false
+    ) -> ghostty_input_mods_e {
         pierGhosttyModifiers(
             shift: flags.contains(.shift),
-            control: flags.contains(.control),
-            option: flags.contains(.alternate),
-            command: flags.contains(.command),
+            control: flags.contains(.control) || (includeLatched && controlLatched),
+            option: flags.contains(.alternate) || (includeLatched && optionLatched),
+            command: flags.contains(.command) || (includeLatched && commandLatched),
             capsLock: flags.contains(.alphaShift)
         )
     }

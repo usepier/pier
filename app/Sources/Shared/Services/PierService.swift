@@ -24,6 +24,7 @@ protocol PierServicing: Sendable {
     func completeMobileSignIn() async throws -> [PierAWSAccount]
     func listMobileRoles(accountID: String) async throws -> [PierAWSRole]
     func finishMobileSetup(accountID: String, roleName: String) async throws
+    func signOutMobile() async throws
 }
 
 extension PierServicing {
@@ -47,6 +48,10 @@ extension PierServicing {
 
     func finishMobileSetup(accountID: String, roleName: String) async throws {
         throw PierServiceFailure.unavailable("Mobile AWS sign-in is only available on iOS.")
+    }
+
+    func signOutMobile() async throws {
+        throw PierServiceFailure.unavailable("Mobile AWS sign-out is only available on iOS.")
     }
 }
 

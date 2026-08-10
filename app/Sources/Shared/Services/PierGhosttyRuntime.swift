@@ -1,5 +1,6 @@
 import Foundation
 import GhosttyKit
+import CoreText
 
 #if os(macOS)
 import AppKit
@@ -44,18 +45,25 @@ final class PierGhosttyRuntime {
     private var config: ghostty_config_t?
     private(set) var app: ghostty_app_t?
     private(set) var initializationError: String?
+    private(set) var theme: PierTerminalTheme?
 
     private init() {
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else {
             initializationError = "Ghostty failed to initialize."
             return
         }
-        guard let config = ghostty_config_new() else {
-            initializationError = "Ghostty could not create its configuration."
+
+        let initialTheme = Self.initialTheme
+        do {
+            try Self.registerBundledTerminalFont()
+            config = try Self.makeConfiguration(for: initialTheme)
+            theme = initialTheme
+        } catch {
+            initializationError = error.localizedDescription
             return
         }
-        ghostty_config_finalize(config)
-        self.config = config
+
+        guard let config else { return }
 
         var runtime = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
@@ -77,6 +85,87 @@ final class PierGhosttyRuntime {
 
     func tick() {
         if let app { ghostty_app_tick(app) }
+    }
+
+    func apply(theme: PierTerminalTheme) {
+        guard self.theme != theme, let app else { return }
+
+        do {
+            let updatedConfig = try Self.makeConfiguration(for: theme)
+            ghostty_app_update_config(app, updatedConfig)
+            ghostty_config_free(updatedConfig)
+            self.theme = theme
+        } catch {
+            assertionFailure(error.localizedDescription)
+        }
+    }
+
+    private static var initialTheme: PierTerminalTheme {
+        switch PierAppearance.stored {
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        case .system:
+            #if os(macOS)
+            let match = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+            return match == .darkAqua ? .dark : .light
+            #elseif os(iOS)
+            return UIScreen.main.traitCollection.userInterfaceStyle == .dark ? .dark : .light
+            #endif
+        }
+    }
+
+    private static func registerBundledTerminalFont() throws {
+        guard let url = Bundle.main.url(forResource: "JetBrainsMono-Variable", withExtension: "ttf") else {
+            throw PierGhosttyConfigurationError.missingResource("JetBrains Mono")
+        }
+
+        // Registration is process-wide and harmless when another runtime has
+        // already registered the bundled font.
+        CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+    }
+
+    private static func makeConfiguration(for theme: PierTerminalTheme) throws -> ghostty_config_t {
+        guard let url = Bundle.main.url(
+            forResource: theme.configurationResource,
+            withExtension: "conf"
+        ) else {
+            throw PierGhosttyConfigurationError.missingResource(theme.configurationResource)
+        }
+        guard let config = ghostty_config_new() else {
+            throw PierGhosttyConfigurationError.creationFailed
+        }
+
+        url.path.withCString { ghostty_config_load_file(config, $0) }
+        ghostty_config_finalize(config)
+
+        let diagnostics = (0..<ghostty_config_diagnostics_count(config)).compactMap { index -> String? in
+            guard let message = ghostty_config_get_diagnostic(config, index).message else { return nil }
+            return String(cString: message)
+        }
+        guard diagnostics.isEmpty else {
+            ghostty_config_free(config)
+            throw PierGhosttyConfigurationError.invalid(diagnostics.joined(separator: "\n"))
+        }
+        return config
+    }
+}
+
+private enum PierGhosttyConfigurationError: LocalizedError {
+    case creationFailed
+    case missingResource(String)
+    case invalid(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .creationFailed:
+            "Ghostty could not create its configuration."
+        case .missingResource(let resource):
+            "The bundled terminal resource “\(resource)” is missing."
+        case .invalid(let details):
+            "The bundled Ghostty configuration is invalid: \(details)"
+        }
     }
 }
 
@@ -264,4 +353,17 @@ func pierGhosttySendKey(
         unshifted_codepoint: unshifted,
         composing: composing
     ))
+}
+
+@discardableResult
+func pierGhosttySetFontSize(surface: ghostty_surface_t, points: Double) -> Bool {
+    let points = PierTerminalFontSize.normalized(points)
+    let action = String(
+        format: "set_font_size:%.1f",
+        locale: Locale(identifier: "en_US_POSIX"),
+        points
+    )
+    return action.withCString { pointer in
+        ghostty_surface_binding_action(surface, pointer, UInt(action.utf8.count))
+    }
 }

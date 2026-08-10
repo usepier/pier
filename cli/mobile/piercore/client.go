@@ -155,6 +155,23 @@ func (c *Client) RefreshSignIn() error {
 	return err
 }
 
+// SignOut clears all in-memory AWS credentials and cached remote connections.
+// Swift removes the matching exported session from Keychain.
+func (c *Client) SignOut() error {
+	c.mu.Lock()
+	remotes := c.remotes
+	c.session = sessionState{}
+	c.pending = nil
+	c.instances = make(map[string]remoteInstance)
+	c.remotes = make(map[string]*remoteClient)
+	c.mu.Unlock()
+
+	for _, remote := range remotes {
+		_ = remote.close()
+	}
+	return nil
+}
+
 func (c *Client) ListInstances() (string, error) {
 	items, err := c.loadInstances(context.Background())
 	if err != nil {
@@ -202,7 +219,10 @@ func (c *Client) ListBranches(projectID string) (string, error) {
 	}
 	sort.Strings(values)
 	return encodeJSON(branchOptions{
-		Project:       project{ID: projectID, Name: projectName, Path: "AWS · " + projectName},
+		Project: project{
+			ID: projectID, Name: projectName, Path: "AWS",
+			Repository: repositoryForProject(items, projectID, projectName), Host: "AWS",
+		},
 		Branches:      values,
 		DefaultBranch: values[0],
 		FetchWarning:  "Creating the first mobile-only session for a repository still needs its source snapshot from the Mac.",
@@ -210,6 +230,17 @@ func (c *Client) ListBranches(projectID string) (string, error) {
 }
 
 func projectNameFromInstance(item instance) string { return projectName(item.Repo) }
+
+func repositoryForProject(items []remoteInstance, projectID, name string) string {
+	for _, item := range items {
+		if item.Model.ProjectID == projectID || name == projectNameFromInstance(item.Model) {
+			if item.Model.Repository != "" {
+				return item.Model.Repository
+			}
+		}
+	}
+	return ""
+}
 
 func (c *Client) RemoveInstance(id string) error {
 	session, err := c.configuredSession(context.Background())

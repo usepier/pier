@@ -109,7 +109,12 @@ func (c *Client) sshClient(ctx context.Context, id string) (*remoteClient, error
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // Instance keys rotate with disposable Pier VMs.
 		Timeout:         15 * time.Second,
 	}
-	client, err := ssh.Dial("tcp", net.JoinHostPort(remote.Host, "22"), sshConfig)
+	client, err := dialSSH(
+		ctx,
+		net.JoinHostPort(remote.Host, "22"),
+		sshConfig,
+		15*time.Second,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("connect to Pier instance: %w", err)
 	}
@@ -123,6 +128,31 @@ func (c *Client) sshClient(ctx context.Context, id string) (*remoteClient, error
 	c.remotes[id] = result
 	c.mu.Unlock()
 	return result, nil
+}
+
+func dialSSH(
+	ctx context.Context,
+	address string,
+	config *ssh.ClientConfig,
+	timeout time.Duration,
+) (*ssh.Client, error) {
+	dialer := net.Dialer{Timeout: timeout}
+	connection, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	if err := connection.SetDeadline(time.Now().Add(timeout)); err != nil {
+		_ = connection.Close()
+		return nil, err
+	}
+
+	clientConnection, channels, requests, err := ssh.NewClientConn(connection, address, config)
+	if err != nil {
+		_ = connection.Close()
+		return nil, err
+	}
+	_ = connection.SetDeadline(time.Time{})
+	return ssh.NewClient(clientConnection, channels, requests), nil
 }
 
 func authorizeCurrentAddress(ctx context.Context, config aws.Config, groupID string) error {

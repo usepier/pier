@@ -335,9 +335,26 @@ func tagList(spec driver.CreateSpec, me, name string) []map[string]string {
 		{"Key": TagUser, "Value": me},
 		{"Key": TagSession, "Value": spec.Name},
 		{"Key": TagRepo, "Value": filepath.Base(spec.Repo)},
+		{"Key": TagRepository, "Value": repositoryName(spec.Repo)},
 		{"Key": TagBranch, "Value": spec.Branch},
 		{"Key": TagCreated, "Value": time.Now().UTC().Format(time.RFC3339)},
 	}
+}
+
+func repositoryName(repo string) string {
+	remote, err := gitOut(repo, "remote", "get-url", "origin")
+	if err != nil {
+		return filepath.Base(repo)
+	}
+	remote = strings.TrimSuffix(strings.TrimSpace(remote), "/")
+	if separator := strings.LastIndexAny(remote, "/:"); separator >= 0 {
+		remote = remote[separator+1:]
+	}
+	name := strings.TrimSuffix(remote, ".git")
+	if name == "" {
+		return filepath.Base(repo)
+	}
+	return name
 }
 
 // archOf maps the instance type to arm64/amd64 (selects AMI + supervisor build).

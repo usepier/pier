@@ -18,13 +18,9 @@ struct PierMacOSApp: App {
         }
 
         Settings {
-            Form {
-                LabeledContent("Application", value: "Pier")
-                LabeledContent("Interface", value: "Native SwiftUI")
-            }
-            .formStyle(.grouped)
-            .padding()
-            .frame(width: 420)
+            PierSettingsView()
+                .formStyle(.grouped)
+                .frame(width: 440, height: 250)
         }
     }
 }

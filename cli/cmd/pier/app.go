@@ -71,9 +71,11 @@ type appInstance struct {
 }
 
 type appProject struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Repository string `json:"repository,omitempty"`
+	Host       string `json:"host"`
 }
 
 type appBranchOptions struct {
@@ -359,7 +361,7 @@ func appCollectProjects(candidates []string) []appProject {
 		if path == "" {
 			continue
 		}
-		byPath[path] = appProject{ID: path, Name: filepath.Base(path), Path: appAbbreviateHome(path)}
+		byPath[path] = appProjectForPath(path)
 	}
 	projects := make([]appProject, 0, len(byPath))
 	for _, project := range byPath {
@@ -383,7 +385,30 @@ func appResolveProject(path string) (appProject, error) {
 	if evaluated, resolveErr := filepath.EvalSymlinks(resolved); resolveErr == nil {
 		resolved = evaluated
 	}
-	return appProject{ID: resolved, Name: filepath.Base(resolved), Path: appAbbreviateHome(resolved)}, nil
+	return appProjectForPath(resolved), nil
+}
+
+func appProjectForPath(path string) appProject {
+	return appProject{
+		ID: path, Name: filepath.Base(path), Path: appAbbreviateHome(path),
+		Repository: appRemoteRepositoryName(path), Host: "AWS",
+	}
+}
+
+func appRemoteRepositoryName(path string) string {
+	output, err := exec.Command("git", "-C", path, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	return repositoryNameFromRemote(strings.TrimSpace(string(output)))
+}
+
+func repositoryNameFromRemote(remote string) string {
+	remote = strings.TrimSuffix(strings.TrimSpace(remote), "/")
+	if separator := strings.LastIndexAny(remote, "/:"); separator >= 0 {
+		remote = remote[separator+1:]
+	}
+	return strings.TrimSuffix(remote, ".git")
 }
 
 func appBranches(path string) (appBranchOptions, error) {

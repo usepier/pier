@@ -533,6 +533,22 @@ func TestTagListCarriesCreateTime(t *testing.T) {
 	t.Fatalf("tagList missing %s", TagCreated)
 }
 
+func TestRepositoryNameUsesOrigin(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "-C", repo, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	if out, err := exec.Command(
+		"git", "-C", repo, "remote", "add", "origin",
+		"git@github.com:kuro-technology/under-construction.git",
+	).CombinedOutput(); err != nil {
+		t.Fatalf("git remote add: %v: %s", err, out)
+	}
+	if got := repositoryName(repo); got != "under-construction" {
+		t.Fatalf("repositoryName() = %q", got)
+	}
+}
+
 // Carried repo files must land world-readable (exec kept for scripts): the
 // VM's docker daemon is userns-remapped, so a 0600 .env that works under
 // Docker Desktop bind-mounts unreadable to every container on the VM.

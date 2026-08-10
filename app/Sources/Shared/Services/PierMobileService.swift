@@ -49,6 +49,7 @@ struct PierMobileService: PierServicing {
     func finishMobileSetup(accountID: String, roleName: String) async throws {
         try await core.finishSetup(accountID: accountID, roleName: roleName)
     }
+    func signOutMobile() async throws { try await core.signOut() }
 }
 
 actor PierMobileCore {
@@ -106,6 +107,11 @@ actor PierMobileCore {
     func refreshSignIn() throws {
         try client.refreshSignIn()
         try persistSession()
+    }
+
+    func signOut() throws {
+        try client.signOut()
+        try keychain.delete()
     }
 
     func listInstances() throws -> [PierInstance] {

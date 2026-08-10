@@ -31,6 +31,7 @@ const (
 	TagUser       = "pier:user"
 	TagSession    = "pier:session"
 	TagRepo       = "pier:repo"
+	TagRepository = "pier:repository"
 	TagBranch     = "pier:branch"
 	TagReady      = "pier:ready"   // create's last act: bootstrap + repo setup observed, attachable
 	TagCreated    = "pier:created" // RFC3339 create time; launch time resets on every resume

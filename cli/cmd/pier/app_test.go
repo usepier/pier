@@ -171,6 +171,12 @@ func TestAppCollectProjectsFindsAndDeduplicatesGitRoots(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if out, err := exec.Command(
+		"git", "-C", root, "remote", "add", "origin",
+		"git@github.com:kuro-technology/under-construction.git",
+	).CombinedOutput(); err != nil {
+		t.Fatalf("git remote add: %v: %s", err, out)
+	}
 	projects := appCollectProjects([]string{root, nested, filepath.Join(root, "missing")})
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -178,6 +184,21 @@ func TestAppCollectProjectsFindsAndDeduplicatesGitRoots(t *testing.T) {
 	}
 	if len(projects) != 1 || projects[0].ID != resolvedRoot || projects[0].Name != filepath.Base(root) {
 		t.Fatalf("appCollectProjects() = %#v", projects)
+	}
+	if projects[0].Repository != "under-construction" || projects[0].Host != "AWS" {
+		t.Fatalf("project grouping metadata = %#v", projects[0])
+	}
+}
+
+func TestRepositoryNameFromRemote(t *testing.T) {
+	for remote, want := range map[string]string{
+		"git@github.com:kuro-technology/under-construction.git": "under-construction",
+		"https://github.com/kerem-kaynak/pier.git":              "pier",
+		"ssh://git@example.com/team/repo/":                      "repo",
+	} {
+		if got := repositoryNameFromRemote(remote); got != want {
+			t.Errorf("repositoryNameFromRemote(%q) = %q, want %q", remote, got, want)
+		}
 	}
 }
 

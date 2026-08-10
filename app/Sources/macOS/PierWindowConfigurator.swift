@@ -36,6 +36,8 @@ struct PierWindowConfigurator: NSViewRepresentable {
         window?.titlebarSeparatorStyle = .none
         window?.isMovableByWindowBackground = true
         window?.toolbar = nil
+        window?.isOpaque = false
+        window?.backgroundColor = .clear
 
         // Remove AppKit's titlebar safe-area reservation. Our explicit
         // 43-point headers already leave room for the traffic lights.
