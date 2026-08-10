@@ -121,7 +121,7 @@ type appProxyNetworkStatus struct {
 
 func cmdApp(args []string) {
 	if len(args) == 0 {
-		appWriteError("usage", "usage: pier app <status|login|projects|project-add|branches|instance-new|instance-remove|list|inspect|tab-new|tab-close|port-forward|attach>")
+		appWriteError("usage", "usage: pier app <status|login|projects|project-add|branches|instance-new|instance-unpark|instance-remove|list|inspect|tab-new|tab-close|port-forward|attach>")
 	}
 
 	switch args[0] {
@@ -165,6 +165,21 @@ func cmdApp(args []string) {
 			appWriteError("instance_create_failed", err.Error())
 		}
 		appWrite(instance)
+	case "instance-unpark":
+		if len(args) != 2 {
+			appWriteError("usage", "usage: pier app instance-unpark <instance>")
+		}
+		_, drv, session, err := appFindSession(args[1])
+		if err != nil {
+			appWriteError("instance_not_found", err.Error())
+		}
+		if session.State == driver.StateParked {
+			if err := drv.Resume(context.Background(), session.ID); err != nil {
+				code, message := appCloudError("instance_unpark_failed", err)
+				appWriteError(code, message)
+			}
+		}
+		appWrite(struct{}{})
 	case "instance-remove":
 		if len(args) != 2 {
 			appWriteError("usage", "usage: pier app instance-remove <instance>")

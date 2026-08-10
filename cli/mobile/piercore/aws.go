@@ -312,6 +312,22 @@ func terminateInstance(ctx context.Context, session sessionState, id string) err
 	return nil
 }
 
+func startInstance(ctx context.Context, session sessionState, id string) error {
+	config, err := authenticatedConfig(ctx, session)
+	if err != nil {
+		return err
+	}
+	client := ec2.NewFromConfig(config)
+	if _, err := client.StartInstances(ctx, &ec2.StartInstancesInput{InstanceIds: []string{id}}); err != nil {
+		return fmt.Errorf("start Pier instance: %w", err)
+	}
+	waiter := ec2.NewInstanceRunningWaiter(client)
+	if err := waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{id}}, 4*time.Minute); err != nil {
+		return fmt.Errorf("wait for Pier instance to start: %w", err)
+	}
+	return nil
+}
+
 func normalizedCallerARN(value string) string {
 	parts := strings.Split(value, "/")
 	if strings.Contains(value, ":assumed-role/") && len(parts) >= 3 {

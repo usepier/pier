@@ -19,11 +19,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     CLANG_ENABLE_MODULES: YES
-
-packages:
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm.git
-    exactVersion: 1.11.2
+    OTHER_LDFLAGS: $(inherited) -lc++
 
 targets:
   PierIOS:
@@ -35,18 +31,27 @@ targets:
       - path: Resources
         buildPhase: resources
     dependencies:
-      - package: SwiftTerm
+      - framework: Frameworks/GhosttyKit.xcframework
+        embed: false
       - framework: Frameworks/PierCore.xcframework
         embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreText.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreVideo.framework
+      - sdk: IOSurface.framework
     settings:
       base:
         PRODUCT_NAME: Pier
-        PRODUCT_BUNDLE_IDENTIFIER: com.pier.ios
+        PRODUCT_BUNDLE_IDENTIFIER: com.pier.client
         PRODUCT_MODULE_NAME: PierIOS
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Pier
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Pier connects to development sessions in your AWS account.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -69,11 +74,19 @@ targets:
         script: '/bin/sh "$SRCROOT/Scripts/build-cli.sh"'
         basedOnDependencyAnalysis: false
     dependencies:
-      - package: SwiftTerm
+      - framework: Frameworks/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreText.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreVideo.framework
+      - sdk: IOSurface.framework
+      - sdk: Carbon.framework
     settings:
       base:
         PRODUCT_NAME: Pier
-        PRODUCT_BUNDLE_IDENTIFIER: com.pier.mac
+        PRODUCT_BUNDLE_IDENTIFIER: com.pier.client
         PRODUCT_MODULE_NAME: PierMacOS
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Pier
@@ -92,7 +105,7 @@ targets:
       - target: PierMacOS
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.pier.mac.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.pier.client.tests
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/Pier.app/Contents/MacOS/Pier
         BUNDLE_LOADER: $(TEST_HOST)

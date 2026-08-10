@@ -29,6 +29,10 @@ struct InstanceDetailView: View {
         model.creation(for: instance.id)
     }
 
+    private var isSessionLoading: Bool {
+        model.isInspectingInstance(instance.id) || model.isUnparkingInstance(instance.id)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             #if !os(macOS)
@@ -74,8 +78,12 @@ struct InstanceDetailView: View {
                     }
                 }
 
-                if model.isInspectingInstance(instance.id) {
-                    SessionLoadingIndicator(isRefresh: snapshot != nil)
+                if isSessionLoading {
+                    SessionLoadingIndicator(
+                        message: model.isUnparkingInstance(instance.id)
+                            ? "Unparking session…"
+                            : (snapshot != nil ? "Refreshing session…" : "Loading session…")
+                    )
                         .padding(12)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
@@ -83,7 +91,7 @@ struct InstanceDetailView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(
                 .easeInOut(duration: 0.18),
-                value: model.isInspectingInstance(instance.id)
+                value: isSessionLoading
             )
         }
         #if !os(macOS)
@@ -92,12 +100,21 @@ struct InstanceDetailView: View {
         #if !os(macOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await model.inspect(instance) }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                if instance.state == .parked {
+                    Button {
+                        Task { await model.unpark(instance) }
+                    } label: {
+                        Label("Unpark", systemImage: "play.fill")
+                    }
+                    .disabled(model.isUnparkingInstance(instance.id))
+                } else {
+                    Button {
+                        Task { await model.inspect(instance) }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(instance.state == .creating)
                 }
-                .disabled(instance.state == .parked || instance.state == .creating)
             }
         }
         #endif
@@ -147,14 +164,14 @@ private struct InstanceSynchronizationID: Equatable {
 }
 
 private struct SessionLoadingIndicator: View {
-    let isRefresh: Bool
+    let message: String
 
     var body: some View {
         HStack(spacing: 7) {
             ProgressView()
                 .controlSize(.small)
 
-            Text(isRefresh ? "Refreshing session…" : "Loading session…")
+            Text(message)
                 .font(.caption)
         }
         .padding(.horizontal, 10)
@@ -264,16 +281,36 @@ struct InstanceTabStrip: View {
 
                 Spacer(minLength: 8)
 
-                Button {
-                    Task { await model.inspect(instance) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+                if instance.state == .parked {
+                    Button {
+                        Task { await model.unpark(instance) }
+                    } label: {
+                        Group {
+                            if model.isUnparkingInstance(instance.id) {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "play.fill")
+                            }
+                        }
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Unpark instance")
+                    .disabled(model.isUnparkingInstance(instance.id))
+                } else {
+                    Button {
+                        Task { await model.inspect(instance) }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Refresh instance")
+                    .disabled(instance.state == .creating)
                 }
-                .buttonStyle(.plain)
-                .help("Refresh instance")
-                .disabled(instance.state == .parked || instance.state == .creating)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, integrated ? 6 : 7)
@@ -505,6 +542,27 @@ private struct InstanceInfoView: View {
                 LabeledContent("Branch", value: instance.branch)
                 LabeledContent("Machine", value: instance.instanceType)
                 LabeledContent("Cost", value: instance.costNote)
+            }
+
+            if instance.state == .parked {
+                Section {
+                    Button {
+                        Task { await model.unpark(instance) }
+                    } label: {
+                        if model.isUnparkingInstance(instance.id) {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Unparking…")
+                            }
+                        } else {
+                            Label("Unpark Instance", systemImage: "play.fill")
+                        }
+                    }
+                    .disabled(model.isUnparkingInstance(instance.id))
+                } footer: {
+                    Text("Starts the AWS instance and keeps its disk and session state intact.")
+                }
             }
 
             if let reopenSetup {

@@ -230,6 +230,36 @@ func (c *Client) RemoveInstance(id string) error {
 	return nil
 }
 
+// UnparkInstance starts a stopped Pier VM and waits until EC2 reports it as
+// running. SSH readiness is checked by the app's normal inspection loop.
+func (c *Client) UnparkInstance(id string) error {
+	remote, err := c.remote(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	if remote.Model.State != "parked" {
+		return nil
+	}
+	session, err := c.configuredSession(context.Background())
+	if err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	client := c.remotes[id]
+	delete(c.remotes, id)
+	c.mu.Unlock()
+	if client != nil {
+		_ = client.close()
+	}
+
+	if err := startInstance(context.Background(), session, id); err != nil {
+		return err
+	}
+	_, err = c.loadInstances(context.Background())
+	return err
+}
+
 func (c *Client) InspectInstance(id string) (string, error) {
 	remote, err := c.remote(context.Background(), id)
 	if err != nil {

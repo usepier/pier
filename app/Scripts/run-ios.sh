@@ -5,7 +5,7 @@ project=${1:?project path is required}
 scheme=${2:?scheme is required}
 derived_data=${3:?derived data path is required}
 logs_dir=${4:?logs directory is required}
-bundle_id=com.pier.ios
+bundle_id=com.pier.client
 script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 env_file="$script_dir/../.env.local"
 

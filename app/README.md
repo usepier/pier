@@ -14,8 +14,10 @@ directly.
   `cli/mobile/piercore`. PierCore uses only the modular Go AWS clients it needs
   (SSO OIDC, SSO, STS, EC2, and EC2 Instance Connect), plus Go SSH. Swift owns
   the UI and stores PierCore's opaque session JSON in the iOS Keychain.
-- Interactive iOS terminals use SwiftTerm for rendering while PierCore keeps
-  the SSH transport warm and attaches each screen to a cloned tmux session.
+- Interactive terminals use libghostty's native Metal renderer. macOS lets
+  libghostty own the local `pier app attach` PTY; iOS uses Pier's small
+  external-transport patch to connect the renderer to PierCore's Go SSH
+  stream. Each screen attaches to a cloned tmux session.
 
 The product model stays low-level: instances contain ordinary tmux tabs. The
 Shell, Claude, and Codex choices are command presets, not special agent types.
@@ -25,6 +27,7 @@ cd app
 make          # show available commands
 make generate # generate the Xcode project
 make ios-core # regenerate the embedded Go XCFramework
+make ghostty-core # build the pinned, patched libghostty XCFramework
 make macos    # build, launch, and stream runtime logs into logs/
 make ios      # build, install, launch, and stream Simulator logs into logs/
 make ios-testflight # archive and export an App Store Connect IPA
@@ -32,14 +35,16 @@ make macos-release  # Developer ID sign, notarize, staple, and zip for GitHub
 make clean    # remove generated project and build output
 ```
 
-Requirements: Xcode 26+, XcodeGen, Go 1.25+, and gomobile. Install the binder
-once with `go install golang.org/x/mobile/cmd/gomobile@latest`; the matching
+Requirements: Xcode 26+, its Metal toolchain, XcodeGen, Zig 0.16+, Go 1.25+,
+and gomobile. Install the Metal toolchain with
+`xcodebuild -downloadComponent MetalToolchain`. Install the binder once with
+`go install golang.org/x/mobile/cmd/gomobile@latest`; the matching
 `gobind` version is pinned as a Go tool dependency. The generated Xcode project
 and XCFramework are ignored by Git and can always be recreated.
 
 ## Distribution
 
-The iOS bundle ID is `com.pier.ios`; the macOS bundle ID is `com.pier.mac`.
+The iOS and macOS bundle ID is `com.pier.client`.
 Local `make ios` and `make macos` builds remain unsigned. Distribution artifacts
 are written under the repository-level `dist/` directory.
 

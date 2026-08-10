@@ -51,8 +51,12 @@ struct PierContentView: View {
         #else
         NavigationStack {
             InstanceListView(selection: .constant(nil))
-                .navigationDestination(for: PierInstance.self) { instance in
-                    InstanceDetailView(instance: instance, selection: $workspaceSelection)
+                .navigationDestination(for: PierInstance.self) { destination in
+                    if let instance = model.instances.first(where: { $0.id == destination.id }) {
+                        InstanceDetailView(instance: instance, selection: $workspaceSelection)
+                    } else {
+                        ContentUnavailableView("Instance unavailable", systemImage: "server.rack")
+                    }
                 }
         }
         #endif
@@ -178,7 +182,8 @@ private struct InstanceListView: View {
                             InstanceRow(
                                 instance: instance,
                                 isRemoving: model.isRemovingInstance(instance.id),
-                                isLoading: model.isInspectingInstance(instance.id)
+                                isLoading: model.isInspectingInstance(instance.id) ||
+                                    model.isUnparkingInstance(instance.id)
                             )
                                 .tag(instance.id)
                                 .contextMenu {
@@ -187,6 +192,15 @@ private struct InstanceListView: View {
                                             model.removeFailedCreation(instanceID: instance.id)
                                         }
                                     } else {
+                                        if instance.state == .parked {
+                                            Button {
+                                                Task { await model.unpark(instance) }
+                                            } label: {
+                                                Label("Unpark Instance", systemImage: "play.fill")
+                                            }
+                                            .disabled(model.isUnparkingInstance(instance.id))
+                                        }
+
                                         Button(role: .destructive) {
                                             instancePendingRemoval = instance
                                         } label: {
@@ -202,8 +216,20 @@ private struct InstanceListView: View {
                             NavigationLink(value: instance) {
                                 InstanceRow(
                                     instance: instance,
-                                    isLoading: model.isInspectingInstance(instance.id)
+                                    isLoading: model.isInspectingInstance(instance.id) ||
+                                        model.isUnparkingInstance(instance.id)
                                 )
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if instance.state == .parked {
+                                    Button {
+                                        Task { await model.unpark(instance) }
+                                    } label: {
+                                        Label("Unpark", systemImage: "play.fill")
+                                    }
+                                    .tint(.accentColor)
+                                    .disabled(model.isUnparkingInstance(instance.id))
+                                }
                             }
                             #endif
                         }
@@ -220,6 +246,10 @@ private struct InstanceListView: View {
         }
         #if !os(macOS)
         .navigationTitle("Instances")
+        .refreshable {
+            await model.refreshInstances()
+            await model.loadProjects()
+        }
         #endif
         .overlay {
             if (model.isLoading || model.isLoadingProjects) && projectGroups.isEmpty {

@@ -50,6 +50,10 @@ struct PierCLIService: PierServicing {
         _ = try await request(EmptyResponse.self, arguments: ["app", "instance-remove", id])
     }
 
+    func unparkInstance(id: String) async throws {
+        _ = try await request(EmptyResponse.self, arguments: ["app", "instance-unpark", id])
+    }
+
     func inspectInstance(id: String) async throws -> PierInstanceSnapshot {
         try await request(PierInstanceSnapshot.self, arguments: ["app", "inspect", id])
     }

@@ -6,4 +6,6 @@
 cli/cmd/pier/assets/pier-supervisor-*
 /app/logs/
 /app/Frameworks/PierCore.xcframework/
+/app/Frameworks/GhosttyKit.xcframework/
+/app/.ghostty-build/
 /app/.env.local

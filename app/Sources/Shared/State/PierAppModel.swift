@@ -25,6 +25,7 @@ final class PierAppModel {
     var mobileAccounts: [PierAWSAccount] = []
     var mobileRoles: [PierAWSRole] = []
     var isAuthorizingMobile = false
+    private(set) var unparkingInstanceIDs: Set<PierInstance.ID> = []
     private(set) var removingInstanceIDs: Set<PierInstance.ID> = []
     private(set) var inspectingInstanceIDs: Set<PierInstance.ID> = []
     private(set) var closingTabKeys: Set<String> = []
@@ -99,10 +100,7 @@ final class PierAppModel {
         }
 
         do {
-            instances = mergingPendingCreations(into: try await service.listInstances())
-            if selectedInstanceID == nil || !instances.contains(where: { $0.id == selectedInstanceID }) {
-                selectedInstanceID = instances.first?.id
-            }
+            applyInstanceList(try await service.listInstances())
         } catch is CancellationError {
             // Foreground sync tasks are cancelled when the app becomes inactive.
         } catch where reportsErrors {
@@ -299,6 +297,32 @@ final class PierAppModel {
         removingInstanceIDs.contains(instanceID)
     }
 
+    func isUnparkingInstance(_ instanceID: PierInstance.ID) -> Bool {
+        unparkingInstanceIDs.contains(instanceID)
+    }
+
+    @discardableResult
+    func unpark(_ instance: PierInstance) async -> Bool {
+        guard instance.state == .parked else { return false }
+        guard unparkingInstanceIDs.insert(instance.id).inserted else { return false }
+        errorMessage = nil
+        requiresAWSLogin = false
+        defer { unparkingInstanceIDs.remove(instance.id) }
+
+        do {
+            try await service.unparkInstance(id: instance.id)
+            applyInstanceList(try await service.listInstances())
+            if let resumed = instances.first(where: { $0.id == instance.id }) {
+                await updateSnapshot(for: resumed, reportsActivity: false, reportsErrors: false)
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
+            return false
+        }
+    }
+
     @discardableResult
     func removeInstance(_ instance: PierInstance) async -> Bool {
         if let progress = creationProgress[instance.id], progress.status != .completed {
@@ -451,6 +475,13 @@ final class PierAppModel {
             }
         }
         return remoteWithoutPendingDuplicates + pendingInstances
+    }
+
+    private func applyInstanceList(_ remoteInstances: [PierInstance]) {
+        instances = mergingPendingCreations(into: remoteInstances)
+        if selectedInstanceID == nil || !instances.contains(where: { $0.id == selectedInstanceID }) {
+            selectedInstanceID = instances.first?.id
+        }
     }
 
     private func creationFailureMessage(_ error: Error) -> String {

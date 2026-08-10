@@ -183,6 +183,44 @@ final class PierModelsTests: XCTestCase {
     }
 
     @MainActor
+    func testUnparkUsesPerInstanceLoadingState() async {
+        let instance = PierInstance(
+            id: "i-parked",
+            name: "parked-session",
+            repo: "pier",
+            branch: "parked-session",
+            user: "developer",
+            driver: "aws-ec2",
+            state: .parked,
+            strained: false,
+            setup: "",
+            instanceType: "t4g.medium",
+            createdAt: "2026-08-09T10:00:00Z",
+            costNote: "~$3-4/mo",
+            localPath: "~/Documents/pier",
+            projectID: "/tmp/pier"
+        )
+        let service = SynchronizationService(instance: instance)
+        let model = PierAppModel(service: service)
+        model.instances = [instance]
+
+        let unpark = Task { await model.unpark(instance) }
+        while !(await service.isWaitingForUnpark()) {
+            await Task.yield()
+        }
+
+        XCTAssertTrue(model.isUnparkingInstance(instance.id))
+        XCTAssertFalse(model.isLoading)
+
+        await service.completeUnpark()
+        let succeeded = await unpark.value
+        let unparkedIDs = await service.unparkedIDs()
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(unparkedIDs, [instance.id])
+        XCTAssertFalse(model.isUnparkingInstance(instance.id))
+    }
+
+    @MainActor
     func testInspectionHasANonBlockingPerInstanceLoadingState() async {
         let project = PierProject(id: "/tmp/pier", name: "pier", path: "~/Documents/pier")
         let instance = PierInstance(
@@ -285,6 +323,8 @@ final class PierModelsTests: XCTestCase {
 private actor SynchronizationService: PierServicing {
     private var instances: [PierInstance]
     private var tabs: [PierTab] = []
+    private var unparkContinuation: CheckedContinuation<Void, any Error>?
+    private var requestedUnparkIDs: [String] = []
 
     init(instance: PierInstance) {
         instances = [instance]
@@ -316,6 +356,16 @@ private actor SynchronizationService: PierServicing {
         throw PierServiceFailure.unavailable("Not used in this test")
     }
     func removeInstance(id: String) async throws {}
+    func unparkInstance(id: String) async throws {
+        requestedUnparkIDs.append(id)
+        try await withCheckedThrowingContinuation { unparkContinuation = $0 }
+    }
+    func isWaitingForUnpark() -> Bool { unparkContinuation != nil }
+    func completeUnpark() {
+        unparkContinuation?.resume()
+        unparkContinuation = nil
+    }
+    func unparkedIDs() -> [String] { requestedUnparkIDs }
     func inspectInstance(id: String) async throws -> PierInstanceSnapshot {
         guard let instance = instances.first(where: { $0.id == id }) else {
             throw PierServiceFailure.unavailable("Missing test instance")
@@ -383,6 +433,8 @@ private actor ControlledCreationService: PierServicing {
     func removeInstance(id: String) {
         removedInstanceIDs.append(id)
     }
+
+    func unparkInstance(id: String) {}
 
     func removedIDs() -> [String] { removedInstanceIDs }
 

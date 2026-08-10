@@ -29,6 +29,7 @@ struct PierMobileService: PierServicing {
         )
     }
 
+    func unparkInstance(id: String) async throws { try await core.unparkInstance(id: id) }
     func removeInstance(id: String) async throws { try await core.removeInstance(id: id) }
     func inspectInstance(id: String) async throws -> PierInstanceSnapshot { try await core.inspectInstance(id: id) }
     func createTab(instanceID: String, name: String, command: [String]) async throws -> PierTab {
@@ -127,6 +128,11 @@ actor PierMobileCore {
 
     func removeInstance(id: String) throws {
         try client.removeInstance(id)
+        try persistSession()
+    }
+
+    func unparkInstance(id: String) throws {
+        try client.unparkInstance(id)
         try persistSession()
     }
 
@@ -232,7 +238,7 @@ final class PierMobileTerminalListener: NSObject, PierPiercoreTerminalListenerPr
 }
 
 private struct PierMobileKeychain: Sendable {
-    private let service = "com.pier.ios.mobile-aws"
+    private let service = "com.pier.client.mobile-aws"
     private let account = "piercore-session"
 
     func load() throws -> String? {

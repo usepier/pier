@@ -1,6 +1,6 @@
 #if os(macOS)
 import AppKit
-import SwiftTerm
+import GhosttyKit
 import SwiftUI
 
 struct PierTerminalSessionView: NSViewRepresentable {
@@ -9,22 +9,13 @@ struct PierTerminalSessionView: NSViewRepresentable {
     let onTitleChange: (String) -> Void
 
     @MainActor
-    final class Coordinator: NSObject, @preconcurrency LocalProcessTerminalViewDelegate {
-        var terminal: LocalProcessTerminalView?
+    final class Coordinator {
+        var terminal: PierGhosttyMacSurfaceView?
         var onTitleChange: (String) -> Void
 
         init(onTitleChange: @escaping (String) -> Void) {
             self.onTitleChange = onTitleChange
         }
-
-        func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
-
-        func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-            onTitleChange(title)
-        }
-
-        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-        func processTerminated(source: TerminalView, exitCode: Int32?) {}
     }
 
     func makeCoordinator() -> Coordinator {
@@ -37,8 +28,13 @@ struct PierTerminalSessionView: NSViewRepresentable {
         container.layer?.backgroundColor = NSColor.black.cgColor
 
         do {
-            let executable = try PierCLIExecutable.locate()
-            let terminal = LocalProcessTerminalView(frame: .zero)
+            let terminal = try PierGhosttyMacSurfaceView(
+                instanceID: instanceID,
+                tabID: tabID,
+                onTitleChange: { [weak coordinator = context.coordinator] title in
+                    coordinator?.onTitleChange(title)
+                }
+            )
             terminal.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(terminal)
             NSLayoutConstraint.activate([
@@ -48,12 +44,6 @@ struct PierTerminalSessionView: NSViewRepresentable {
                 terminal.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ])
             context.coordinator.terminal = terminal
-            terminal.processDelegate = context.coordinator
-            terminal.startProcess(
-                executable: executable.path,
-                args: ["app", "attach", instanceID, tabID],
-                environment: PierProcessEnvironment.terminal()
-            )
         } catch {
             let label = NSTextField(wrappingLabelWithString: error.localizedDescription)
             label.textColor = .secondaryLabelColor
@@ -75,8 +65,268 @@ struct PierTerminalSessionView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.terminal?.terminate()
+        coordinator.terminal?.close()
         coordinator.terminal = nil
     }
+}
+
+@MainActor
+final class PierGhosttyMacSurfaceView: NSView {
+    private let surfaceContext: PierGhosttySurfaceContext
+    nonisolated(unsafe) private var surface: ghostty_surface_t?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    init(
+        instanceID: String,
+        tabID: String,
+        onTitleChange: @escaping @MainActor (String) -> Void
+    ) throws {
+        surfaceContext = PierGhosttySurfaceContext(onTitleChange: onTitleChange)
+        super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+
+        guard let app = PierGhosttyRuntime.shared.app else {
+            throw PierGhosttyViewError.initialization(
+                PierGhosttyRuntime.shared.initializationError ?? "Ghostty is unavailable."
+            )
+        }
+        let executable = try PierCLIExecutable.locate()
+        let command = [
+            executable.path,
+            "app",
+            "attach",
+            instanceID,
+            tabID,
+        ].map(pierShellQuote).joined(separator: " ")
+
+        var config = ghostty_surface_config_new()
+        config.platform_tag = GHOSTTY_PLATFORM_MACOS
+        config.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
+            nsview: Unmanaged.passUnretained(self).toOpaque()
+        ))
+        config.userdata = surfaceContext.opaquePointer
+        config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
+        config.font_size = 13
+        config.wait_after_command = true
+
+        let environment = PierProcessEnvironment.terminal().compactMap(PierGhosttyEnvironmentValue.init)
+        var environmentValues = environment.map(\.value)
+        config.env_var_count = environmentValues.count
+
+        let created = command.withCString { commandPointer in
+            config.command = commandPointer
+            return environmentValues.withUnsafeMutableBufferPointer { values in
+                config.env_vars = values.baseAddress
+                return ghostty_surface_new(app, &config)
+            }
+        }
+        guard let created else {
+            throw PierGhosttyViewError.initialization("Ghostty could not create the terminal surface.")
+        }
+        surface = created
+        surfaceContext.surface = created
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    deinit {
+        if let surface { ghostty_surface_free(surface) }
+    }
+
+    func close() {
+        guard let surface else { return }
+        self.surface = nil
+        surfaceContext.surface = nil
+        ghostty_surface_free(surface)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateSurfaceGeometry()
+        if let window, window.firstResponder == nil || window.firstResponder === window.contentView {
+            window.makeFirstResponder(self)
+        }
+        if let surface, let displayID = window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32 {
+            ghostty_surface_set_display_id(surface, displayID)
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        updateSurfaceGeometry()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateSurfaceGeometry()
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result, let surface { ghostty_surface_set_focus(surface, true) }
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result, let surface { ghostty_surface_set_focus(surface, false) }
+        return result
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if !send(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS) {
+            super.keyDown(with: event)
+        }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if !send(event, action: GHOSTTY_ACTION_RELEASE) {
+            super.keyUp(with: event)
+        }
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        send(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        sendMousePosition(event)
+        guard let surface else { return }
+        _ = ghostty_surface_mouse_button(
+            surface,
+            GHOSTTY_MOUSE_PRESS,
+            GHOSTTY_MOUSE_LEFT,
+            modifiers(event.modifierFlags)
+        )
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        sendMousePosition(event)
+        guard let surface else { return }
+        _ = ghostty_surface_mouse_button(
+            surface,
+            GHOSTTY_MOUSE_RELEASE,
+            GHOSTTY_MOUSE_LEFT,
+            modifiers(event.modifierFlags)
+        )
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        sendMousePosition(event)
+        guard let surface else { return super.rightMouseDown(with: event) }
+        if !ghostty_surface_mouse_button(
+            surface,
+            GHOSTTY_MOUSE_PRESS,
+            GHOSTTY_MOUSE_RIGHT,
+            modifiers(event.modifierFlags)
+        ) {
+            super.rightMouseDown(with: event)
+        }
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        sendMousePosition(event)
+        guard let surface else { return super.rightMouseUp(with: event) }
+        if !ghostty_surface_mouse_button(
+            surface,
+            GHOSTTY_MOUSE_RELEASE,
+            GHOSTTY_MOUSE_RIGHT,
+            modifiers(event.modifierFlags)
+        ) {
+            super.rightMouseUp(with: event)
+        }
+    }
+
+    override func mouseMoved(with event: NSEvent) { sendMousePosition(event) }
+    override func mouseDragged(with event: NSEvent) { sendMousePosition(event) }
+    override func rightMouseDragged(with event: NSEvent) { sendMousePosition(event) }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let surface else { return }
+        ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, 0)
+    }
+
+    private func updateSurfaceGeometry() {
+        guard let surface, bounds.width > 0, bounds.height > 0 else { return }
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        ghostty_surface_set_content_scale(surface, scale, scale)
+        let size = convertToBacking(bounds).size
+        ghostty_surface_set_size(surface, UInt32(size.width), UInt32(size.height))
+    }
+
+    private func send(_ event: NSEvent, action: ghostty_input_action_e) -> Bool {
+        guard let surface else { return false }
+        return pierGhosttySendKey(
+            surface: surface,
+            action: action,
+            keyCode: UInt32(event.keyCode),
+            text: event.characters,
+            modifiers: modifiers(event.modifierFlags)
+        )
+    }
+
+    private func modifiers(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
+        pierGhosttyModifiers(
+            shift: flags.contains(.shift),
+            control: flags.contains(.control),
+            option: flags.contains(.option),
+            command: flags.contains(.command),
+            capsLock: flags.contains(.capsLock)
+        )
+    }
+
+    private func sendMousePosition(_ event: NSEvent) {
+        guard let surface else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        ghostty_surface_mouse_pos(
+            surface,
+            point.x,
+            bounds.height - point.y,
+            modifiers(event.modifierFlags)
+        )
+    }
+}
+
+private final class PierGhosttyEnvironmentValue {
+    private let key: UnsafeMutablePointer<CChar>
+    private let contents: UnsafeMutablePointer<CChar>
+
+    let value: ghostty_env_var_s
+
+    init?(_ entry: String) {
+        guard let separator = entry.firstIndex(of: "=") else { return nil }
+        let keyString = String(entry[..<separator])
+        let valueString = String(entry[entry.index(after: separator)...])
+        guard let key = strdup(keyString) else { return nil }
+        guard let contents = strdup(valueString) else {
+            free(key)
+            return nil
+        }
+        self.key = key
+        self.contents = contents
+        value = ghostty_env_var_s(key: UnsafePointer(key), value: UnsafePointer(contents))
+    }
+
+    deinit {
+        free(key)
+        free(contents)
+    }
+}
+
+private enum PierGhosttyViewError: LocalizedError {
+    case initialization(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .initialization(let message): message
+        }
+    }
+}
+
+private func pierShellQuote(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 #endif

@@ -18,7 +18,7 @@ MACOS_NOTARY_ZIP := $(MACOS_RELEASE_DIR)/Pier-macOS-notary-upload.zip
 MACOS_RELEASE_ZIP := $(MACOS_RELEASE_DIR)/Pier-macOS-$(APP_VERSION)-$(BUILD_NUMBER).zip
 .DEFAULT_GOAL := help
 
-.PHONY: generate ios ios-core macos clean test ios-build macos-build \
+.PHONY: generate ios ios-core ghostty-core macos clean test ios-build macos-build \
 	ios-testflight macos-signed-archive macos-release notary-setup \
 	check-team-id check-ios-distribution check-developer-id check-notary-profile help
 
@@ -35,13 +35,17 @@ ios: ios-core generate
 ios-core:
 	./Scripts/build-mobile-core.sh
 
+ghostty-core:
+	./Scripts/build-ghostty.sh
+
 clean:
 	rm -rf "$(DERIVED_DATA)"
 	rm -rf "$(PROJECT)"
 	rm -rf "Frameworks/PierCore.xcframework"
+	rm -rf "Frameworks/GhosttyKit.xcframework"
 
 # Non-launching targets used by CI.
-test: generate
+test: ghostty-core generate
 	xcodebuild -project "$(PROJECT)" \
 		-scheme "$(MACOS_SCHEME)" \
 		-destination 'platform=macOS' \
@@ -49,7 +53,7 @@ test: generate
 		CODE_SIGNING_ALLOWED=NO \
 		test
 
-macos-build: generate
+macos-build: ghostty-core generate
 	xcodebuild -project "$(PROJECT)" \
 		-scheme "$(MACOS_SCHEME)" \
 		-destination 'platform=macOS' \
@@ -57,7 +61,7 @@ macos-build: generate
 		CODE_SIGNING_ALLOWED=NO \
 		build
 
-ios-build: ios-core generate
+ios-build: ghostty-core ios-core generate
 	xcodebuild -project "$(PROJECT)" \
 		-scheme "$(IOS_SCHEME)" \
 		-destination 'generic/platform=iOS' \
@@ -89,7 +93,7 @@ check-notary-profile:
 		exit 1; \
 	}
 
-ios-testflight: check-ios-distribution ios-core generate
+ios-testflight: check-ios-distribution ghostty-core ios-core generate
 	mkdir -p "$(IOS_RELEASE_DIR)"
 	rm -rf "$(IOS_ARCHIVE)" "$(IOS_EXPORT_DIR)"
 	xcodebuild -project "$(PROJECT)" \
@@ -109,7 +113,7 @@ ios-testflight: check-ios-distribution ios-core generate
 		-allowProvisioningUpdates
 	@echo "TestFlight IPA: $(IOS_EXPORT_DIR)/Pier.ipa"
 
-macos-signed-archive: generate check-developer-id
+macos-signed-archive: ghostty-core generate check-developer-id
 	mkdir -p "$(MACOS_RELEASE_DIR)"
 	rm -rf "$(MACOS_ARCHIVE)"
 	xcodebuild -project "$(PROJECT)" \
@@ -153,6 +157,7 @@ help:
 	@echo "make generate          Generate the Xcode project"
 	@echo "make ios               Build and run unsigned in the iOS Simulator"
 	@echo "make ios-core          Build the embedded Go XCFramework"
+	@echo "make ghostty-core      Build the patched libghostty XCFramework"
 	@echo "make macos             Build and run unsigned on this Mac"
 	@echo "make ios-testflight    Export a signed App Store Connect IPA"
 	@echo "make macos-release     Sign, notarize, staple, and zip for GitHub"

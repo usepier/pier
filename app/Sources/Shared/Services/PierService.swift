@@ -12,6 +12,7 @@ protocol PierServicing: Sendable {
         baseBranch: String,
         onProgress: @escaping @Sendable (PierCreationEvent) -> Void
     ) async throws -> PierInstance
+    func unparkInstance(id: String) async throws
     func removeInstance(id: String) async throws
     func inspectInstance(id: String) async throws -> PierInstanceSnapshot
     func preparePortProxy() async throws
