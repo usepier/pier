@@ -173,28 +173,166 @@ func ParkDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-// Setting is one field the TUI settings page can edit.
-type Setting struct {
-	Key  string
-	Hint string
+// FieldKind tells the settings UI how to edit a field.
+type FieldKind int
+
+const (
+	KindText    FieldKind = iota // free-text editor
+	KindChoice                   // pick from the fixed Options list
+	KindMachine                  // pick from the driver's machine catalog (injected)
+)
+
+// Option is one choice in a KindChoice picker. Value is what Set receives;
+// Label is what the picker shows (falls back to Value); Desc is a dim
+// right-column annotation (a human region name, machine specs, guidance).
+type Option struct {
+	Value string
+	Label string
+	Desc  string
 }
 
-// Settings lists the settable keys in display order. Secrets and baked AMIs
-// are deliberately absent: those are managed by `pier setup` and `pier bake`.
-var Settings = []Setting{
-	{"driver", ""},
-	{"idle_timeout", "detached and quiet this long → park"},
-	{"unattended_cap", "parks even while busy"},
-	{"aws.profile", ""},
-	{"aws.region", ""},
-	{"aws.instance_type", "machine for new sessions"},
-	{"aws.disk_gib", ""},
-	{"aws.subnet", "optional"},
-	{"aws.direct", "ssh straight to the VM, fast — false forces the ssm tunnel"},
-	{"gcp.project", ""},
-	{"gcp.zone", ""},
-	{"gcp.machine_type", "machine for new sessions"},
-	{"gcp.disk_gib", ""},
+// Field is one editable setting: how it's grouped, labeled, and explained,
+// how it's edited (Kind + Options), and how its value reads back (Empty /
+// Suffix). Validation always runs through Set, the single write path.
+type Field struct {
+	Key      string
+	Group    string // "session", "aws", "gcp"
+	Label    string // human label shown on the row
+	Hint     string // short one-liner beside the value
+	Detail   string // multi-line (\n-split) footer for the selected field
+	Default  string // shown in the footer; "" prints nothing
+	Kind     FieldKind
+	Options  []Option // KindChoice choices; nil otherwise
+	NoCustom bool     // a closed enum: the picker offers no "custom…" escape
+	Empty    string   // placeholder for an empty value ("" → "(unset)")
+	Suffix   string   // appended to a raw value on display (e.g. " GiB")
+}
+
+// Display renders a stored value for humans: choice labels instead of raw
+// values, a placeholder when empty, a unit suffix otherwise. Storage is
+// untouched — this is presentation only.
+func (f Field) Display(v string) string {
+	if v == "" {
+		if f.Empty != "" {
+			return f.Empty
+		}
+		return "(unset)"
+	}
+	if f.Kind == KindChoice {
+		for _, o := range f.Options {
+			if o.Value == v {
+				if o.Label != "" {
+					return o.Label
+				}
+				return o.Value
+			}
+		}
+	}
+	return v + f.Suffix
+}
+
+// durationOpts / diskOpts are shared so the aws and gcp groups read the same.
+var (
+	idleOpts = []Option{{Value: "15m"}, {Value: "30m"}, {Value: "1h"}, {Value: "2h"}, {Value: "never"}}
+	capOpts  = []Option{{Value: "4h"}, {Value: "8h"}, {Value: "24h"}, {Value: "never"}}
+	diskOpts = []Option{{Value: "20", Label: "20 GiB"}, {Value: "40", Label: "40 GiB"}, {Value: "80", Label: "80 GiB"}, {Value: "160", Label: "160 GiB"}}
+)
+
+// Settings lists the settable fields in display order, grouped session → aws →
+// gcp. Secrets and baked images are deliberately absent: those are managed by
+// `pier setup` and `pier bake`, and the TUI shows them read-only.
+var Settings = []Field{
+	{
+		Key: "driver", Group: "session", Label: "cloud", Hint: "runs new sessions",
+		Kind: KindChoice, NoCustom: true, Default: "aws-ec2",
+		Options: []Option{
+			{Value: "aws-ec2", Label: "AWS EC2", Desc: "Amazon EC2 · direct ssh or SSM"},
+			{Value: "gcp-gce", Label: "GCP Compute Engine", Desc: "Google Compute Engine · IAP tunnel"},
+		},
+		Detail: "Which provider runs new sessions.\nExisting sessions stay on the cloud they were built on; the other cloud's settings wait dimmed below until you switch.",
+	},
+	{
+		Key: "idle_timeout", Group: "session", Label: "auto-park", Hint: "park when detached & quiet",
+		Kind: KindChoice, Options: idleOpts, Default: "30m",
+		Detail: "A session detached and quiet this long parks itself: the VM stops, the disk stays (~$3-4/mo), and attaching resumes it in ~20-60s.\n`pier keep` exempts one session; --idle overrides one create.\nformat: 30m, 2h, or never",
+	},
+	{
+		Key: "unattended_cap", Group: "session", Label: "unattended cap", Hint: "park even mid-run",
+		Kind: KindChoice, Options: capOpts, Default: "8h",
+		Detail: "Parks a session even while the agent is still busy, once you've been detached this long — a runaway loop can't burn compute for days.\n--cap overrides one create.\nformat: 8h or never",
+	},
+	{
+		Key: "aws.profile", Group: "aws", Label: "profile", Hint: "AWS CLI profile for every call",
+		Kind:   KindText,
+		Detail: "The AWS CLI profile every pier command runs under — SSO, MFA, and its default region all come from it.\nset one up with `aws configure`.",
+	},
+	{
+		Key: "aws.region", Group: "aws", Label: "region", Hint: "where new VMs launch",
+		Kind: KindChoice, Default: "eu-central-1",
+		Options: []Option{
+			{Value: "us-east-1", Desc: "N. Virginia"},
+			{Value: "us-east-2", Desc: "Ohio"},
+			{Value: "us-west-2", Desc: "Oregon"},
+			{Value: "eu-west-1", Desc: "Ireland"},
+			{Value: "eu-central-1", Desc: "Frankfurt"},
+			{Value: "ap-south-1", Desc: "Mumbai"},
+			{Value: "ap-southeast-1", Desc: "Singapore"},
+			{Value: "ap-northeast-1", Desc: "Tokyo"},
+		},
+		Detail: "New session VMs launch here; existing sessions stay where they are.\nafter switching, `pier doctor` checks the groundwork exists in the new region.\nformat: us-east-1, eu-central-1, …",
+	},
+	{
+		Key: "aws.instance_type", Group: "aws", Label: "machine", Hint: "default VM for new sessions",
+		Kind: KindMachine, Default: "t4g.medium",
+		Detail: "New sessions start on this VM type. Undersize freely — `m` resizes any live session in about a minute, disk intact.",
+	},
+	{
+		Key: "aws.disk_gib", Group: "aws", Label: "disk", Hint: "per-session root disk",
+		Kind: KindChoice, Options: diskOpts, Suffix: " GiB", Default: "40",
+		Detail: "Root disk for each new session — it's what survives parking and what a parked session costs (~$3-4/mo).\nwhole GiB, at least 8",
+	},
+	{
+		Key: "aws.direct", Group: "aws", Label: "connection", Hint: "how ssh reaches the VM",
+		Kind: KindChoice, NoCustom: true, Default: "direct ssh",
+		Options: []Option{
+			{Value: "true", Label: "direct ssh", Desc: "straight to the VM's public IP — full speed"},
+			{Value: "false", Label: "SSM tunnel", Desc: "everything through SSM (~1 MB/s)"},
+		},
+		Detail: "How the terminal reaches the VM.\ndirect ssh dials the public IP (full speed), opens TCP 22 to your current IP only, and falls back to the SSM tunnel by itself when that's blocked.\nSSM tunnel forces the tunnel — for networks that block outbound 22 or orgs that disallow the ingress calls.",
+	},
+	{
+		Key: "aws.subnet", Group: "aws", Label: "subnet", Hint: "only without a default VPC",
+		Kind: KindText, Empty: "(default VPC)",
+		Detail: "Only for accounts whose default VPC was deleted: session VMs launch in this subnet. Leave empty otherwise.\nformat: subnet-0abc123…",
+	},
+	{
+		Key: "gcp.project", Group: "gcp", Label: "project", Hint: "project sessions are created in",
+		Kind:   KindText,
+		Detail: "Sessions are created in this project — pier always passes it explicitly, never your active gcloud default. Required when cloud is GCP.",
+	},
+	{
+		Key: "gcp.zone", Group: "gcp", Label: "zone", Hint: "where new VMs launch",
+		Kind: KindChoice, Default: "europe-west3-a",
+		Options: []Option{
+			{Value: "us-central1-a", Desc: "Iowa"},
+			{Value: "us-east1-b", Desc: "S. Carolina"},
+			{Value: "europe-west1-b", Desc: "Belgium"},
+			{Value: "europe-west3-a", Desc: "Frankfurt"},
+			{Value: "europe-west4-a", Desc: "Netherlands"},
+			{Value: "asia-southeast1-a", Desc: "Singapore"},
+		},
+		Detail: "New session VMs launch in this zone; existing sessions stay put.\nformat: europe-west3-a, us-central1-a, …",
+	},
+	{
+		Key: "gcp.machine_type", Group: "gcp", Label: "machine", Hint: "default VM for new sessions",
+		Kind: KindMachine, Default: "e2-medium",
+		Detail: "New sessions start on this machine type. Undersize freely — `m` resizes any live session in a couple of minutes, disk intact.",
+	},
+	{
+		Key: "gcp.disk_gib", Group: "gcp", Label: "disk", Hint: "per-session boot disk",
+		Kind: KindChoice, Options: diskOpts, Suffix: " GiB", Default: "40",
+		Detail: "Boot disk for each new session — it's what survives parking and what a parked session costs (~$3-4/mo).\nwhole GiB, at least 10",
+	},
 }
 
 // Get returns the current value of a settable key ("" for unknown keys).
@@ -230,15 +368,30 @@ func Get(c Config, key string) string {
 	return ""
 }
 
-// Set mutates one whitelisted scalar, validating durations and disk size.
-// Changes apply to new sessions only.
+// Set mutates one whitelisted scalar, validating it before it lands. A
+// rejected value never touches the config, so the caller can keep the field
+// open for a fix. Changes apply to new sessions only.
 func Set(c *Config, key, val string) error {
 	switch key {
 	case "driver":
-		c.Driver = val
+		// Strict: a typo like "gcp" used to save and then silently fall back to
+		// the AWS driver at create time. Common aliases normalize; the rest is
+		// a hard error here, not a surprise minutes later.
+		switch strings.ToLower(strings.TrimSpace(val)) {
+		case "aws-ec2", "aws", "ec2":
+			c.Driver = "aws-ec2"
+		case "gcp-gce", "gcp", "gce", "google":
+			c.Driver = "gcp-gce"
+		default:
+			return fmt.Errorf("driver: want aws-ec2 or gcp-gce (got %q)", val)
+		}
 	case "idle_timeout", "unattended_cap":
-		if _, err := ParkDuration(val); err != nil {
+		d, err := ParkDuration(val)
+		if err != nil {
 			return fmt.Errorf("%s: %v (want a duration like 30m or 8h, or never)", key, err)
+		}
+		if d < 0 {
+			return fmt.Errorf("%s: must not be negative (got %q)", key, val)
 		}
 		if key == "idle_timeout" {
 			c.IdleTimeout = val
@@ -246,33 +399,57 @@ func Set(c *Config, key, val string) error {
 			c.UnattendedCap = val
 		}
 	case "aws.profile":
-		c.AWS.Profile = val
+		c.AWS.Profile = strings.TrimSpace(val)
 	case "aws.region":
+		val = strings.TrimSpace(val)
+		if !validRegionish(val) {
+			return fmt.Errorf("aws.region: want a region like us-east-1 or eu-central-1 (got %q)", val)
+		}
 		c.AWS.Region = val
 	case "aws.instance_type":
+		val = strings.TrimSpace(val)
+		if !validAWSType(val) {
+			return fmt.Errorf("aws.instance_type: want a type like t4g.medium (got %q)", val)
+		}
 		c.AWS.InstanceType = val
 	case "aws.disk_gib":
-		n, err := strconv.Atoi(val)
+		n, err := strconv.Atoi(strings.TrimSpace(val))
 		if err != nil || n < 8 {
 			return fmt.Errorf("aws.disk_gib: want a whole number of GiB, at least 8 (got %q)", val)
 		}
 		c.AWS.DiskGiB = n
 	case "aws.subnet":
+		val = strings.TrimSpace(val)
+		if val != "" && !strings.HasPrefix(val, "subnet-") {
+			return fmt.Errorf("aws.subnet: want a subnet id like subnet-0abc123, or empty for the default VPC (got %q)", val)
+		}
 		c.AWS.Subnet = val
 	case "gcp.project":
+		val = strings.TrimSpace(val)
+		if val != "" && !validProjectID(val) {
+			return fmt.Errorf("gcp.project: want a project id — lowercase letters, digits, hyphens, 6-30 chars (got %q)", val)
+		}
 		c.GCP.Project = val
 	case "gcp.zone":
+		val = strings.TrimSpace(val)
+		if !validRegionish(val) {
+			return fmt.Errorf("gcp.zone: want a zone like europe-west3-a or us-central1-a (got %q)", val)
+		}
 		c.GCP.Zone = val
 	case "gcp.machine_type":
+		val = strings.TrimSpace(val)
+		if !validGCPType(val) {
+			return fmt.Errorf("gcp.machine_type: want a type like e2-medium or e2-standard-4 (got %q)", val)
+		}
 		c.GCP.MachineType = val
 	case "gcp.disk_gib":
-		n, err := strconv.Atoi(val)
+		n, err := strconv.Atoi(strings.TrimSpace(val))
 		if err != nil || n < 10 {
 			return fmt.Errorf("gcp.disk_gib: want a whole number of GiB, at least 10 (got %q)", val)
 		}
 		c.GCP.DiskGiB = n
 	case "aws.direct":
-		switch strings.ToLower(val) {
+		switch strings.ToLower(strings.TrimSpace(val)) {
 		case "true", "yes", "on":
 			c.AWS.Direct = true
 		case "false", "no", "off":
@@ -288,4 +465,71 @@ func Set(c *Config, key, val string) error {
 		return fmt.Errorf("unknown key %q — settable: %s", key, strings.Join(keys, ", "))
 	}
 	return nil
+}
+
+// validRegionish is a lenient guard for AWS regions and GCP zones: a lowercase
+// token with a hyphen and a digit (us-east-1, europe-west3-a, us-gov-west-1).
+// Deliberately loose — it catches spaces, capitals, and wrong-field typos
+// without rejecting valid or future names the strict picker doesn't list.
+func validRegionish(s string) bool {
+	if s == "" || !strings.Contains(s, "-") {
+		return false
+	}
+	hasDigit := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r == '-':
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		default:
+			return false
+		}
+	}
+	return hasDigit
+}
+
+// validAWSType matches a family.size token (t4g.medium, m7g.4xlarge).
+func validAWSType(s string) bool {
+	fam, size, ok := strings.Cut(s, ".")
+	return ok && lowerAlnum(fam) && lowerAlnum(size)
+}
+
+// validGCPType matches a hyphenated machine type (e2-medium, e2-standard-4,
+// e2-custom-4-8192).
+func validGCPType(s string) bool {
+	if s == "" || s[0] < 'a' || s[0] > 'z' || !strings.Contains(s, "-") {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// validProjectID is the shape of a GCP project id: 6-30 chars, starts with a
+// letter, lowercase letters/digits/hyphens, no trailing hyphen.
+func validProjectID(s string) bool {
+	if len(s) < 6 || len(s) > 30 || s[0] < 'a' || s[0] > 'z' || strings.HasSuffix(s, "-") {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerAlnum(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }

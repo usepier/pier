@@ -43,35 +43,115 @@ func TestViewStates(t *testing.T) {
 	}
 }
 
-// The settings page renders every settable key and rejects bad values while
-// editing (staying in edit so the value can be fixed) without touching disk.
+// The settings page groups fields under human labels, shows the current
+// values, surfaces the read-only "managed elsewhere" section, and explains
+// the selected field in the detail footer.
 func TestSettingsPage(t *testing.T) {
 	cfg := config.Default()
 	m := model{mode: modeSettings, cfg: &cfg}
 
 	v := m.View()
-	for _, want := range []string{"pier settings", "idle_timeout", "aws.instance_type", "t4g.medium"} {
+	for _, want := range []string{
+		"pier settings",         // title
+		"session", "aws", "gcp", // group headers
+		"auto-park", "machine", "connection", // human labels
+		"t4g.medium",        // a current value
+		"managed elsewhere", // read-only section
+		"claude token",      // a read-only row
+		"config: driver",    // detail footer for the selected (first) field
+	} {
 		if !strings.Contains(v, want) {
 			t.Errorf("settings view missing %q:\n%s", want, v)
 		}
 	}
+	// The raw TOML keys are gone from the rows — only the footer names them.
+	if strings.Contains(v, "idle_timeout ") {
+		t.Errorf("row still shows a raw config key instead of a label:\n%s", v)
+	}
+}
 
-	// Move to idle_timeout, edit, type a bad duration, try to save.
-	m.setIdx = 1 // idle_timeout
+// A free-text field (gcp.project) opens the editor on enter and, on a bad
+// value, stays in edit with an error without touching disk.
+func TestSettingsTextValidation(t *testing.T) {
+	cfg := config.Default()
+	m := model{mode: modeSettings, cfg: &cfg, setIdx: fieldIndex(t, "gcp.project")}
+
 	got, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
 	m = got.(model)
-	if !m.editing || m.setInput != "30m" {
-		t.Fatalf("enter must start editing with the current value, got editing=%v input=%q", m.editing, m.setInput)
+	if !m.editing {
+		t.Fatalf("enter on a text field must open the editor, got editing=%v picking=%v", m.editing, m.picking)
 	}
-	m.setInput = "not-a-duration"
+	m.setInput = "Bad_Project"
 	got, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
 	m = got.(model)
 	if !m.editing || !m.statusBad {
-		t.Errorf("bad duration must stay in edit with an error, got editing=%v status=%q", m.editing, m.status)
+		t.Errorf("a bad project id must stay in edit with an error, got editing=%v status=%q", m.editing, m.status)
 	}
-	if cfg.IdleTimeout != "30m" {
-		t.Errorf("bad value leaked into config: %q", cfg.IdleTimeout)
+	if cfg.GCP.Project != "" {
+		t.Errorf("a rejected value leaked into config: %q", cfg.GCP.Project)
 	}
+}
+
+// A choice field (auto-park / idle_timeout) opens a picker preselected on the
+// current value; selecting a different option saves it.
+func TestSettingsChoicePicker(t *testing.T) {
+	cfg := config.Default() // idle_timeout defaults to 30m
+	m := model{mode: modeSettings, cfg: &cfg, setIdx: fieldIndex(t, "idle_timeout")}
+
+	got, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if !m.picking {
+		t.Fatalf("enter on a choice field must open the picker, got picking=%v editing=%v", m.picking, m.editing)
+	}
+	if m.pickOpts[m.pickIdx].Value != "30m" {
+		t.Errorf("picker must preselect the current value, got %q", m.pickOpts[m.pickIdx].Value)
+	}
+	if v := m.View(); !strings.Contains(v, "(current)") || !strings.Contains(v, "custom…") {
+		t.Errorf("picker must mark the current option and offer custom…:\n%s", v)
+	}
+	// Move to a different option and select it.
+	got, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyDown})
+	m = got.(model)
+	want := m.pickOpts[m.pickIdx].Value
+	got, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if m.picking || cfg.IdleTimeout != want {
+		t.Errorf("selecting an option must save it and close the picker, got picking=%v idle=%q want=%q", m.picking, cfg.IdleTimeout, want)
+	}
+}
+
+// The machine field builds its picker from the injected catalog and converts
+// each machine into an annotated option.
+func TestSettingsMachinePicker(t *testing.T) {
+	cfg := config.Default()
+	m := model{mode: modeSettings, cfg: &cfg, setIdx: fieldIndex(t, "aws.instance_type"),
+		opts: Options{SettingsMachines: func(driverID, cur string) []driver.Machine {
+			return awsec2.Machines(cur)
+		}}}
+	got, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if !m.picking || len(m.pickOpts) == 0 {
+		t.Fatalf("enter on the machine field must open a populated picker, got picking=%v opts=%d", m.picking, len(m.pickOpts))
+	}
+	if m.pickOpts[m.pickIdx].Value != "t4g.medium" {
+		t.Errorf("picker must preselect the configured type, got %q", m.pickOpts[m.pickIdx].Value)
+	}
+	if v := m.View(); !strings.Contains(v, "vCPU") || !strings.Contains(v, "GiB") {
+		t.Errorf("machine picker must show specs:\n%s", v)
+	}
+}
+
+// fieldIndex is the position of key in config.Settings, failing the test if
+// the key was renamed out from under it.
+func fieldIndex(t *testing.T, key string) int {
+	t.Helper()
+	for i, f := range config.Settings {
+		if f.Key == key {
+			return i
+		}
+	}
+	t.Fatalf("no settable field %q", key)
+	return 0
 }
 
 // The m key opens the resize picker preselected on the session's current
