@@ -615,7 +615,7 @@ func stateCell(s driver.Session) string {
 	}
 	cell := dot + " " + string(s.State)
 	if s.Strained {
-		cell += " ▲strained"
+		cell += " ▲ strained"
 	}
 	switch s.Setup {
 	case "running":
