@@ -1,12 +1,17 @@
 // Package tui is the bare `pier` screen: a session list you can attach to,
-// plus new/delete/pin/refresh. Inline (no full-screen takeover), one accent
-// color, states color-coded. Quota loads asynchronously so the screen opens
-// instantly; a `loaded` flag separates "fetching" from "genuinely empty" so
-// the list never flashes "0 sessions" before the first fetch lands.
+// plus new/delete/pin/refresh. Full-screen on the alternate buffer, one
+// accent color, states color-coded; quitting restores the shell untouched.
+// Attach hands the terminal to ssh via tea.ExecProcess, so a tmux detach
+// lands back on this list instead of the shell. Quota loads asynchronously
+// so the screen opens instantly; a `loaded` flag separates "fetching" from
+// "genuinely empty" so the list never flashes "0 sessions" before the first
+// fetch lands.
 package tui
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -25,7 +30,7 @@ type Options struct {
 	Pin        func(driver.Session) error
 	// CreateDetached starts a background create and returns its log path;
 	// the TUI stays open and the session appears in the list as "creating".
-	// nil falls back to quit-and-create-in-foreground (ActionNew).
+	// nil disables creating from the TUI (tests).
 	CreateDetached func(branch string) (logPath string, err error)
 	// Resize + Machines power the m key: Machines lists same-arch picks for a
 	// session so nobody memorizes type names. nil hides the key.
@@ -34,30 +39,21 @@ type Options struct {
 	// FetchLog returns a session's setup log for the l key's in-place viewer.
 	// nil hides the key.
 	FetchLog func(s driver.Session) (string, error)
+	// Attach returns a fresh ssh command for one attach attempt; the TUI runs
+	// it via tea.ExecProcess so the program survives a detach and lands back
+	// on the list. nil disables the enter key (tests).
+	Attach func(s driver.Session) (*exec.Cmd, error)
+	// Resume unparks a session's VM and blocks until its transport answers.
+	Resume func(s driver.Session) error
+	// RetryAttach + WaitReachable power the one bounded reconnect after a fast
+	// ssh transport failure (fresh or just-resumed VMs); nil disables the retry.
+	RetryAttach   func(err error, elapsed time.Duration) bool
+	WaitReachable func(s driver.Session) error
 }
 
-type ActionKind int
-
-const (
-	ActionNone ActionKind = iota
-	ActionAttach
-	ActionNew
-)
-
-// Action is what the user picked; attach/new run after the TUI returns the
-// terminal (ssh needs it).
-type Action struct {
-	Kind    ActionKind
-	Session driver.Session
-	Branch  string
-}
-
-func Run(opts Options) (Action, error) {
-	final, err := tea.NewProgram(model{opts: opts, loading: true}).Run()
-	if err != nil {
-		return Action{}, err
-	}
-	return final.(model).action, nil
+func Run(opts Options) error {
+	_, err := tea.NewProgram(model{opts: opts, loading: true}, tea.WithAltScreen()).Run()
+	return err
 }
 
 type mode int
@@ -85,7 +81,10 @@ type model struct {
 	polling   bool // an auto-refresh poll is scheduled (creates in flight)
 	watch     int  // poll rounds left after a spawn (until it's listable)
 	frame     int  // spinner frame
-	action    Action
+	// attach-in-flight state; enter is a no-op while attachSess is set
+	attachSess    driver.Session // row being attached; zero Name = none in flight
+	attachStart   time.Time      // last ExecProcess launch; feeds RetryAttach
+	attachRetried bool           // one bounded reconnect per attach, like the CLI
 	// settings page state; cfg loads fresh each time s opens the page
 	cfg      *config.Config
 	setIdx   int
@@ -134,6 +133,25 @@ type spawnedMsg struct {
 	branch string
 	log    string
 	err    error
+}
+
+// resumedMsg reports a parked VM's blocking resume finished (or failed).
+type resumedMsg struct {
+	s   driver.Session
+	err error
+}
+
+// attachDoneMsg arrives when the foreground ssh exits: detach, remote exit,
+// or transport error.
+type attachDoneMsg struct {
+	s   driver.Session
+	err error
+}
+
+// reachableMsg reports the bounded wait before the one attach retry.
+type reachableMsg struct {
+	s   driver.Session
+	err error
 }
 
 func tickCmd() tea.Cmd {
@@ -207,6 +225,48 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quotaMsg:
 		m.quota = string(msg)
 		return m, nil
+	case resumedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.attachSess = driver.Session{}
+			m.status, m.statusBad = "resume "+msg.s.Name+": "+msg.err.Error(), true
+			return m, nil
+		}
+		return m.startAttach(msg.s)
+	case attachDoneMsg:
+		if msg.err == nil { // clean detach or remote exit
+			m.attachSess, m.attachRetried = driver.Session{}, false
+			m.loading = true
+			m.status, m.statusBad = "detached from "+msg.s.Name+" — it keeps running", false
+			return m, tea.Batch(m.fetch, tickCmd())
+		}
+		if !m.attachRetried && m.opts.RetryAttach != nil && m.opts.WaitReachable != nil &&
+			m.opts.RetryAttach(msg.err, time.Since(m.attachStart)) {
+			m.attachRetried = true
+			m.loading = true
+			m.status, m.statusBad = "not reachable yet — waiting for "+msg.s.Name+" to come online (~30-60s)", false
+			wait := m.opts.WaitReachable
+			return m, tea.Batch(tickCmd(), func() tea.Msg { return reachableMsg{msg.s, wait(msg.s)} })
+		}
+		status := "attach " + msg.s.Name + ": " + msg.err.Error()
+		var exitErr *exec.ExitError
+		if errors.As(msg.err, &exitErr) && exitErr.ExitCode() != 255 && time.Since(m.attachStart) < 15*time.Second {
+			// the remote bootstrap-marker guard exits 1 fast when setup is
+			// still running — point at the log instead of a bare exit status
+			status += " — it may still be setting up; l shows the setup log"
+		}
+		m.attachSess, m.attachRetried = driver.Session{}, false
+		m.loading = true
+		m.status, m.statusBad = status, true
+		return m, tea.Batch(m.fetch, tickCmd()) // the refreshed state often explains it
+	case reachableMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.attachSess, m.attachRetried = driver.Session{}, false
+			m.status, m.statusBad = msg.err.Error(), true
+			return m, nil
+		}
+		return m.startAttach(msg.s) // second and final attempt; attachRetried stays set
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.mode == modeLogs {
@@ -275,17 +335,31 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 		}
 	case "enter":
-		if len(m.sessions) > 0 {
-			if s := m.sessions[m.cursor]; s.State == driver.StateCreating {
-				m.status, m.statusBad = s.Name+" is still setting up — attach when it shows running", false
-				return m, nil
-			} else if s.State == driver.StateDeleting {
-				m.status, m.statusBad = s.Name+" is being deleted", false
+		if len(m.sessions) == 0 || m.opts.Attach == nil || m.attachSess.Name != "" {
+			return m, nil
+		}
+		s := m.sessions[m.cursor]
+		switch s.State {
+		case driver.StateCreating:
+			m.status, m.statusBad = s.Name+" is still setting up — attach when it shows running", false
+			return m, nil
+		case driver.StateDeleting:
+			m.status, m.statusBad = s.Name+" is being deleted", false
+			return m, nil
+		case driver.StateDead:
+			m.status, m.statusBad = s.Name+" is dead — no VM to attach to", false
+			return m, nil
+		case driver.StateParked:
+			if m.opts.Resume == nil {
+				m.status, m.statusBad = s.Name+" is parked — pier attach "+s.Name+" resumes it", false
 				return m, nil
 			}
-			m.action = Action{Kind: ActionAttach, Session: m.sessions[m.cursor]}
-			return m, tea.Quit
+			m.attachSess, m.loading = s, true
+			m.status, m.statusBad = "resuming "+s.Name+" (~20-60s)…", false
+			resume := m.opts.Resume
+			return m, tea.Batch(tickCmd(), func() tea.Msg { return resumedMsg{s, resume(s)} })
 		}
+		return m.startAttach(s)
 	case "l":
 		if len(m.sessions) > 0 && m.opts.FetchLog != nil {
 			s := m.sessions[m.cursor]
@@ -370,6 +444,21 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetch, tickCmd())
 	}
 	return m, nil
+}
+
+// startAttach hands the terminal to ssh via tea.ExecProcess: bubbletea leaves
+// the alt screen, restores the shell termios, runs the command, then restores
+// the TUI and delivers attachDoneMsg — a tmux detach lands back on this list.
+func (m model) startAttach(s driver.Session) (tea.Model, tea.Cmd) {
+	cmd, err := m.opts.Attach(s)
+	if err != nil {
+		m.attachSess, m.loading = driver.Session{}, false
+		m.status, m.statusBad = err.Error(), true
+		return m, nil
+	}
+	m.attachSess, m.attachStart, m.loading = s, time.Now(), false
+	m.status, m.statusBad = "attaching to "+s.Name+" — detach with C-b d (session keeps running)", false
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return attachDoneMsg{s, err} })
 }
 
 func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -460,9 +549,9 @@ func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.input == "" {
 			return m, nil
 		}
-		if m.opts.CreateDetached == nil { // legacy: quit, create in foreground
-			m.action = Action{Kind: ActionNew, Branch: m.input}
-			return m, tea.Quit
+		if m.opts.CreateDetached == nil { // no creator wired (tests)
+			m.mode = modeList
+			return m, nil
 		}
 		for _, s := range m.sessions {
 			if s.Name == m.input {
@@ -628,9 +717,34 @@ func (m model) settingsView() string {
 	return b.String()
 }
 
+// listRows is the table's row budget: terminal height minus every non-row
+// line View emits in the current mode, so the footer never clips off the
+// alternate screen (the renderer keeps the LAST height lines on overflow).
+func (m model) listRows() int {
+	if m.height == 0 { // no WindowSizeMsg yet (tests) — render everything
+		return len(m.sessions)
+	}
+	chrome := 6 // top margin+title+blank, column header, blank after table, trailing newline
+	switch m.mode {
+	case modeNew:
+		chrome += 5 // label + 3-line box + keys
+	case modeConfirm:
+		chrome++
+	case modeResize:
+		chrome += 2 + len(m.machines) // label + machine rows + keys
+	default:
+		chrome++ // keys
+		if m.status != "" {
+			chrome++
+		}
+	}
+	return max(3, m.height-chrome)
+}
+
 // table renders the session rows: dim column header, accent cursor, states
 // color-coded. Cells are padded as plain text first, then styled — ANSI
-// escapes would defeat %-*s width math.
+// escapes would defeat %-*s width math. When the terminal is shorter than
+// the list, a cursor-centered window of rows renders instead.
 func (m model) table() string {
 	nameW, repoW, stateW := 4, 4, 5
 	states := make([]string, len(m.sessions))
@@ -644,7 +758,13 @@ func (m model) table() string {
 	var b strings.Builder
 	b.WriteString(ui.Dim.Render(fmt.Sprintf("   %-*s  %-*s  %-*s  %-4s  %s",
 		nameW, "NAME", repoW, "REPO", stateW, "STATE", "AGE", "COST")) + "\n")
-	for i, s := range m.sessions {
+	rows, lo := m.listRows(), 0
+	if rows < len(m.sessions) {
+		lo = min(max(0, m.cursor-rows/2), len(m.sessions)-rows)
+	}
+	hi := min(len(m.sessions), lo+rows)
+	for i := lo; i < hi; i++ {
+		s := m.sessions[i]
 		marker := "   "
 		name := fmt.Sprintf("%-*s", nameW, s.Name)
 		if i == m.cursor {

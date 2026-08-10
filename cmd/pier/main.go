@@ -311,11 +311,13 @@ func repoRoot() string {
 	return strings.TrimSpace(string(out))
 }
 
-// attach runs the interactive ssh+tmux. A fresh or just-resumed VM reports
-// cloud-running before its transport answers (EC2's SSM agent takes ~30s to
-// register; GCE's IAP tunnel has the same window), so an ssh attempt that
-// dies instantly gets one bounded wait-for-reachability and a retry instead
-// of a raw transport error dump.
+// attach runs the interactive ssh+tmux for the CLI paths (pier attach,
+// pier <branch>); the TUI has its own tea.ExecProcess flow wired through
+// tui.Options so a detach lands back on the list. A fresh or just-resumed VM
+// reports cloud-running before its transport answers (EC2's SSM agent takes
+// ~30s to register; GCE's IAP tunnel has the same window), so an ssh attempt
+// that dies instantly gets one bounded wait-for-reachability and a retry
+// instead of a raw transport error dump.
 func attach(drv driver.Driver, id string) {
 	fmt.Println(ui.Dim.Render("attaching — detach with C-b d (session keeps running)"))
 	retried := false
@@ -919,7 +921,7 @@ func confirm(prompt string, def bool) bool {
 
 func cmdTUI() {
 	_, drv := loadDriver()
-	action, err := tui.Run(tui.Options{
+	err := tui.Run(tui.Options{
 		// Async: the TUI opens instantly and the quota fills in when it lands.
 		FetchQuota: func() string {
 			q, err := drv.Headroom(context.Background())
@@ -960,16 +962,19 @@ func cmdTUI() {
 			}
 			return out, err
 		},
+		Attach: func(s driver.Session) (*exec.Cmd, error) {
+			return drv.AttachCommand(context.Background(), s.ID)
+		},
+		Resume: func(s driver.Session) error {
+			return drv.Resume(context.Background(), s.ID)
+		},
+		RetryAttach: retryAttach,
+		WaitReachable: func(s driver.Session) error {
+			return waitReachable(drv, s.ID, 4*time.Minute)
+		},
 	})
 	if err != nil {
 		fatal(err)
-	}
-	switch action.Kind {
-	case tui.ActionAttach:
-		resumeIfParked(drv, action.Session)
-		attach(drv, action.Session.ID)
-	case tui.ActionNew:
-		cmdNew([]string{action.Branch})
 	}
 }
 

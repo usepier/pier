@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -131,20 +134,25 @@ func TestResizePicker(t *testing.T) {
 	}
 }
 
-// Enter on a still-creating session must not leave the TUI to spawn ssh —
-// mid-create attaches used to dump a raw TargetNotConnected. It shows a
-// notice and stays put instead.
+// Enter on a still-creating session must not spawn ssh — mid-create attaches
+// used to dump a raw TargetNotConnected. It shows a notice and stays put
+// instead.
 func TestEnterOnCreatingSession(t *testing.T) {
-	m := model{loaded: true, sessions: []driver.Session{
-		{Name: "half-built", Repo: "myapp", State: driver.StateCreating},
-	}}
+	m := model{loaded: true,
+		opts: Options{Attach: func(driver.Session) (*exec.Cmd, error) {
+			t.Fatal("attach spawned for a creating session")
+			return nil, nil
+		}},
+		sessions: []driver.Session{
+			{Name: "half-built", Repo: "myapp", State: driver.StateCreating},
+		}}
 	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
-		t.Fatal("enter on a creating session must not quit to attach")
+		t.Fatal("enter on a creating session must not attach")
 	}
 	gm := got.(model)
-	if gm.action.Kind == ActionAttach {
-		t.Error("attach action set for a creating session")
+	if gm.attachSess.Name != "" {
+		t.Error("attach in flight for a creating session")
 	}
 	if !strings.Contains(gm.status, "still setting up") || gm.statusBad {
 		t.Errorf("want a friendly notice, got status=%q bad=%v", gm.status, gm.statusBad)
@@ -186,9 +194,6 @@ func TestLogsKey(t *testing.T) {
 	if gm.mode != modeLogs || gm.logSess.Name != "half-built" {
 		t.Errorf("want modeLogs on half-built, got mode=%v session=%q", gm.mode, gm.logSess.Name)
 	}
-	if gm.action.Kind != ActionNone {
-		t.Errorf("the viewer must stay inside the TUI, got action %v", gm.action.Kind)
-	}
 	if !gm.logStick || !gm.logLoading {
 		t.Errorf("the viewer must open following the tail while it fetches, got stick=%v loading=%v", gm.logStick, gm.logLoading)
 	}
@@ -198,6 +203,194 @@ func TestLogsKey(t *testing.T) {
 	gm = got.(model)
 	if gm.mode != modeList || len(gm.sessions) != 1 {
 		t.Errorf("esc must return to the list, got mode=%v sessions=%d", gm.mode, len(gm.sessions))
+	}
+}
+
+// Enter on a running session hands the terminal to ssh via ExecProcess —
+// the TUI must survive the attach (no tea.Quit), so a detach lands back on
+// the list.
+func TestEnterAttachesWithoutQuitting(t *testing.T) {
+	attached := 0
+	m := model{loaded: true,
+		opts: Options{Attach: func(driver.Session) (*exec.Cmd, error) {
+			attached++
+			return exec.Command("true"), nil
+		}},
+		sessions: []driver.Session{
+			{Name: "fix-auth", Repo: "myapp", State: driver.StateRunning},
+		}}
+	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
+	gm := got.(model)
+	if attached != 1 || cmd == nil {
+		t.Fatalf("enter must build and run the attach command, got attached=%d cmd=%v", attached, cmd)
+	}
+	if _, quit := cmd().(tea.QuitMsg); quit {
+		t.Error("enter must not quit the TUI to attach")
+	}
+	if gm.attachSess.Name != "fix-auth" {
+		t.Errorf("attachSess must mark the attach in flight, got %q", gm.attachSess.Name)
+	}
+	if !strings.Contains(gm.status, "C-b d") {
+		t.Errorf("the detach hint must show in the TUI, got status=%q", gm.status)
+	}
+
+	// A second enter while the attach is in flight is a no-op.
+	if _, cmd := gm.updateList(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil || attached != 1 {
+		t.Errorf("enter during an attach must do nothing, got attached=%d", attached)
+	}
+}
+
+// Enter on a parked session resumes it inside the TUI first, then attaches;
+// a failed resume clears the in-flight state with an error status.
+func TestEnterOnParkedResumesFirst(t *testing.T) {
+	resumed, attached := 0, 0
+	m := model{loaded: true,
+		opts: Options{
+			Resume: func(driver.Session) error { resumed++; return nil },
+			Attach: func(driver.Session) (*exec.Cmd, error) {
+				attached++
+				return exec.Command("true"), nil
+			},
+		},
+		sessions: []driver.Session{
+			{Name: "fix-auth", Repo: "myapp", State: driver.StateParked},
+		}}
+	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
+	gm := got.(model)
+	if attached != 0 || !strings.Contains(gm.status, "resuming") || !gm.loading {
+		t.Fatalf("enter on parked must resume before attaching, got attached=%d status=%q", attached, gm.status)
+	}
+	var rm tea.Msg
+	if batch, ok := cmd().(tea.BatchMsg); ok { // Batch wraps, doesn't run
+		for _, c := range batch {
+			if msg, ok := c().(resumedMsg); ok {
+				rm = msg
+			}
+		}
+	}
+	if resumed != 1 || rm == nil {
+		t.Fatalf("the batch must run the resume, got resumed=%d msg=%v", resumed, rm)
+	}
+	got, cmd = gm.Update(rm)
+	gm = got.(model)
+	if attached != 1 || cmd == nil || gm.attachSess.Name != "fix-auth" {
+		t.Errorf("a finished resume must attach, got attached=%d cmd=%v sess=%q", attached, cmd, gm.attachSess.Name)
+	}
+
+	// A failed resume surfaces the error and clears the in-flight state.
+	got, _ = gm.Update(resumedMsg{gm.attachSess, errors.New("quota exceeded")})
+	gm = got.(model)
+	if !gm.statusBad || gm.attachSess.Name != "" {
+		t.Errorf("a failed resume must error and clear the attach, got status=%q sess=%q", gm.status, gm.attachSess.Name)
+	}
+}
+
+// A fast transport failure gets exactly one wait-for-reachability and retry,
+// mirroring the CLI attach loop; a second failure lands an error on the list.
+func TestAttachRetriesOnceThenFails(t *testing.T) {
+	waited, attached := 0, 0
+	s := driver.Session{Name: "fix-auth", Repo: "myapp", State: driver.StateRunning}
+	m := model{loaded: true, sessions: []driver.Session{s},
+		attachSess: s, attachStart: time.Now(),
+		opts: Options{
+			Fetch:         func() ([]driver.Session, error) { return nil, nil },
+			RetryAttach:   func(error, time.Duration) bool { return true },
+			WaitReachable: func(driver.Session) error { waited++; return nil },
+			Attach: func(driver.Session) (*exec.Cmd, error) {
+				attached++
+				return exec.Command("true"), nil
+			},
+		}}
+	got, cmd := m.Update(attachDoneMsg{s, errors.New("exit status 255")})
+	gm := got.(model)
+	if !gm.attachRetried || !strings.Contains(gm.status, "not reachable yet") {
+		t.Fatalf("a retryable failure must wait for reachability, got status=%q", gm.status)
+	}
+	var rm tea.Msg
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if msg, ok := c().(reachableMsg); ok {
+				rm = msg
+			}
+		}
+	}
+	if waited != 1 || rm == nil {
+		t.Fatalf("the batch must run the reachability wait, got waited=%d msg=%v", waited, rm)
+	}
+	got, cmd = gm.Update(rm)
+	gm = got.(model)
+	if attached != 1 || cmd == nil {
+		t.Fatalf("a reachable session must attach again, got attached=%d cmd=%v", attached, cmd)
+	}
+
+	// The second failure is final: error status, no more waits.
+	got, _ = gm.Update(attachDoneMsg{s, errors.New("exit status 255")})
+	gm = got.(model)
+	if !gm.statusBad || gm.attachSess.Name != "" || waited != 1 {
+		t.Errorf("a second failure must give up, got status=%q sess=%q waited=%d", gm.status, gm.attachSess.Name, waited)
+	}
+}
+
+// Detaching (ssh exiting 0) lands back on the list with a notice and a
+// fresh session fetch — never at the shell.
+func TestDetachReturnsToList(t *testing.T) {
+	s := driver.Session{Name: "fix-auth", Repo: "myapp", State: driver.StateRunning}
+	m := model{loaded: true, sessions: []driver.Session{s}, attachSess: s,
+		opts: Options{Fetch: func() ([]driver.Session, error) { return []driver.Session{s}, nil }}}
+	got, cmd := m.Update(attachDoneMsg{s, nil})
+	gm := got.(model)
+	if !strings.Contains(gm.status, "detached from fix-auth") || gm.statusBad {
+		t.Errorf("want a detach notice, got status=%q bad=%v", gm.status, gm.statusBad)
+	}
+	if gm.attachSess.Name != "" {
+		t.Errorf("the attach must no longer be in flight, got %q", gm.attachSess.Name)
+	}
+	fetched := false
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if _, ok := c().(sessionsMsg); ok {
+				fetched = true
+			}
+		}
+	}
+	if !fetched {
+		t.Error("a detach must refresh the session list")
+	}
+}
+
+// On the alternate screen the renderer keeps the LAST height lines when the
+// view overflows, which would scroll the header off — the table must window
+// its rows around the cursor instead.
+func TestTableWindowFollowsCursor(t *testing.T) {
+	m := model{loaded: true, height: 15}
+	for i := range 40 {
+		m.sessions = append(m.sessions, driver.Session{
+			Name: fmt.Sprintf("s%d", i), Repo: "myapp", State: driver.StateRunning,
+		})
+	}
+
+	v := m.View()
+	if !strings.Contains(v, "s0") || strings.Contains(v, "s39") {
+		t.Errorf("cursor at the top must show the first rows:\n%s", v)
+	}
+	if c := strings.Count(v, "\n"); c > m.height {
+		t.Errorf("view is %d lines for a %d-line terminal:\n%s", c, m.height, v)
+	}
+	if !strings.Contains(v, "NAME") || !strings.Contains(v, "quit") {
+		t.Errorf("header and footer must survive the windowing:\n%s", v)
+	}
+
+	m.cursor = 39
+	v = m.View()
+	if !strings.Contains(v, "s39") || strings.Contains(v, "s0 ") {
+		t.Errorf("the window must follow the cursor to the bottom:\n%s", v)
+	}
+
+	// No WindowSizeMsg yet (height 0): render everything, as inline tests do.
+	m.height, m.cursor = 0, 0
+	v = m.View()
+	if !strings.Contains(v, "s0") || !strings.Contains(v, "s39") {
+		t.Errorf("zero height must render all rows:\n%s", v)
 	}
 }
 
