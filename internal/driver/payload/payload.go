@@ -43,11 +43,35 @@ type Payload struct {
 // VM fetches the repo from GitHub directly (~100x faster) and the laptop
 // sends at most a thin local-delta bundle.
 func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor []byte, manifest []string, env map[string]string, progress func(string)) (*Payload, error) {
-	sha, err := gitOut(spec.Repo, "rev-parse", "--verify", baseRef(spec)+"^{commit}")
+	p, mode, sha, origin, err := buildCommon(ctx, dir, spec, manifest, env, progress)
 	if err != nil {
-		return nil, fmt.Errorf("base ref %q not found", baseRef(spec))
+		return nil, err
 	}
-	mode, origin := originInfo(spec.Repo, sha)
+	supPath := filepath.Join(dir, "pier-supervisor")
+	if err := os.WriteFile(supPath, supervisor, 0o755); err != nil {
+		return nil, err
+	}
+	bootPath := filepath.Join(dir, "pier-bootstrap.sh")
+	if err := os.WriteFile(bootPath, []byte(renderBootstrap(spec, mode, sha, origin)), 0o755); err != nil {
+		return nil, err
+	}
+	p.Pushes = append([]Push{
+		{supPath, "/tmp/pier-supervisor"},
+		{bootPath, "/tmp/pier-bootstrap.sh"},
+	}, p.Pushes...)
+	return p, nil
+}
+
+// buildCommon resolves the repo-transfer decision and writes the cargo that
+// create and pool-claim freshen share — files tar, bundle, dirty patch — into
+// dir. Callers prepend their script pushes, keeping the biggest cargo last so
+// its meter is the wait the user watches.
+func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manifest []string, env map[string]string, progress func(string)) (p *Payload, mode, sha, origin string, err error) {
+	sha, err = gitOut(spec.Repo, "rev-parse", "--verify", baseRef(spec)+"^{commit}")
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("base ref %q not found", baseRef(spec))
+	}
+	mode, origin = originInfo(spec.Repo, sha)
 	forwardAgent := false
 	why := "no github origin has the base"
 	if mode != "full" {
@@ -76,7 +100,7 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 		case errors.Is(err, errEmptyBundle) && mode == "thin":
 			mode, bundle = "origin", ""
 		case err != nil:
-			return nil, fmt.Errorf("bundling %s: %w", spec.Repo, err)
+			return nil, "", "", "", fmt.Errorf("bundling %s: %w", spec.Repo, err)
 		}
 	}
 	// Dirty tracked state travels only when the session's base IS the
@@ -84,12 +108,12 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 	// today's edits onto it would be a lie about what that base contained.
 	patch := ""
 	if head, _ := gitOut(spec.Repo, "rev-parse", "HEAD"); head == sha {
-		p := filepath.Join(dir, "pier-dirty.patch")
-		switch ok, err := dirtyPatch(spec.Repo, p); {
+		pp := filepath.Join(dir, "pier-dirty.patch")
+		switch ok, err := dirtyPatch(spec.Repo, pp); {
 		case err != nil:
-			return nil, err
+			return nil, "", "", "", err
 		case ok:
-			patch = p
+			patch = pp
 		}
 	}
 	setupSrc, warn := setupScriptOverride(spec.Repo)
@@ -98,7 +122,7 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 	}
 	filesTar := filepath.Join(dir, "pier-files.tar")
 	if err := buildFilesTar(filesTar, manifest, spec.Repo, env, setupSrc); err != nil {
-		return nil, err
+		return nil, "", "", "", err
 	}
 	if miss := envFilesNotCarried(spec.Repo, pierIncludeFiles(spec.Repo)); len(miss) > 0 {
 		name := miss[0]
@@ -107,19 +131,9 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 		}
 		progress("not carrying " + name + " — env files travel only when .pier-include lists them")
 	}
-	supPath := filepath.Join(dir, "pier-supervisor")
-	if err := os.WriteFile(supPath, supervisor, 0o755); err != nil {
-		return nil, err
-	}
-	bootPath := filepath.Join(dir, "pier-bootstrap.sh")
-	if err := os.WriteFile(bootPath, []byte(renderBootstrap(spec, mode, sha, origin)), 0o755); err != nil {
-		return nil, err
-	}
 
-	p := &Payload{ForwardAgent: forwardAgent}
+	p = &Payload{ForwardAgent: forwardAgent}
 	p.Pushes = []Push{
-		{supPath, "/tmp/pier-supervisor"},
-		{bootPath, "/tmp/pier-bootstrap.sh"},
 		{filesTar, "/tmp/pier-files.tar"},
 	}
 	switch mode {
@@ -140,7 +154,7 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 	if names := OAuthRemotes(home, spec.Repo); len(names) > 0 {
 		p.Notes = append(p.Notes, "mcp "+strings.Join(names, ", ")+": one-time oauth — `pier mcp login "+spec.Name+"` when it's up")
 	}
-	return p, nil
+	return p, mode, sha, origin, nil
 }
 
 func baseRef(spec driver.CreateSpec) string {

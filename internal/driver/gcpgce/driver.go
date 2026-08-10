@@ -49,10 +49,13 @@ const (
 	LabelUser     = "pier-user"
 	LabelReady    = "pier-ready"    // create's last act: bootstrap done, attachable
 	LabelDeleting = "pier-deleting" // destroy's first act: the delete itself takes a minute+
+	LabelPool     = "pier-pool"     // warm-pool generation fingerprint (hex, label-safe); present = unclaimed member
+	LabelClaim    = "pier-claim"    // claim nonce (labels have no client CAS: written, then read back)
 	MetaSession   = "pier-session"
 	MetaRepo      = "pier-repo"
 	MetaBranch    = "pier-branch"
-	MetaUser      = "pier-user" // full principal; the label form is lossy
+	MetaUser      = "pier-user"    // full principal; the label form is lossy
+	MetaCreated   = "pier-created" // RFC3339; set at claim so AGE starts then, not at fill
 
 	stockImageProject = "ubuntu-os-cloud"
 	stockImageFamily  = "ubuntu-2404-lts-%s" // amd64 | arm64
@@ -178,8 +181,13 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Branch = m.Value
 			case MetaUser:
 				owner = m.Value
+			case MetaCreated:
+				if ts, err := time.Parse(time.RFC3339, m.Value); err == nil {
+					s.Created = ts
+				}
 			}
 		}
+		s.PoolGen = in.Labels[LabelPool]
 		// The label filter is lossy (folded charset); the metadata principal
 		// is exact. A fold collision must not leak someone else's session.
 		if owner != me {
@@ -209,9 +217,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 			}
 		}
 		// creationTimestamp survives stop/start (unlike EC2 launch time), so
-		// AGE never goes backward and no created tag is needed.
-		if ts, err := time.Parse(time.RFC3339, in.CreationTimestamp); err == nil {
-			s.Created = ts
+		// AGE never goes backward and no created tag is needed — except for
+		// claimed pool members, whose session began at claim (MetaCreated).
+		if s.Created.IsZero() {
+			if ts, err := time.Parse(time.RFC3339, in.CreationTimestamp); err == nil {
+				s.Created = ts
+			}
 		}
 		s.CostNote = costNote(s.State, s.InstanceType)
 		sessions = append(sessions, s)
@@ -242,7 +253,18 @@ func costNote(st driver.State, machineType string) string {
 
 func (d *Driver) Resume(ctx context.Context, id string) error {
 	if _, err := d.gcloud(ctx, "compute", "instances", "start", id, "--zone", d.Zone); err != nil {
-		return err
+		// A parking instance sits in STOPPING for a minute — the list already
+		// calls that parked, so resuming right after a park (or claiming a
+		// just-filled pool member) lands here. Stopping again is idempotent
+		// and blocks until TERMINATED (the same trick Resize plays); then
+		// start for real. On any other failure the stop fails too and the
+		// original error stands.
+		if _, serr := d.gcloud(ctx, "compute", "instances", "stop", id, "--zone", d.Zone); serr != nil {
+			return err
+		}
+		if _, err = d.gcloud(ctx, "compute", "instances", "start", id, "--zone", d.Zone); err != nil {
+			return err
+		}
 	}
 	return d.waitSSH(ctx, id, 300*time.Second)
 }

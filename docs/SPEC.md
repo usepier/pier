@@ -310,8 +310,31 @@ and the IAP tunnel are simply slower).
    auto-transfer; the create prints which env files it is *not* carrying so
    a missing one fails loud at create, not deep in `make dev`.
 
-Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
-quota polling.
+4. **Warm pools (opt-in, per repo)** — `pier pool set <size>` (or the TUI's
+   w page) keeps N parked, **setup-complete** members ready; `pier <branch>`
+   then claims one — resume + freshen (secrets re-push, branch at base,
+   dirty patch, supervisor conf reset, async setup re-run for drift) instead
+   of create + boot + full setup — and refills the pool detached in the
+   background. Members are normal per-user instances tagged
+   `pier:pool=<gen>`, where gen fingerprints
+   driver|image|type|disk|setup-script: a re-bake, config change, or setup
+   edit strands the old generation, which recycles at the next claim/fill;
+   members older than `pool.max_age` (default 14d) recycle too, bounding
+   repo drift. Concurrent claims race on a nonce written to the claim
+   tag/label and read back (providers have no tag CAS); the loser tries the
+   next member or falls through to a fresh create — the pool accelerates,
+   never gates. Parked members cost disk only (~$3–4/mo each, shown
+   wherever pools appear). No daemon holds any of this: a 2m idle leash at
+   fill self-parks a member even if the laptop dies mid-fill, and one that
+   dies before parking is torn down at the next mutating reconcile (2h
+   grace) and flagged by doctor and the pool pages meanwhile — nothing
+   burns money silently. Pools are keyed by repo basename, like baked
+   images: two checkouts sharing a directory name share a pool, and a
+   claim from the "wrong" one fails its freshen loudly and falls back to
+   a fresh create.
+
+Cut for v1 (numbers didn't justify the moving parts): mid-create quota
+polling.
 
 ## 8. Secrets
 
@@ -399,6 +422,10 @@ pier port <match> <p> [p...]  manual port forwards, zero-sudo any-OS fallback (3
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
 pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)
+pier pool               warm pool status + cost (TUI: the w page)
+pier pool set <size>    keep <size> warm sessions ready for the cwd repo (0 = off)
+pier pool fill [--detach]  top the cwd repo's pool up to size now
+pier pool drain [repo]  destroy a repo's warm members
 pier setup              wizard (--print-admin for the no-IAM-rights path)
 pier bake               build/refresh the prebaked image
 pier doctor             checks
@@ -430,15 +457,19 @@ disk_gib     = 40
 [secrets]
 manifest = [".codex/auth.json", ".codex/config.toml", ".claude/settings.json", ".claude/CLAUDE.md"]
 # claude_oauth_token = "..."  # from `claude setup-token` (macOS Keychain path)
+
+[pool]                         # warm pools (§7.4); strictly opt-in
+# max_age = "14d"              # member recycle age
+# [pool.sizes]                 # written by `pier pool set`, keyed by repo
+# shop = 2
 ```
 
 ## 13. v1 cut line
 
 In: AWS + GCP drivers, TUI, wizard (+print-admin, teardown), bake,
 overlapped create, supervisor parking (+keep/pin), one-way secrets copy,
-doctor, quota UX.
-Out (v1.1+): warm pools, hibernate/suspend park, k8s driver, `ls --all`,
-Windows.
+doctor, quota UX, warm pools (opt-in, added post-cut — §7.4).
+Out (v1.1+): hibernate/suspend park, k8s driver, `ls --all`, Windows.
 
 ## 14. Load-bearing bets → spikes
 

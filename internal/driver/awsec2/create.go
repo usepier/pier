@@ -197,7 +197,7 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, ud
 }
 
 func tagList(spec driver.CreateSpec, me, name string) []map[string]string {
-	return []map[string]string{
+	tags := []map[string]string{
 		{"Key": "Name", "Value": name},
 		{"Key": TagManaged, "Value": "1"},
 		{"Key": TagUser, "Value": me},
@@ -206,6 +206,10 @@ func tagList(spec driver.CreateSpec, me, name string) []map[string]string {
 		{"Key": TagBranch, "Value": spec.Branch},
 		{"Key": TagCreated, "Value": time.Now().UTC().Format(time.RFC3339)},
 	}
+	if spec.PoolGen != "" {
+		tags = append(tags, map[string]string{"Key": TagPool, "Value": spec.PoolGen})
+	}
+	return tags
 }
 
 // archOf maps the instance type to arm64/amd64 (selects AMI + supervisor build).

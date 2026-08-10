@@ -18,6 +18,7 @@ type Config struct {
 	UnattendedCap string  `toml:"unattended_cap"` // duration or "never"
 	AWS           AWS     `toml:"aws"`
 	GCP           GCP     `toml:"gcp"`
+	Pool          Pool    `toml:"pool"`
 	Secrets       Secrets `toml:"secrets"`
 }
 
@@ -50,6 +51,18 @@ type GCP struct {
 	// the repo). Each repo bakes its own image so .pier-bake.sh toolchains
 	// don't bleed across projects.
 	BakedImages map[string]string `toml:"baked_images,omitempty"`
+}
+
+// Pool configures repo-scoped warm session pools. Strictly opt-in: a pool
+// exists only for repos with a size entry. Managed by `pier pool set`, not
+// the TUI settings — like baked images, a pool is a per-repo cost decision.
+type Pool struct {
+	// MaxAge recycles members older than this, bounding how far a warm
+	// checkout drifts from the default branch. Duration with a d unit
+	// allowed ("14d", "72h"); empty means 14d.
+	MaxAge string `toml:"max_age,omitempty"`
+	// Sizes: repo basename -> desired warm member count.
+	Sizes map[string]int `toml:"sizes,omitempty"`
 }
 
 type Secrets struct {
@@ -162,6 +175,42 @@ func (c *Config) ClearBakes() {
 	}
 	c.AWS.BakedAMI = ""
 	c.AWS.BakedAMIs = nil
+}
+
+// PoolSize is repo's configured warm-pool size (0 = no pool).
+func (c Config) PoolSize(repo string) int { return c.Pool.Sizes[repo] }
+
+// SetPoolSize records repo's desired pool size; 0 removes the entry so the
+// config doesn't accumulate dead rows for drained pools.
+func (c *Config) SetPoolSize(repo string, n int) {
+	if n <= 0 {
+		delete(c.Pool.Sizes, repo)
+		return
+	}
+	if c.Pool.Sizes == nil {
+		c.Pool.Sizes = map[string]int{}
+	}
+	c.Pool.Sizes[repo] = n
+}
+
+// PoolMaxAge parses pool.max_age, defaulting to 14 days. time.ParseDuration
+// has no days unit, so "14d" is handled here (whole days only).
+func (c Config) PoolMaxAge() (time.Duration, error) {
+	s := c.Pool.MaxAge
+	if s == "" {
+		return 14 * 24 * time.Hour, nil
+	}
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		if n, err := strconv.Atoi(days); err == nil && n > 0 {
+			return time.Duration(n) * 24 * time.Hour, nil
+		}
+		return 0, fmt.Errorf("pool.max_age: want a positive duration like 14d or 72h (got %q)", s)
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("pool.max_age: want a positive duration like 14d or 72h (got %q)", s)
+	}
+	return d, nil
 }
 
 // ParkDuration parses "30m" / "8h" / "never" (or "0") into a duration;

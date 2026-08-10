@@ -88,12 +88,14 @@ func RenderUserData(spec driver.CreateSpec, pubkey string) string {
 	return strings.NewReplacer(
 		"{{HOSTNAME}}", Sanitize(spec.Name),
 		"{{PUBKEY}}", pubkey,
-		"{{IDLE}}", durConf(spec.IdleTimeout),
-		"{{CAP}}", durConf(spec.UnattendedCap),
+		"{{IDLE}}", DurConf(spec.IdleTimeout),
+		"{{CAP}}", DurConf(spec.UnattendedCap),
 	).Replace(userDataTmpl)
 }
 
-func durConf(d time.Duration) string {
+// DurConf renders a timeout the way /etc/pier/supervisor.conf spells it.
+// Exported for the pool claim flow, which rewrites that file over ssh.
+func DurConf(d time.Duration) string {
 	if d <= 0 {
 		return "never"
 	}
@@ -101,6 +103,42 @@ func durConf(d time.Duration) string {
 }
 
 // --- bootstrap ----------------------------------------------------------------
+// The tmux-server start and the async setup window are shared with the pool
+// freshen script (freshen.go): a claimed member resumes from parked — a boot,
+// so the tmux server is always gone — and re-runs setup to catch drift.
+
+const tmuxEnsure = `# SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
+# first attach forwards an agent; harmless when it never does).
+# The server starts through sudo because group membership is snapshotted at
+# login: on a stock image cloud-init's "usermod -aG docker agent" lands after
+# this ssh session began, so a server started directly here would carry a
+# pre-docker group set for its whole life — and every window forks from the
+# server, so .pier-setup.sh and the user's shells all get docker.sock denied.
+# sudo re-runs initgroups, picking up /etc/group as it stands after the
+# cloud-init wait above.
+tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
+`
+
+const setupWindow = `# Background setup, after checkout + patch + .pier-include extras are all in
+# place: the repo's .pier-setup.sh, unless a PIER_SETUP_SCRIPT override rode
+# the tar (outer double quotes expand $setup now, into the single-quoted
+# bash -c; \$ defers the rest to run time). The outcome must be impossible to
+# miss — a failed setup used to vanish with its window: ~/.pier-setup.status
+# holds "running" then the exit code (the supervisor beacons it to ls/TUI),
+# the log's last line says done/FAILED, and a failed window renames to
+# setup-failed and stays open instead of closing. The rename targets its own
+# pane id: with a client attached, a bare rename-window can resolve "current
+# window" to the attached client's window and mislabel the user's shell.
+setup=./.pier-setup.sh
+if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
+# Presence is the signal, not the exec bit: git only carries +x when the
+# author remembered chmod, and gating on -x skipped a committed 0644
+# .pier-setup.sh with no trace — the one silent failure setup promises not
+# to have. bash runs it either way.
+if [ -f "$setup" ]; then
+  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; bash $setup 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE setup-failed; exec sleep infinity; fi'"
+fi
+`
 
 const bootstrapTmpl = `#!/usr/bin/env bash
 # pier bootstrap — runs once, as agent, on the fresh instance.
@@ -170,36 +208,7 @@ if [ ! -f "$HOME/.tmux.conf" ]; then
   printf 'set -g mouse on\nset -g history-limit 50000\nset -g focus-events on\n' > "$HOME/.tmux.conf"
 fi
 
-# SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
-# first attach forwards an agent; harmless when it never does).
-# The server starts through sudo because group membership is snapshotted at
-# login: on a stock image cloud-init's "usermod -aG docker agent" lands after
-# this ssh session began, so a server started directly here would carry a
-# pre-docker group set for its whole life — and every window forks from the
-# server, so .pier-setup.sh and the user's shells all get docker.sock denied.
-# sudo re-runs initgroups, picking up /etc/group as it stands after the
-# cloud-init wait above.
-tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
-# Background setup, after checkout + patch + .pier-include extras are all in
-# place: the repo's .pier-setup.sh, unless a PIER_SETUP_SCRIPT override rode
-# the tar (outer double quotes expand $setup now, into the single-quoted
-# bash -c; \$ defers the rest to run time). The outcome must be impossible to
-# miss — a failed setup used to vanish with its window: ~/.pier-setup.status
-# holds "running" then the exit code (the supervisor beacons it to ls/TUI),
-# the log's last line says done/FAILED, and a failed window renames to
-# setup-failed and stays open instead of closing. The rename targets its own
-# pane id: with a client attached, a bare rename-window can resolve "current
-# window" to the attached client's window and mislabel the user's shell.
-setup=./.pier-setup.sh
-if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
-# Presence is the signal, not the exec bit: git only carries +x when the
-# author remembered chmod, and gating on -x skipped a committed 0644
-# .pier-setup.sh with no trace — the one silent failure setup promises not
-# to have. bash runs it either way.
-if [ -f "$setup" ]; then
-  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; bash $setup 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE setup-failed; exec sleep infinity; fi'"
-fi
-
+` + tmuxEnsure + setupWindow + `
 # Attach gates on this marker: nobody lands in a half-set-up session. Written
 # after the repo checkout and tmux session exist; deliberately NOT after
 # .pier-setup.sh, which runs async in its tmux window.
@@ -210,27 +219,27 @@ echo bootstrapped
 `
 
 func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
-	var gitcfg []string
-	line := func(args ...string) {
-		out, err := gitOut(spec.Repo, args...)
-		if err == nil && out != "" && !strings.Contains(out, "'") {
-			switch args[len(args)-1] {
-			case "user.name":
-				gitcfg = append(gitcfg, "git config user.name '"+out+"'")
-			case "user.email":
-				gitcfg = append(gitcfg, "git config user.email '"+out+"'")
-			}
-		}
-	}
-	line("config", "user.name")
-	line("config", "user.email")
 	return strings.NewReplacer(
 		"{{REPO}}", filepath.Base(spec.Repo),
 		"{{BRANCH}}", spec.Branch,
-		"{{GITCONFIG}}", strings.Join(gitcfg, "\n"),
+		"{{GITCONFIG}}", gitIdentity(spec.Repo),
 		"{{MODE}}", mode,
 		"{{SHA}}", sha,
 		"{{ORIGIN}}", origin,
 		"{{EXPORTREF}}", exportRef(spec.Name),
 	).Replace(bootstrapTmpl)
+}
+
+// gitIdentity replicates the laptop's git author identity as config lines
+// spliced into the bootstrap/freshen scripts. Values containing a quote are
+// dropped rather than escaped — the scripts single-quote them.
+func gitIdentity(repo string) string {
+	var gitcfg []string
+	for _, key := range []string{"user.name", "user.email"} {
+		out, err := gitOut(repo, "config", key)
+		if err == nil && out != "" && !strings.Contains(out, "'") {
+			gitcfg = append(gitcfg, "git config "+key+" '"+out+"'")
+		}
+	}
+	return strings.Join(gitcfg, "\n")
 }

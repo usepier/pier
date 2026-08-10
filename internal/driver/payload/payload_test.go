@@ -66,11 +66,11 @@ func TestValidateNames(t *testing.T) {
 }
 
 func TestDurConf(t *testing.T) {
-	if got := durConf(0); got != "never" {
-		t.Errorf("durConf(0) = %q, want never", got)
+	if got := DurConf(0); got != "never" {
+		t.Errorf("DurConf(0) = %q, want never", got)
 	}
-	if got := durConf(30 * time.Minute); got != "30m0s" {
-		t.Errorf("durConf(30m) = %q, want 30m0s", got)
+	if got := DurConf(30 * time.Minute); got != "30m0s" {
+		t.Errorf("DurConf(30m) = %q, want 30m0s", got)
 	}
 }
 

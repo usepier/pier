@@ -21,6 +21,7 @@ import (
 
 	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/kerem-kaynak/pier/internal/pool"
 	"github.com/kerem-kaynak/pier/internal/ui"
 )
 
@@ -54,6 +55,68 @@ type Options struct {
 	// ssh transport failure (fresh or just-resumed VMs); nil disables the retry.
 	RetryAttach   func(err error, elapsed time.Duration) bool
 	WaitReachable func(s driver.Session) error
+	// Pools power the w key's warm-pool page and the header's warm count.
+	// PoolSizes re-reads the configured repo→size map (config may change
+	// between opens). CurrentRepo/CurrentGen describe the repo pier launched
+	// from ("" outside a repo): only its row is size-editable — a fill needs
+	// the local checkout — and only its members can be staleness-checked (the
+	// generation hashes the local setup script). nil PoolSizes hides the page.
+	PoolSizes   func() map[string]int
+	CurrentRepo string
+	CurrentGen  string
+	// PoolMaxAge is the configured member recycle age (0 = don't check);
+	// members past it show stale. PoolNote explains a pool page that is
+	// read-only for a reason worth a sentence (a broken [pool] config, say)
+	// instead of the generic run-from-a-repo hint.
+	PoolMaxAge time.Duration
+	PoolNote   string
+	// PoolSet saves the current repo's size and reconciles: 0 drains inline,
+	// >0 starts a detached fill and returns its log path.
+	PoolSet func(size int) (logPath string, err error)
+	// PoolFill starts a detached fill for the current repo.
+	PoolFill func() (logPath string, err error)
+	// PoolDrain destroys a repo's warm members — any repo; draining needs no
+	// local checkout — and returns how many went down.
+	PoolDrain func(repo string) (int, error)
+}
+
+// PoolStats is one repo's warm-member census, shared by the TUI page and
+// `pier pool`.
+type PoolStats struct {
+	Ready, Filling, Stale int
+	Ages                  []string // ready members' ages, newest first as listed
+}
+
+// FoldPool folds one repo's unclaimed members out of a session list, judging
+// them the way reconcile would: dead, wrong-generation, over the recycle age,
+// or unparked past the fill grace all count stale — a member whose fill died
+// hours ago must not read "filling" forever. curGen gates the generation
+// check: only the repo the process runs from can compute its current
+// generation, so other repos' members never show gen-stale (they recycle on
+// their own machines' claims). maxAge 0 skips the age check.
+func FoldPool(sessions []driver.Session, repo, curRepo, curGen string, maxAge time.Duration, now time.Time) PoolStats {
+	var st PoolStats
+	for _, s := range sessions {
+		if s.PoolGen == "" || s.Repo != repo {
+			continue
+		}
+		lived := now.Sub(s.Created)
+		switch {
+		case s.State == driver.StateDeleting:
+		case s.State == driver.StateDead,
+			repo == curRepo && s.PoolGen != curGen,
+			maxAge > 0 && lived >= maxAge:
+			st.Stale++
+		case s.State == driver.StateParked:
+			st.Ready++
+			st.Ages = append(st.Ages, age(s.Created))
+		case lived >= pool.FillGrace:
+			st.Stale++
+		default:
+			st.Filling++
+		}
+	}
+	return st
 }
 
 func Run(opts Options) error {
@@ -70,11 +133,13 @@ const (
 	modeSettings
 	modeResize
 	modeLogs
+	modePool
 )
 
 type model struct {
 	opts      Options
 	sessions  []driver.Session
+	members   []driver.Session // unclaimed warm pool members, split from sessions
 	quota     string
 	cursor    int
 	mode      mode
@@ -102,6 +167,12 @@ type model struct {
 	// resize picker state; machines reload each time m opens the picker
 	machines []driver.Machine
 	machIdx  int
+	// pool page state (modePool); sizes reload each time w opens the page
+	poolRepos   []string // rows: configured repos ∪ repos with members ∪ current repo
+	poolSizes   map[string]int
+	poolIdx     int
+	poolPend    int  // pending size for the current repo's row; -1 = none
+	poolConfirm bool // drain y/n pending
 	// log viewer state (modeLogs); content refetches on a slow cadence so a
 	// still-running setup streams in place
 	logSess    driver.Session
@@ -124,6 +195,33 @@ func anyCreating(sessions []driver.Session) bool {
 	return false
 }
 
+// anyFilling reports whether an unclaimed member is mid-fill (not yet parked);
+// the open pool page keeps refreshing while one is.
+func anyFilling(members []driver.Session) bool {
+	for _, s := range members {
+		switch s.State {
+		case driver.StateParked, driver.StateDead, driver.StateDeleting:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// splitMembers separates unclaimed pool members from real sessions: members
+// never sit in the session table (they're plumbing, not work) — they show on
+// the pool page and in the header's warm count.
+func splitMembers(all []driver.Session) (sessions, members []driver.Session) {
+	for _, s := range all {
+		if s.PoolGen != "" {
+			members = append(members, s)
+		} else {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions, members
+}
+
 type sessionsMsg struct {
 	sessions []driver.Session
 	err      error
@@ -142,6 +240,12 @@ type spawnedMsg struct {
 	branch string
 	log    string
 	err    error
+}
+
+// poolActMsg reports an async pool action (size apply, fill, drain).
+type poolActMsg struct {
+	note string
+	err  error
 }
 
 // resumedMsg reports a parked VM's blocking resume finished (or failed).
@@ -193,13 +297,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status, m.statusBad = msg.err.Error(), true
 			return m, nil
 		}
-		m.sessions = msg.sessions
+		m.sessions, m.members = splitMembers(msg.sessions)
 		if m.cursor >= len(m.sessions) {
 			m.cursor = max(0, len(m.sessions)-1)
 		}
+		if m.mode == modePool {
+			m.reindexPools()
+		}
 		// While anything is still creating, keep refreshing on our own so a
-		// background create walks to "running" without the user pressing r.
-		if !m.polling && anyCreating(m.sessions) {
+		// background create walks to "running" without the user pressing r —
+		// likewise while the open pool page has a member mid-fill.
+		if !m.polling && (anyCreating(m.sessions) || m.mode == modePool && anyFilling(m.members)) {
 			m.polling = true
 			return m, pollCmd()
 		}
@@ -211,7 +319,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// watch keeps the chain alive right after a spawn, before the new
 		// instance is visible in the provider's list.
-		if m.watch > 0 || anyCreating(m.sessions) {
+		if m.watch > 0 || anyCreating(m.sessions) || m.mode == modePool && anyFilling(m.members) {
 			m.polling = true
 			return m, tea.Batch(m.fetch, pollCmd()) // silent refresh: no spinner flicker
 		}
@@ -234,6 +342,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quotaMsg:
 		m.quota = string(msg)
 		return m, nil
+	case poolActMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status, m.statusBad = msg.err.Error(), true
+			return m, nil
+		}
+		m.status, m.statusBad = msg.note, false
+		if m.opts.PoolSizes != nil {
+			m.poolSizes = m.opts.PoolSizes() // a size apply just changed config
+		}
+		m.reindexPools()
+		m.loading = true
+		// A detached fill takes a beat to launch its instance; without the
+		// watch window the poll chain would die on the first refresh that
+		// still shows nothing filling — same grace a spawned create gets.
+		m.watch = max(m.watch, 24) // ~2min
+		cmds := []tea.Cmd{m.fetch, tickCmd()}
+		if !m.polling { // a fill may now be in flight — watch it land
+			m.polling = true
+			cmds = append(cmds, pollCmd())
+		}
+		return m, tea.Batch(cmds...)
 	case resumedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -324,6 +454,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateResize(msg)
 		case modeLogs:
 			return m.updateLogs(msg)
+		case modePool:
+			return m.updatePool(msg)
 		}
 		return m.updateList(msg)
 	}
@@ -440,6 +572,11 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.mode = modeResize
 		}
+	case "w":
+		if m.opts.PoolSizes == nil {
+			return m, nil
+		}
+		return m.openPools()
 	case "s":
 		cfg, err := config.Load()
 		if err != nil {
@@ -695,6 +832,303 @@ func (m model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openPools enters the w page: sizes reload fresh (config may have changed
+// under us), rows rebuild from config ∪ live members, and the cursor lands on
+// the repo pier launched from — the only size-editable row.
+func (m model) openPools() (tea.Model, tea.Cmd) {
+	m.poolSizes = m.opts.PoolSizes()
+	m.poolRepos = poolRepoRows(m.poolSizes, m.members, m.opts.CurrentRepo)
+	m.poolIdx, m.poolPend, m.poolConfirm = 0, -1, false
+	for i, r := range m.poolRepos {
+		if r == m.opts.CurrentRepo {
+			m.poolIdx = i
+		}
+	}
+	m.mode = modePool
+	if !m.polling && anyFilling(m.members) {
+		m.polling = true
+		return m, pollCmd()
+	}
+	return m, nil
+}
+
+// reindexPools rebuilds the page's rows after a refresh or action, keeping the
+// cursor on the same repo when it survives. A vanished row (drained from
+// another terminal mid-refresh) takes its staged edit and confirm prompt with
+// it — they referred to a repo that no longer has a row.
+func (m *model) reindexPools() {
+	cur := ""
+	if m.poolIdx < len(m.poolRepos) {
+		cur = m.poolRepos[m.poolIdx]
+	}
+	m.poolRepos = poolRepoRows(m.poolSizes, m.members, m.opts.CurrentRepo)
+	m.poolIdx = 0
+	found := false
+	for i, r := range m.poolRepos {
+		if r == cur {
+			m.poolIdx, found = i, true
+		}
+	}
+	if !found {
+		m.poolPend, m.poolConfirm = -1, false
+	}
+}
+
+// poolRepoRows is every repo worth a row: configured pools, repos that still
+// have members on the provider (orphans included — they cost money), and the
+// repo pier launched from, so + works before any pool exists.
+func poolRepoRows(sizes map[string]int, members []driver.Session, curRepo string) []string {
+	set := map[string]bool{}
+	for r := range sizes {
+		set[r] = true
+	}
+	for _, s := range members {
+		set[s.Repo] = true
+	}
+	if curRepo != "" {
+		set[curRepo] = true
+	}
+	rows := make([]string, 0, len(set))
+	for r := range set {
+		rows = append(rows, r)
+	}
+	sort.Strings(rows)
+	return rows
+}
+
+func (m model) updatePool(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.poolConfirm {
+		m.poolConfirm = false
+		if msg.String() == "y" {
+			repo := m.poolRepos[m.poolIdx]
+			drain := m.opts.PoolDrain
+			m.loading = true
+			return m, tea.Batch(func() tea.Msg {
+				n, err := drain(repo)
+				if err != nil {
+					return poolActMsg{err: err}
+				}
+				return poolActMsg{note: fmt.Sprintf("drained %d member(s) from %s", n, repo)}
+			}, tickCmd())
+		}
+		return m, nil
+	}
+	m.status = ""
+	row := ""
+	if m.poolIdx < len(m.poolRepos) {
+		row = m.poolRepos[m.poolIdx]
+	}
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		if m.poolPend >= 0 { // first esc cancels the unapplied size
+			m.poolPend = -1
+			return m, nil
+		}
+		m.mode = modeList
+	case "up", "k":
+		if m.poolIdx > 0 {
+			m.poolIdx--
+			m.poolPend = -1
+		}
+	case "down", "j":
+		if m.poolIdx < len(m.poolRepos)-1 {
+			m.poolIdx++
+			m.poolPend = -1
+		}
+	case "+", "=", "right":
+		return m.bumpPool(row, 1)
+	case "-", "_", "left":
+		return m.bumpPool(row, -1)
+	case "enter":
+		if row == "" || row != m.opts.CurrentRepo || m.opts.PoolSet == nil ||
+			m.poolPend < 0 || m.poolPend == m.poolSizes[row] {
+			m.poolPend = -1
+			return m, nil
+		}
+		size, set := m.poolPend, m.opts.PoolSet
+		m.poolPend = -1
+		m.loading = true
+		return m, tea.Batch(func() tea.Msg {
+			logPath, err := set(size)
+			switch {
+			case err != nil:
+				return poolActMsg{err: err}
+			case size == 0:
+				return poolActMsg{note: "pool off — members drained"}
+			default:
+				return poolActMsg{note: fmt.Sprintf("pool size %d — filling in the background (log: %s)", size, ui.Tilde(logPath))}
+			}
+		}, tickCmd())
+	case "f":
+		if row == "" || m.opts.PoolFill == nil {
+			return m, nil
+		}
+		if row != m.opts.CurrentRepo {
+			m.status, m.statusBad = "run pier from inside "+row+" to fill its pool — the fill needs the local checkout", false
+			return m, nil
+		}
+		if m.poolSizes[row] == 0 {
+			m.status, m.statusBad = "pool size is 0 — press + then enter to warm one", false
+			return m, nil
+		}
+		fill := m.opts.PoolFill
+		m.loading = true
+		return m, tea.Batch(func() tea.Msg {
+			logPath, err := fill()
+			if err != nil {
+				return poolActMsg{err: err}
+			}
+			return poolActMsg{note: "filling in the background (log: " + ui.Tilde(logPath) + ")"}
+		}, tickCmd())
+	case "d":
+		if row == "" || m.opts.PoolDrain == nil {
+			return m, nil
+		}
+		st := FoldPool(m.members, row, m.opts.CurrentRepo, m.opts.CurrentGen, m.opts.PoolMaxAge, time.Now())
+		if st.Ready+st.Filling+st.Stale == 0 {
+			m.status, m.statusBad = "no warm members to drain for "+row, false
+			return m, nil
+		}
+		m.poolConfirm = true
+	case "r":
+		m.loading = true
+		return m, tea.Batch(m.fetch, tickCmd())
+	}
+	return m, nil
+}
+
+// bumpPool nudges the pending size on the current repo's row; other repos
+// can't be resized from here — a fill needs their local checkout.
+func (m model) bumpPool(row string, delta int) (tea.Model, tea.Cmd) {
+	if row == "" {
+		return m, nil
+	}
+	if row != m.opts.CurrentRepo {
+		m.status, m.statusBad = "run pier from inside "+row+" to resize its pool", false
+		return m, nil
+	}
+	if m.poolPend < 0 {
+		m.poolPend = m.poolSizes[row]
+	}
+	m.poolPend = min(8, max(0, m.poolPend+delta))
+	return m, nil
+}
+
+// poolView is the w page: one row per repo with its configured size, live
+// member census, and the monthly cost of what's parked. Only the current
+// repo's row is size-editable (the generation hashes the local setup script);
+// any repo's members can be drained.
+func (m model) poolView() string {
+	var b strings.Builder
+	head := " " + ui.Title.Render("⚓ pier pools") +
+		ui.Dim.Render("  parked sessions ready to claim — pier <branch> grabs one")
+	if m.loading {
+		head += " " + ui.Accent.Render(spinner[m.frame%len(spinner)])
+	}
+	b.WriteString("\n" + head + "\n\n")
+
+	if len(m.poolRepos) == 0 {
+		b.WriteString(ui.Dim.Render("   no pools — run pier from inside a repo and press + to warm one") + "\n")
+	} else {
+		repoW := 4
+		for _, r := range m.poolRepos {
+			repoW = max(repoW, len(r))
+		}
+		b.WriteString(ui.Dim.Render(fmt.Sprintf("   %-*s  %-6s  %s", repoW, "REPO", "SIZE", "WARM")) + "\n")
+		ready, filling := 0, 0
+		now := time.Now()
+		rows := make([]string, 0, len(m.poolRepos))
+		for i, repo := range m.poolRepos {
+			st := FoldPool(m.members, repo, m.opts.CurrentRepo, m.opts.CurrentGen, m.opts.PoolMaxAge, now)
+			ready += st.Ready
+			filling += st.Filling
+			size := fmt.Sprintf("%-6d", m.poolSizes[repo])
+			if i == m.poolIdx && m.poolPend >= 0 && m.poolPend != m.poolSizes[repo] {
+				size = fmt.Sprintf("%-6s", fmt.Sprintf("%d→%d", m.poolSizes[repo], m.poolPend))
+			}
+			marker, name := "   ", fmt.Sprintf("%-*s", repoW, repo)
+			if i == m.poolIdx {
+				marker = " " + ui.Accent.Render("▸") + " "
+				name = ui.Bold.Render(name)
+			}
+			cell := poolCell(repo, m.poolSizes[repo], st, m.opts.CurrentRepo)
+			if repo == m.opts.CurrentRepo {
+				cell += ui.Dim.Render("  · this repo")
+			}
+			rows = append(rows, fmt.Sprintf("%s%s  %s  %s", marker, name, size, cell))
+		}
+		// Chrome around the row window: title block (3), table header (1),
+		// cost (2) and the footer below (up to 4 lines).
+		for _, row := range m.windowBody(rows, m.poolIdx, 10) {
+			b.WriteString(row + "\n")
+		}
+		// Parked is the only state that costs disk money alone; a filling
+		// member is a running instance billing at full rate until it parks.
+		if ready > 0 || filling > 0 {
+			cost := fmt.Sprintf("cost: %d parked × ~$3-4/mo disk", ready)
+			if filling > 0 {
+				cost += fmt.Sprintf(" · %d filling at full instance rate until parked", filling)
+			}
+			b.WriteString("\n " + ui.Dim.Render(cost) + "\n")
+		}
+	}
+	b.WriteString("\n")
+
+	if m.poolConfirm {
+		b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("drain %s — destroy its warm members? (y/n)", m.poolRepos[m.poolIdx])) + "\n")
+		return b.String()
+	}
+	if m.status != "" {
+		if m.statusBad {
+			b.WriteString(" " + ui.Bad.Render("! "+m.status) + "\n")
+		} else {
+			b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
+		}
+	}
+	if m.opts.CurrentRepo == "" {
+		hint := "read-only: run pier from inside a repo to size its pool"
+		if m.opts.PoolNote != "" {
+			hint = "read-only: " + m.opts.PoolNote
+		}
+		b.WriteString(" " + ui.Dim.Render(hint) + "\n")
+	}
+	b.WriteString(" " + ui.Keys("+/-", "size", "enter", "apply", "f", "fill", "d", "drain", "r", "refresh", "esc", "back") + "\n")
+	return b.String()
+}
+
+// poolCell describes one repo's members: ready with ages, filling, stale —
+// or why an empty row exists at all.
+func poolCell(repo string, size int, st PoolStats, curRepo string) string {
+	var parts []string
+	if st.Ready > 0 {
+		cell := fmt.Sprintf("● %d ready", st.Ready)
+		if len(st.Ages) > 0 {
+			cell += " (" + strings.Join(st.Ages, ", ") + ")"
+		}
+		parts = append(parts, ui.OK.Render(cell))
+	}
+	if st.Filling > 0 {
+		parts = append(parts, ui.Warn.Render(fmt.Sprintf("◐ %d filling", st.Filling)))
+	}
+	if st.Stale > 0 {
+		parts = append(parts, ui.Bad.Render(fmt.Sprintf("✗ %d stale", st.Stale)))
+	}
+	if len(parts) == 0 {
+		switch {
+		case size == 0:
+			return ui.Dim.Render("(off)")
+		case repo == curRepo:
+			return ui.Dim.Render("empty — f fills")
+		default:
+			return ui.Dim.Render("empty")
+		}
+	}
+	if size == 0 {
+		parts = append(parts, ui.Dim.Render("orphaned — pool is off; d drains"))
+	}
+	return strings.Join(parts, "  ")
+}
+
 var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func (m model) View() string {
@@ -704,12 +1138,18 @@ func (m model) View() string {
 	if m.mode == modeLogs {
 		return m.logsView()
 	}
+	if m.mode == modePool {
+		return m.poolView()
+	}
 	var b strings.Builder
 
 	head := " " + ui.Title.Render("⚓ pier")
 	var meta []string
 	if m.loaded {
 		meta = append(meta, fmt.Sprintf("%d session(s)", len(m.sessions)))
+		if n := len(m.members); n > 0 {
+			meta = append(meta, fmt.Sprintf("%d warm", n))
+		}
 	}
 	if m.quota != "" {
 		meta = append(meta, m.quota)
@@ -763,7 +1203,12 @@ func (m model) View() string {
 				b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
 			}
 		}
-		b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "m", "resize", "l", "logs", "s", "settings", "r", "refresh", "q", "quit") + "\n")
+		keys := []string{"enter", "attach", "n", "new", "d", "delete", "p", "pin", "m", "resize", "l", "logs"}
+		if m.opts.PoolSizes != nil {
+			keys = append(keys, "w", "pools")
+		}
+		keys = append(keys, "s", "settings", "r", "refresh", "q", "quit")
+		b.WriteString(" " + ui.Keys(keys...) + "\n")
 	}
 	return b.String()
 }
@@ -920,11 +1365,22 @@ func (m model) readonlyLines() []string {
 		}
 		return "   " + ui.Dim.Render(label+"  ") + val + ui.Dim.Render("  ("+mgr+")")
 	}
+	pools := ui.Dim.Render("(none)")
+	if len(c.Pool.Sizes) > 0 {
+		pairs := make([]string, 0, len(c.Pool.Sizes))
+		for repo, n := range c.Pool.Sizes {
+			pairs = append(pairs, fmt.Sprintf("%s × %d", repo, n))
+		}
+		sort.Strings(pairs)
+		pools = strings.Join(pairs, " · ")
+	}
+
 	return []string{
 		" " + ui.Dim.Render("managed elsewhere"),
 		row("secrets → sessions", secrets, "pier setup"),
 		row("claude token", token, "claude setup-token"),
 		row("baked images", baked, "pier bake"),
+		row("warm pools", pools, "w / pier pool"),
 	}
 }
 

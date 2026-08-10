@@ -11,6 +11,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +44,7 @@ type Session struct {
 	InstanceType string    // provider machine type; feeds the TUI resize picker
 	Created      time.Time // session creation, not last boot — AGE must never go backward
 	CostNote     string    // honest money: "~$3-4/mo" parked, the type's hourly rate otherwise
+	PoolGen      string    // warm-pool generation fingerprint; non-empty = unclaimed pool member, not a user session
 }
 
 // Machine is one row in the TUI's resize picker: a curated instance type
@@ -65,7 +67,25 @@ type CreateSpec struct {
 	Image         string        // the repo's baked image ID; "" = stock (guarded cloud-init installs everything)
 	IdleTimeout   time.Duration // 0 = never auto-park
 	UnattendedCap time.Duration // 0 = no runaway cap
+	PoolGen       string        // non-empty: create a warm pool member (drivers add the pool tag/label; Name is the placeholder)
 	Progress      func(step string)
+}
+
+// ErrClaimLost: another claimer won this pool member — move on to the next
+// candidate.
+var ErrClaimLost = errors.New("pool member claimed by another process")
+
+// ClaimSpec names the session a warm pool member becomes.
+type ClaimSpec struct {
+	Name   string
+	Branch string
+	// Nonce is this claimer's unique token. Tags and labels have no
+	// compare-and-swap, so Claim writes the nonce, waits a settle beat, and
+	// reads it back: of two concurrent claimers the later write wins and the
+	// earlier one sees a foreign nonce (ErrClaimLost). This closes the
+	// same-user two-terminal race — it is not a security boundary; per-user
+	// namespacing is.
+	Nonce string
 }
 
 // BakeSpec describes one repo's image bake. Images are repo-specific: the
@@ -120,6 +140,13 @@ type Driver interface {
 	Resume(ctx context.Context, id string) error
 	Park(ctx context.Context, id string) error // client-initiated; normal parking is the VM's own shutdown
 	Destroy(ctx context.Context, id string) error
+
+	// Claim converts a warm pool member into a named session: nonce
+	// write + read-back (see ClaimSpec.Nonce), then name/branch rewrite;
+	// clearing the pool marker is the commit point, after which List reports
+	// a regular session. Tags/labels only — the caller Resumes and freshens
+	// the instance itself.
+	Claim(ctx context.Context, id string, spec ClaimSpec) error
 
 	// Resize changes the instance size (vertical scaling). Providers only
 	// allow this on stopped instances, and park is exactly a stop — so a

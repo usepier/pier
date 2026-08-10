@@ -34,6 +34,8 @@ const (
 	TagBranch     = "pier:branch"
 	TagReady      = "pier:ready"   // create's last act: bootstrap done, attachable
 	TagCreated    = "pier:created" // RFC3339 create time; launch time resets on every resume
+	TagPool       = "pier:pool"    // warm-pool generation fingerprint; present = unclaimed member
+	TagClaim      = "pier:claim"   // claim nonce (tags have no CAS: written, then read back)
 	amiParamBase  = "/aws/service/canonical/ubuntu/server/24.04/stable/current/%s/hvm/ebs-gp3/ami-id"
 )
 
@@ -140,6 +142,8 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				if ts, err := time.Parse(time.RFC3339, t.Value); err == nil {
 					s.Created = ts
 				}
+			case TagPool:
+				s.PoolGen = t.Value
 			}
 		}
 		switch in.State {
@@ -197,7 +201,19 @@ func costNote(st driver.State, itype string) string {
 
 func (d *Driver) Resume(ctx context.Context, id string) error {
 	if _, err := d.aws(ctx, "ec2", "start-instances", "--instance-ids", id); err != nil {
-		return err
+		// A parking instance sits in `stopping` for up to a minute — the list
+		// already calls that parked, so resuming right after a park (or
+		// claiming a just-filled pool member) lands here. Wait out the stop
+		// and start again.
+		if !strings.Contains(err.Error(), "IncorrectInstanceState") {
+			return err
+		}
+		if _, werr := d.aws(ctx, "ec2", "wait", "instance-stopped", "--instance-ids", id); werr != nil {
+			return err
+		}
+		if _, err = d.aws(ctx, "ec2", "start-instances", "--instance-ids", id); err != nil {
+			return err
+		}
 	}
 	d.dropProbe(id) // the VM comes back on a fresh public IP
 	return d.waitSSH(ctx, id, 240*time.Second)
