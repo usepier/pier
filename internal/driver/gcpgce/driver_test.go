@@ -17,6 +17,17 @@ func TestGcloudErr(t *testing.T) {
 	if got := gcloudErr("\nsome failure\ndetail\n"); got != "some failure" {
 		t.Errorf("gcloudErr(no ERROR) = %q", got)
 	}
+	// Expired Workspace sessions must surface the remedy, not the
+	// non-interactive-prompt plumbing detail.
+	want := "gcloud auth has expired — run `gcloud auth login`, then retry"
+	reauth := "ERROR: (gcloud.compute.instances.list) There was a problem refreshing your current auth tokens: Reauthentication failed. cannot prompt during non-interactive execution.\n"
+	if got := gcloudErr(reauth); got != want {
+		t.Errorf("gcloudErr(reauth) = %q", got)
+	}
+	revoked := "ERROR: There was a problem refreshing your current auth tokens: invalid_grant: Token has been expired or revoked.\n"
+	if got := gcloudErr(revoked); got != want {
+		t.Errorf("gcloudErr(revoked) = %q", got)
+	}
 }
 
 // The instance name is the session ID and a GCE resource name: it must stay

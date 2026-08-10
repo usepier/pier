@@ -34,7 +34,21 @@ func (d *Driver) gcloud(ctx context.Context, args ...string) (string, error) {
 // gcloudErr compacts gcloud's stderr to its ERROR line. Crashes append
 // multi-paragraph "run gcloud feedback" boilerplate that would otherwise
 // land verbatim in the TUI status line and the CLI's one-line errors.
+//
+// Expired credentials get rewritten to their remedy. Workspace accounts
+// carry an org session policy (Google's newer default is 16 hours), so an
+// expired gcloud session is a routine morning state — and the raw error
+// ("Reauthentication failed. cannot prompt during non-interactive
+// execution") describes pier's subprocess plumbing, not the fix.
 func gcloudErr(stderr string) string {
+	for _, marker := range []string{
+		"Reauthentication",
+		"problem refreshing your current auth tokens",
+	} {
+		if strings.Contains(stderr, marker) {
+			return "gcloud auth has expired — run `gcloud auth login`, then retry"
+		}
+	}
 	first := ""
 	for _, line := range strings.Split(stderr, "\n") {
 		l := strings.TrimSpace(line)
