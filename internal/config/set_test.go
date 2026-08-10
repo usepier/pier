@@ -80,3 +80,55 @@ func TestSet(t *testing.T) {
 		}
 	}
 }
+
+// TestSetValidation covers the hardened validators added with the settings
+// redesign: a bad value must be rejected here, at Set, not silently swallowed
+// to fail minutes later at create time.
+func TestSetValidation(t *testing.T) {
+	cfg := Default()
+
+	// driver used to accept anything and then fall back to AWS. Aliases
+	// normalize; garbage is a hard error.
+	if err := Set(&cfg, "driver", "gcp"); err != nil || cfg.Driver != "gcp-gce" {
+		t.Errorf("driver alias gcp must normalize to gcp-gce, got %q err=%v", cfg.Driver, err)
+	}
+	if err := Set(&cfg, "driver", "azure"); err == nil {
+		t.Error("an unknown driver must be rejected, not saved and silently downgraded")
+	}
+	cfg.Driver = "aws-ec2"
+
+	// A negative duration parses but is nonsense.
+	if err := Set(&cfg, "idle_timeout", "-5m"); err == nil {
+		t.Error("a negative idle_timeout must be rejected")
+	}
+
+	for _, c := range []struct {
+		key, val string
+		ok       bool
+	}{
+		{"aws.region", "eu-central-1", true},
+		{"aws.region", "US-EAST-1", false}, // uppercase
+		{"aws.region", "us east 1", false}, // spaces
+		{"aws.region", "region", false},    // no digit
+		{"aws.instance_type", "m7g.4xlarge", true},
+		{"aws.instance_type", "not a type", false},
+		{"aws.subnet", "subnet-0abc123", true},
+		{"aws.subnet", "", true}, // empty = default VPC
+		{"aws.subnet", "vpc-123", false},
+		{"gcp.zone", "us-central1-a", true},
+		{"gcp.zone", "europe west3 a", false},
+		{"gcp.machine_type", "e2-standard-4", true},
+		{"gcp.machine_type", "E2-medium", false}, // uppercase
+		{"gcp.project", "valid-project-1", true},
+		{"gcp.project", "no", false}, // too short
+		{"gcp.project", "Bad_Project", false},
+	} {
+		err := Set(&cfg, c.key, c.val)
+		if c.ok && err != nil {
+			t.Errorf("Set(%q, %q) should succeed, got %v", c.key, c.val, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("Set(%q, %q) should be rejected, but was accepted", c.key, c.val)
+		}
+	}
+}
