@@ -152,25 +152,74 @@ func TestEnterOnCreatingSession(t *testing.T) {
 }
 
 func TestLogsKey(t *testing.T) {
-	m := model{loaded: true, sessions: []driver.Session{
-		{Name: "half-built", Repo: "myapp", State: driver.StateCreating},
-	}}
+	m := model{loaded: true,
+		opts: Options{FetchLog: func(driver.Session) (string, error) { return "pier setup: done", nil }},
+		sessions: []driver.Session{
+			{Name: "half-built", Repo: "myapp", State: driver.StateCreating},
+		}}
 	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	if cmd != nil {
-		t.Fatal("l on a creating session must not quit — there is no log yet")
+		t.Fatal("l on a creating session must do nothing — there is no log yet")
 	}
 	gm := got.(model)
 	if !strings.Contains(gm.status, "still setting up") || gm.statusBad {
 		t.Errorf("want a friendly notice, got status=%q bad=%v", gm.status, gm.statusBad)
 	}
 
+	// A parked session must not resume as a side effect of opening logs.
+	m.sessions[0].State = driver.StateParked
+	got, cmd = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if cmd != nil {
+		t.Fatal("l on a parked session must not fire a fetch — that would resume the VM")
+	}
+	gm = got.(model)
+	if !strings.Contains(gm.status, "pier logs half-built") {
+		t.Errorf("want the notice to point at the CLI, got %q", gm.status)
+	}
+
 	m.sessions[0].State = driver.StateRunning
 	got, cmd = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	if cmd == nil {
-		t.Fatal("l on a running session must quit to show the log")
+		t.Fatal("l on a running session must fire the log fetch")
 	}
 	gm = got.(model)
-	if gm.action.Kind != ActionLogs || gm.action.Session.Name != "half-built" {
-		t.Errorf("want ActionLogs for half-built, got kind=%v session=%q", gm.action.Kind, gm.action.Session.Name)
+	if gm.mode != modeLogs || gm.logSess.Name != "half-built" {
+		t.Errorf("want modeLogs on half-built, got mode=%v session=%q", gm.mode, gm.logSess.Name)
+	}
+	if gm.action.Kind != ActionNone {
+		t.Errorf("the viewer must stay inside the TUI, got action %v", gm.action.Kind)
+	}
+	if !gm.logStick || !gm.logLoading {
+		t.Errorf("the viewer must open following the tail while it fetches, got stick=%v loading=%v", gm.logStick, gm.logLoading)
+	}
+
+	// esc goes back to the list with the sessions intact.
+	got, _ = gm.updateLogs(tea.KeyMsg{Type: tea.KeyEsc})
+	gm = got.(model)
+	if gm.mode != modeList || len(gm.sessions) != 1 {
+		t.Errorf("esc must return to the list, got mode=%v sessions=%d", gm.mode, len(gm.sessions))
+	}
+}
+
+func TestSanitizeLog(t *testing.T) {
+	// pnpm/docker progress spam: color codes plus \r-redrawn meters. Only
+	// each line's final state should survive.
+	in := "\x1b[32mpnpm install\x1b[0m\nprogress 1%\rprogress 50%\rprogress 100%\ndone\t✓\n\n\n"
+	want := "pnpm install\nprogress 100%\ndone ✓"
+	if got := sanitizeLog(in); got != want {
+		t.Errorf("sanitizeLog:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestWrapLines(t *testing.T) {
+	got := wrapLines("abcdef\nx\n", 3)
+	want := []string{"abc", "def", "x", ""}
+	if len(got) != len(want) {
+		t.Fatalf("want %d lines, got %v", len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d: want %q got %q", i, want[i], got[i])
+		}
 	}
 }

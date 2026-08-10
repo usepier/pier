@@ -31,6 +31,9 @@ type Options struct {
 	// session so nobody memorizes type names. nil hides the key.
 	Resize   func(s driver.Session, instanceType string) error
 	Machines func(s driver.Session) []driver.Machine
+	// FetchLog returns a session's setup log for the l key's in-place viewer.
+	// nil hides the key.
+	FetchLog func(s driver.Session) (string, error)
 }
 
 type ActionKind int
@@ -39,7 +42,6 @@ const (
 	ActionNone ActionKind = iota
 	ActionAttach
 	ActionNew
-	ActionLogs
 )
 
 // Action is what the user picked; attach/new run after the TUI returns the
@@ -66,6 +68,7 @@ const (
 	modeConfirm
 	modeSettings
 	modeResize
+	modeLogs
 )
 
 type model struct {
@@ -91,6 +94,17 @@ type model struct {
 	// resize picker state; machines reload each time m opens the picker
 	machines []driver.Machine
 	machIdx  int
+	// log viewer state (modeLogs); content refetches on a slow cadence so a
+	// still-running setup streams in place
+	logSess    driver.Session
+	logText    string   // sanitized log, source of truth for rewrapping
+	logLines   []string // logText wrapped to the terminal width
+	logOff     int      // first visible wrapped line
+	logStick   bool     // pinned to the tail: new content keeps the end in view
+	logLoading bool
+	logPolling bool
+	width      int
+	height     int
 }
 
 func anyCreating(sessions []driver.Session) bool {
@@ -193,6 +207,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quotaMsg:
 		m.quota = string(msg)
 		return m, nil
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		if m.mode == modeLogs {
+			m.relayoutLog()
+		}
+		return m, nil
+	case logMsg:
+		if m.mode != modeLogs || msg.name != m.logSess.Name {
+			return m, nil // stale fetch from a viewer already left
+		}
+		m.logLoading = false
+		if msg.err != nil {
+			m.status, m.statusBad = msg.err.Error(), true
+			return m, nil
+		}
+		m.status = ""
+		m.setLogText(msg.text)
+		return m, nil
+	case logPollMsg:
+		m.logPolling = false
+		if m.mode != modeLogs {
+			return m, nil
+		}
+		m.logPolling = true
+		cmds := []tea.Cmd{logPollCmd()}
+		if !m.logLoading {
+			m.logLoading = true
+			cmds = append(cmds, m.fetchLog())
+		}
+		return m, tea.Batch(cmds...)
 	case tickMsg:
 		if m.loading {
 			m.frame++
@@ -209,6 +253,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSettings(msg)
 		case modeResize:
 			return m.updateResize(msg)
+		case modeLogs:
+			return m.updateLogs(msg)
 		}
 		return m.updateList(msg)
 	}
@@ -241,20 +287,33 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case "l":
-		// The setup log needs the terminal back (it can be long, and a parked
-		// session resumes first), so it runs after the TUI exits, like attach.
-		if len(m.sessions) > 0 {
+		if len(m.sessions) > 0 && m.opts.FetchLog != nil {
 			s := m.sessions[m.cursor]
-			if s.State == driver.StateCreating {
+			switch s.State {
+			case driver.StateCreating:
 				m.status, m.statusBad = s.Name+" is still setting up — logs once it shows running", false
 				return m, nil
-			}
-			if s.State == driver.StateDeleting {
+			case driver.StateDeleting:
 				m.status, m.statusBad = s.Name+" is being deleted", false
 				return m, nil
+			case driver.StateParked:
+				// resuming a VM is a billing change — never a side effect of
+				// opening a log view
+				m.status, m.statusBad = s.Name+" is parked — pier logs "+s.Name+" resumes it and prints the log", false
+				return m, nil
+			case driver.StateDead:
+				m.status, m.statusBad = s.Name+" is dead — no VM to read the log from", false
+				return m, nil
 			}
-			m.action = Action{Kind: ActionLogs, Session: s}
-			return m, tea.Quit
+			m.mode = modeLogs
+			m.logSess, m.logText, m.logLines = s, "", nil
+			m.logOff, m.logStick, m.logLoading = 0, true, true
+			cmds := []tea.Cmd{m.fetchLog()}
+			if !m.logPolling {
+				m.logPolling = true
+				cmds = append(cmds, logPollCmd())
+			}
+			return m, tea.Batch(cmds...)
 		}
 	case "n":
 		m.mode = modeNew
@@ -453,6 +512,9 @@ var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "
 func (m model) View() string {
 	if m.mode == modeSettings {
 		return m.settingsView()
+	}
+	if m.mode == modeLogs {
+		return m.logsView()
 	}
 	var b strings.Builder
 

@@ -538,7 +538,9 @@ func cmdLogs(args []string) {
 	showLogs(drv, match(drv, rest[0]), follow)
 }
 
-// showLogs is the shared core of `pier logs` and the TUI's l key.
+// showLogs streams the raw log for `pier logs` — pipeable, and the terminal
+// interprets the progress-meter escapes natively. The TUI's l key renders a
+// sanitized in-place view instead.
 func showLogs(drv driver.Driver, s driver.Session, follow bool) {
 	requireReady(s)
 	if s.State == driver.StateParked {
@@ -947,6 +949,17 @@ func cmdTUI() {
 			return drv.Machines(s.InstanceType)
 		},
 		CreateDetached: spawnCreate,
+		FetchLog: func(s driver.Session) (string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			// The viewer refetches every few seconds, so the transfer stays
+			// bounded; `pier logs` prints everything.
+			out, err := drv.Exec(ctx, s.ID, `[ -f ~/.pier-setup.log ] && tail -n 2000 ~/.pier-setup.log || echo "no setup log — this session ran no setup script"`)
+			if err == nil && strings.Count(out, "\n") >= 1999 {
+				out = "… older lines trimmed — pier logs " + s.Name + " prints everything\n" + out
+			}
+			return out, err
+		},
 	})
 	if err != nil {
 		fatal(err)
@@ -957,8 +970,6 @@ func cmdTUI() {
 		attach(drv, action.Session.ID)
 	case tui.ActionNew:
 		cmdNew([]string{action.Branch})
-	case tui.ActionLogs:
-		showLogs(drv, action.Session, false)
 	}
 }
 
