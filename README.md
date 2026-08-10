@@ -439,10 +439,11 @@ The cloud says "running" long before a session is usable, so pier doesn't:
 ## How it works
 
 A session is one VM plus its persistent disk, tagged and namespaced by your
-caller identity (your STS ARN on AWS, your authed principal on GCP), so a
-team shares one account with zero collisions. All state lives in those tags
-and on the disk. `pier ls` is one filtered describe call, and there is
-nothing else to operate, back up, or pay for.
+caller identity (your complete STS ARN on AWS, including the Identity Center
+user segment of an assumed-role ARN), so a team can share one role without
+sharing instances. All state lives in those tags and on the disk. `pier ls`
+is one filtered describe call, and there is nothing else to operate, back up,
+or pay for.
 
 ```
 laptop                              AWS account (yours)
