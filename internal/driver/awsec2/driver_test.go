@@ -2,10 +2,27 @@ package awsec2
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestLoginExpired(t *testing.T) {
+	err := errors.New("aws sts get-caller-identity: aws: [ERROR]: Your session has expired. Please reauthenticate using 'aws login'.")
+	if !LoginExpired(err) {
+		t.Fatal("the AWS login expiry must be recoverable")
+	}
+	for _, err := range []error{
+		nil,
+		errors.New("aws ec2 describe-instances: access denied"),
+		errors.New("The SSO session associated with this profile has expired or is otherwise invalid"),
+	} {
+		if LoginExpired(err) {
+			t.Errorf("LoginExpired(%v) = true; only `aws login` expiry is supported", err)
+		}
+	}
+}
 
 func TestUserPreservesAssumedRoleSessionIdentity(t *testing.T) {
 	const arn = "arn:aws:sts::123456789012:assumed-role/Developer/alice@example.com"

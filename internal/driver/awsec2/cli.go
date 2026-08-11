@@ -31,6 +31,18 @@ func (d *Driver) aws(ctx context.Context, args ...string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
+// LoginExpired recognizes the AWS CLI's opt-in login session expiry. These
+// credentials are renewed with `aws login` (distinct from Identity Center's
+// `aws sso login`), so callers can offer the right interactive recovery
+// without treating every AWS error as an authentication problem.
+func LoginExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "session has expired") && strings.Contains(msg, "aws login")
+}
+
 // --- SSH into the session ----------------------------------------------------
 // One mechanism for everything interactive and file-shaped: OpenSSH. No
 // standing keys — each session gets its own keypair at create, stored under

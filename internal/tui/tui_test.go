@@ -43,6 +43,61 @@ func TestViewStates(t *testing.T) {
 	}
 }
 
+func TestEnterReauthenticatesExpiredCloudSession(t *testing.T) {
+	expired := errors.New("aws sts get-caller-identity: your session has expired; use aws login")
+	logins, fetches := 0, 0
+	m := model{opts: Options{
+		AuthExpired: func(err error) bool { return strings.Contains(err.Error(), "session has expired") },
+		Reauthenticate: func() *exec.Cmd {
+			logins++
+			return exec.Command("true")
+		},
+		Fetch: func() ([]driver.Session, error) {
+			fetches++
+			return []driver.Session{{Name: "fix-auth", State: driver.StateRunning}}, nil
+		},
+	}}
+
+	got, _ := m.Update(sessionsMsg{err: expired})
+	m = got.(model)
+	view := m.View()
+	if !m.authRequired || !strings.Contains(view, "enter") || !strings.Contains(view, "reauthenticate") || strings.Contains(view, "no sessions") {
+		t.Fatalf("expired auth must offer enter-to-reauthenticate:\n%s", view)
+	}
+
+	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if cmd == nil || logins != 1 || !m.reauthenticating {
+		t.Fatalf("enter must build the foreground login, got cmd=%v logins=%d running=%v", cmd, logins, m.reauthenticating)
+	}
+
+	got, cmd = m.Update(reauthenticatedMsg{})
+	m = got.(model)
+	if cmd == nil || m.authRequired || !m.loading || !strings.Contains(m.status, "refreshing") {
+		t.Fatalf("successful login must start a refresh, got auth=%v loading=%v status=%q", m.authRequired, m.loading, m.status)
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if c != nil {
+				c()
+			}
+		}
+	}
+	if fetches != 1 {
+		t.Errorf("successful login fetched %d times, want 1", fetches)
+	}
+}
+
+func TestFailedReauthenticationCanRetry(t *testing.T) {
+	m := model{authRequired: true, reauthenticating: true,
+		opts: Options{Reauthenticate: func() *exec.Cmd { return exec.Command("true") }}}
+	got, _ := m.Update(reauthenticatedMsg{err: errors.New("exit status 1")})
+	m = got.(model)
+	if !m.authRequired || m.reauthenticating || !m.statusBad || !strings.Contains(m.View(), "reauthenticate") {
+		t.Fatalf("failed login must preserve the retry action, got auth=%v running=%v status=%q", m.authRequired, m.reauthenticating, m.status)
+	}
+}
+
 // The settings page groups fields under human labels, shows the current
 // values, surfaces the read-only "managed elsewhere" section, and explains
 // the selected field in the detail footer.
