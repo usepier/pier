@@ -1,4 +1,21 @@
 import SwiftUI
+#if os(iOS)
+import SafariServices
+#endif
+
+private struct PierMarkView: View {
+    let size: CGFloat
+
+    var body: some View {
+        Image("PierMark")
+            .resizable()
+            .renderingMode(.template)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .foregroundStyle(.tint)
+            .accessibilityHidden(true)
+    }
+}
 
 struct OnboardingView: View {
     @Environment(PierAppModel.self) private var model
@@ -10,9 +27,7 @@ struct OnboardingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Image(systemName: "sailboat.fill")
-                        .font(.system(size: 44))
-                        .foregroundStyle(.tint)
+                    PierMarkView(size: 44)
                     Text("Set up Pier")
                         .font(.largeTitle.bold())
                     Text("Pier creates isolated development instances in your AWS account. Credentials stay on this device.")
@@ -84,14 +99,18 @@ private enum MobileOnboardingDefaults {
 
 private struct MobileOnboardingView: View {
     @Environment(PierAppModel.self) private var model
-    @Environment(\.openURL) private var openURL
 
-    @State private var startURL = MobileOnboardingDefaults.startURL
-    @State private var ssoRegion = MobileOnboardingDefaults.ssoRegion
-    @State private var awsRegion = MobileOnboardingDefaults.awsRegion
+    @AppStorage(PierMobileSignInStorage.startURLKey) private var startURL = MobileOnboardingDefaults.startURL
+    @AppStorage(PierMobileSignInStorage.ssoRegionKey) private var ssoRegion = MobileOnboardingDefaults.ssoRegion
+    @AppStorage(PierMobileSignInStorage.awsRegionKey) private var awsRegion = MobileOnboardingDefaults.awsRegion
     @State private var accountID = ""
     @State private var roleName = ""
     @State private var showsSettings = false
+    @State private var authorizationDestination: MobileAuthorizationDestination?
+
+    private var isReauthenticating: Bool {
+        model.requiresMobileReauthentication
+    }
 
     private var canSignIn: Bool {
         URL(string: startURL)?.scheme == "https" && !ssoRegion.isEmpty && !awsRegion.isEmpty
@@ -101,9 +120,16 @@ private struct MobileOnboardingView: View {
         NavigationStack {
             Form {
                 Section {
-                    Label("Pier", systemImage: "sailboat.fill")
-                        .font(.largeTitle.bold())
-                    Text("Connect Pier to AWS IAM Identity Center. Tokens are stored in this device's Keychain.")
+                    HStack(spacing: 14) {
+                        PierMarkView(size: 42)
+                        Text(isReauthenticating ? "Reconnect Pier" : "Pier")
+                            .font(.largeTitle.bold())
+                    }
+                    Text(
+                        isReauthenticating
+                            ? "Your AWS session expired. Sign in again to reconnect—your account and permission set will stay selected."
+                            : "Connect Pier to AWS IAM Identity Center. Tokens are stored in this device's Keychain."
+                    )
                         .foregroundStyle(.secondary)
                 }
 
@@ -119,7 +145,7 @@ private struct MobileOnboardingView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
 
-                    Button("Sign in with AWS") {
+                    Button(isReauthenticating ? "Reconnect with AWS" : "Continue with AWS") {
                         signIn()
                     }
                     .disabled(!canSignIn || model.isAuthorizingMobile)
@@ -136,10 +162,8 @@ private struct MobileOnboardingView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        Button("Open AWS again") {
-                            if let url = URL(string: authorization.verificationURL) {
-                                openURL(url)
-                            }
+                        Button("Continue in AWS") {
+                            presentAuthorization(authorization)
                         }
                     }
                 }
@@ -179,7 +203,7 @@ private struct MobileOnboardingView: View {
                 }
             }
             .pierScrollSurface()
-            .navigationTitle("Set up Pier")
+            .navigationTitle(isReauthenticating ? "Reconnect" : "Set up Pier")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -194,6 +218,12 @@ private struct MobileOnboardingView: View {
                     PierSettingsView(showsDoneButton: true)
                 }
             }
+            .sheet(item: $authorizationDestination) { destination in
+                MobileAuthorizationBrowser(url: destination.url) {
+                    authorizationDestination = nil
+                }
+                .ignoresSafeArea()
+            }
         }
     }
 
@@ -204,16 +234,22 @@ private struct MobileOnboardingView: View {
                 ssoRegion: ssoRegion.trimmingCharacters(in: .whitespacesAndNewlines),
                 awsRegion: awsRegion.trimmingCharacters(in: .whitespacesAndNewlines)
             )
-            guard let authorization = await model.beginMobileSignIn(request),
-                  let url = URL(string: authorization.verificationURL) else { return }
-            openURL(url)
-            await model.completeMobileSignIn()
+            guard let authorization = await model.beginMobileSignIn(request) else { return }
+            presentAuthorization(authorization)
+            let restoredSetup = await model.completeMobileSignIn()
+            authorizationDestination = nil
+            guard !restoredSetup else { return }
             accountID = preferredAccountID()
             if !accountID.isEmpty {
                 await model.loadMobileRoles(accountID: accountID)
                 roleName = preferredRoleName()
             }
         }
+    }
+
+    private func presentAuthorization(_ authorization: PierMobileAuthorization) {
+        guard let url = URL(string: authorization.verificationURL) else { return }
+        authorizationDestination = MobileAuthorizationDestination(url: url)
     }
 
     private func preferredAccountID() -> String {
@@ -228,6 +264,42 @@ private struct MobileOnboardingView: View {
             return MobileOnboardingDefaults.roleName
         }
         return model.mobileRoles.first?.name ?? ""
+    }
+}
+
+private struct MobileAuthorizationDestination: Identifiable {
+    let url: URL
+    var id: String { url.absoluteString }
+}
+
+private struct MobileAuthorizationBrowser: UIViewControllerRepresentable {
+    let url: URL
+    let onDone: @MainActor () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDone: onDone)
+    }
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.dismissButtonStyle = .done
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+
+    @MainActor
+    final class Coordinator: NSObject, @MainActor SFSafariViewControllerDelegate {
+        private let onDone: @MainActor () -> Void
+
+        init(onDone: @escaping @MainActor () -> Void) {
+            self.onDone = onDone
+        }
+
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+            onDone()
+        }
     }
 }
 #endif

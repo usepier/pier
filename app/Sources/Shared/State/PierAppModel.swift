@@ -17,10 +17,12 @@ final class PierAppModel {
     var isLoading = false
     var errorMessage: String?
     var requiresAWSLogin = false
+    var requiresMobileReauthentication = false
     var onboardingDismissed = false
     var isLoadingProjects = false
     var isLoadingBranches = false
     var isCreatingInstance = false
+    private(set) var isSigningInAWS = false
     var mobileAuthorization: PierMobileAuthorization?
     var mobileAccounts: [PierAWSAccount] = []
     var mobileRoles: [PierAWSRole] = []
@@ -35,6 +37,7 @@ final class PierAppModel {
     private var branchRequestID = UUID()
     private var isRefreshingInstances = false
     private var refreshingSnapshotIDs: Set<PierInstance.ID> = []
+    private var awsSignInGeneration = 0
 
     init(service: any PierServicing) {
         self.service = service
@@ -45,6 +48,7 @@ final class PierAppModel {
     }
 
     var showsOnboarding: Bool {
+        if requiresMobileReauthentication { return true }
         guard !onboardingDismissed else { return false }
         return setupStatus?.configured != true
     }
@@ -55,6 +59,7 @@ final class PierAppModel {
         if setupStatus?.configured == true {
             try? await service.preparePortProxy()
             await refreshInstances()
+            guard !requiresAWSLogin else { return }
             await loadProjects()
         }
     }
@@ -87,7 +92,9 @@ final class PierAppModel {
     }
 
     private func updateInstances(reportsActivity: Bool, reportsErrors: Bool) async {
+        guard !isSigningInAWS else { return }
         guard !isRefreshingInstances else { return }
+        let signInGeneration = awsSignInGeneration
         isRefreshingInstances = true
         if reportsActivity { isLoading = true }
         if reportsErrors {
@@ -103,12 +110,11 @@ final class PierAppModel {
             applyInstanceList(try await service.listInstances())
         } catch is CancellationError {
             // Foreground sync tasks are cancelled when the app becomes inactive.
-        } catch where reportsErrors {
-            errorMessage = error.localizedDescription
-            requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
         } catch {
-            // Periodic synchronization is best-effort. Manual refresh still
-            // reports errors and offers AWS sign-in when needed.
+            guard !isSigningInAWS, signInGeneration == awsSignInGeneration else { return }
+            if reportsErrors || isAuthenticationRequired(error) {
+                report(error)
+            }
         }
     }
 
@@ -117,8 +123,10 @@ final class PierAppModel {
         reportsActivity: Bool,
         reportsErrors: Bool
     ) async {
+        guard !isSigningInAWS else { return }
         guard instance.state != .parked && instance.state != .creating && instance.state != .dead else { return }
         guard refreshingSnapshotIDs.insert(instance.id).inserted else { return }
+        let signInGeneration = awsSignInGeneration
         if reportsActivity { inspectingInstanceIDs.insert(instance.id) }
         if reportsErrors {
             errorMessage = nil
@@ -133,22 +141,22 @@ final class PierAppModel {
             snapshots[instance.id] = try await service.inspectInstance(id: instance.id)
         } catch is CancellationError {
             // Selecting another session cancels this view task; that is not an error to surface.
-        } catch where reportsErrors {
-            errorMessage = error.localizedDescription
-            requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
         } catch {
-            // Keep the last good snapshot when a background poll fails.
+            guard !isSigningInAWS, signInGeneration == awsSignInGeneration else { return }
+            if reportsErrors || isAuthenticationRequired(error) {
+                report(error)
+            }
         }
     }
 
     func loadProjects() async {
         isLoadingProjects = true
-        errorMessage = nil
+        if !requiresAWSLogin { errorMessage = nil }
         defer { isLoadingProjects = false }
         do {
             projects = try await service.listProjects()
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -163,7 +171,7 @@ final class PierAppModel {
                 projects.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             }
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -179,7 +187,7 @@ final class PierAppModel {
             branchOptions = options
         } catch {
             guard branchRequestID == requestID else { return }
-            errorMessage = error.localizedDescription
+            report(error)
         }
         if branchRequestID == requestID {
             isLoadingBranches = false
@@ -317,8 +325,7 @@ final class PierAppModel {
             }
             return true
         } catch {
-            errorMessage = error.localizedDescription
-            requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
+            report(error)
             return false
         }
     }
@@ -352,8 +359,7 @@ final class PierAppModel {
             }
             return true
         } catch {
-            errorMessage = error.localizedDescription
-            requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
+            report(error)
             return false
         }
     }
@@ -407,8 +413,12 @@ final class PierAppModel {
                 creationProgress[placeholderID] = progress
             }
             markCreationFailed(instanceID: placeholderID)
-            errorMessage = message
-            requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
+            if isMobileAuthenticationRequired(error) {
+                report(error)
+            } else {
+                errorMessage = message
+                requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
+            }
         }
     }
 
@@ -501,7 +511,7 @@ final class PierAppModel {
             snapshots[instanceID] = try await service.inspectInstance(id: instanceID)
             return tab
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
             return nil
         }
     }
@@ -530,7 +540,7 @@ final class PierAppModel {
         do {
             return try await service.openPort(proxyHost: proxyHost, port: port)
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
             return nil
         }
     }
@@ -554,7 +564,7 @@ final class PierAppModel {
             terminalTitles.removeValue(forKey: key)
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
             return false
         }
     }
@@ -565,15 +575,20 @@ final class PierAppModel {
     }
 
     func signInAWS() async {
+        guard !isSigningInAWS else { return }
+        isSigningInAWS = true
+        awsSignInGeneration += 1
+        defer { isSigningInAWS = false }
         await perform {
             try await service.signInAWS()
-            instances = try await service.listInstances()
-            selectedInstanceID = instances.first?.id
+            applyInstanceList(try await service.listInstances())
+            projects = try await service.listProjects()
         }
     }
 
     func beginMobileSignIn(_ request: PierMobileSignInRequest) async -> PierMobileAuthorization? {
         isAuthorizingMobile = true
+        mobileAuthorization = nil
         mobileAccounts = []
         mobileRoles = []
         errorMessage = nil
@@ -583,18 +598,29 @@ final class PierAppModel {
             return authorization
         } catch {
             isAuthorizingMobile = false
-            errorMessage = error.localizedDescription
+            report(error)
             return nil
         }
     }
 
-    func completeMobileSignIn() async {
+    @discardableResult
+    func completeMobileSignIn() async -> Bool {
+        defer { isAuthorizingMobile = false }
         do {
             mobileAccounts = try await service.completeMobileSignIn()
+            let status = try await service.setupStatus()
+            setupStatus = status
+            mobileAuthorization = nil
+            requiresMobileReauthentication = false
+            if status.configured {
+                await refreshInstances()
+                await loadProjects()
+                return true
+            }
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
-        isAuthorizingMobile = false
+        return false
     }
 
     func loadMobileRoles(accountID: String) async {
@@ -604,7 +630,7 @@ final class PierAppModel {
         do {
             mobileRoles = try await service.listMobileRoles(accountID: accountID)
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -615,11 +641,13 @@ final class PierAppModel {
         do {
             try await service.finishMobileSetup(accountID: accountID, roleName: roleName)
             setupStatus = try await service.setupStatus()
+            requiresMobileReauthentication = false
+            mobileAuthorization = nil
             await refreshInstances()
             await loadProjects()
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
             return false
         }
     }
@@ -634,6 +662,7 @@ final class PierAppModel {
             try await service.signOutMobile()
             setupStatus = try await service.setupStatus()
             onboardingDismissed = false
+            requiresMobileReauthentication = false
             instances = []
             projects = []
             branchOptions = nil
@@ -645,7 +674,7 @@ final class PierAppModel {
             terminalTitles = [:]
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
             return false
         }
     }
@@ -663,9 +692,31 @@ final class PierAppModel {
         do {
             try await operation()
         } catch {
-            errorMessage = error.localizedDescription
-            requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
+            report(error)
         }
+    }
+
+    private func report(_ error: Error) {
+        if isMobileAuthenticationRequired(error) {
+            errorMessage = nil
+            requiresAWSLogin = false
+            requiresMobileReauthentication = true
+            onboardingDismissed = false
+            return
+        }
+        errorMessage = error.localizedDescription
+        requiresAWSLogin = (error as? PierAPIError)?.code == "aws_login_required"
+    }
+
+    private func isMobileAuthenticationRequired(_ error: Error) -> Bool {
+        guard let failure = error as? PierServiceFailure else { return false }
+        if case .authenticationRequired = failure { return true }
+        return false
+    }
+
+    private func isAuthenticationRequired(_ error: Error) -> Bool {
+        if isMobileAuthenticationRequired(error) { return true }
+        return (error as? PierAPIError)?.code == "aws_login_required"
     }
 
     private func tabKey(instanceID: String, tabID: String) -> String {

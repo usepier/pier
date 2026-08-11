@@ -12,7 +12,7 @@ edits arrive as a patch, and three optional repo-root files control the rest:
 | File | When it runs / travels | What belongs in it |
 |---|---|---|
 | `.pier-bake.sh` | Once, during `pier bake`, on a throwaway instance that becomes the repo's AMI | **Toolchains** — language runtimes, package managers |
-| `.pier-setup.sh` | On every session's first boot, after the repo lands; output is followed live | **Repo state** — dependency install, services, migrations, seeds |
+| `.pier-setup.sh` | On every session's first boot, async, after the repo lands | **Repo state** — dependency install, services, migrations, seeds |
 | `.pier-include` | List read at create time; matching files ride to the VM | **Untracked/ignored files** dev needs — env files, local certs |
 
 Your job: inspect this repo, write the files that apply, and tell the user
@@ -64,9 +64,9 @@ For apt installs, use `sudo DEBIAN_FRONTEND=noninteractive apt-get install -y �
 
 ## Step 3 — write `.pier-setup.sh`
 
-Runs in a `setup` tmux window on the session's first boot, with the repo root
-as cwd, after the checkout, dirty patch, and `.pier-include` files are all in
-place. Create follows its output and waits for it to exit. The user's secrets env
+Runs asynchronously in a `setup` tmux window on the session's first boot,
+with the repo root as cwd, after the checkout, dirty patch, and
+`.pier-include` files are all in place. The user's secrets env
 (`~/.config/pier/env`) is loaded. Output logs to `~/.pier-setup.log`; a
 nonzero exit shows as `(setup failed)` in `pier ls`, so **let failures
 fail** — start with `set -euo pipefail`, don't swallow errors.
@@ -76,7 +76,7 @@ duplicating its steps. Typical shape:
 
 ```bash
 #!/usr/bin/env bash
-# pier setup: runs in the session's "setup" tmux window on first
+# pier setup: runs async in the session's "setup" tmux window on first
 # boot, cwd = repo root. Logs to ~/.pier-setup.log.
 set -euo pipefail
 pnpm install
@@ -96,7 +96,9 @@ detach it).
 One path or glob per line, relative to the repo root. `*`, `?`, `[]` match
 within a path segment — **no `**`**. A directory line carries its whole
 subtree. `#` starts a comment. Listed files travel exactly as they sit on
-disk and win over the checkout. Example:
+disk and win over the checkout. A file symlink matched directly by a line or
+glob is dereferenced into a regular file at the same repository path;
+directory symlinks are not followed. Example:
 
 ```
 # env files docker compose and the apps read

@@ -352,6 +352,124 @@ final class PierModelsTests: XCTestCase {
         XCTAssertNil(model.selectedInstanceID)
         XCTAssertTrue(model.showsOnboarding)
     }
+
+    @MainActor
+    func testExpiredMobileAuthenticationReturnsToOnboardingWithoutRawError() async {
+        let instance = PierInstance(
+            id: "i-expired-auth",
+            name: "expired-auth",
+            repo: "pier",
+            branch: "main",
+            user: "developer",
+            driver: "aws-ec2",
+            state: .running,
+            strained: false,
+            setup: "",
+            instanceType: "t4g.medium",
+            createdAt: "2026-08-10T10:00:00Z",
+            costNote: "$0.034/h",
+            localPath: nil,
+            projectID: "aws:pier"
+        )
+        let service = SynchronizationService(instance: instance)
+        let model = PierAppModel(service: service)
+        model.setupStatus = try! await service.setupStatus()
+        await service.expireAuthentication()
+
+        await model.refreshInstances()
+
+        XCTAssertTrue(model.requiresMobileReauthentication)
+        XCTAssertTrue(model.showsOnboarding)
+        XCTAssertNil(model.errorMessage)
+    }
+
+    @MainActor
+    func testMacLaunchUsesInstanceLoadForAuthAndSignInReloadsWorkspace() async {
+        let instance = PierInstance(
+            id: "i-launch-auth",
+            name: "launch-auth",
+            repo: "pier",
+            branch: "main",
+            user: "developer",
+            driver: "aws-ec2",
+            state: .running,
+            strained: false,
+            setup: "",
+            instanceType: "t4g.medium",
+            createdAt: "2026-08-10T10:00:00Z",
+            costNote: "$0.034/h",
+            localPath: "~/Documents/pier",
+            projectID: "/tmp/pier"
+        )
+        let service = SynchronizationService(instance: instance)
+        await service.requireLoginAtLaunch()
+        let model = PierAppModel(service: service)
+
+        await model.start()
+
+        let blockedCounts = await service.workspaceRequestCounts()
+        XCTAssertTrue(model.requiresAWSLogin)
+        XCTAssertTrue(model.instances.isEmpty)
+        XCTAssertEqual(blockedCounts.instances, 1)
+        XCTAssertEqual(blockedCounts.projects, 0)
+
+        await model.signInAWS()
+
+        let signedInCounts = await service.workspaceRequestCounts()
+        XCTAssertFalse(model.requiresAWSLogin)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.instances.map(\.id), [instance.id])
+        XCTAssertEqual(signedInCounts.instances, 2)
+        XCTAssertEqual(signedInCounts.projects, 1)
+    }
+
+    @MainActor
+    func testAWSLoginPausesPollingAndCoalescesRepeatedRequests() async {
+        let instance = PierInstance(
+            id: "i-waiting-auth",
+            name: "waiting-auth",
+            repo: "pier",
+            branch: "main",
+            user: "developer",
+            driver: "aws-ec2",
+            state: .running,
+            strained: false,
+            setup: "",
+            instanceType: "t4g.medium",
+            createdAt: "2026-08-10T10:00:00Z",
+            costNote: "$0.034/h",
+            localPath: "~/Documents/pier",
+            projectID: "/tmp/pier"
+        )
+        let service = SynchronizationService(instance: instance)
+        await service.requireLoginAtLaunch()
+        await service.pauseNextSignIn()
+        let model = PierAppModel(service: service)
+
+        await model.start()
+        let signIn = Task { await model.signInAWS() }
+        while !(await service.isWaitingForSignIn()) {
+            await Task.yield()
+        }
+
+        XCTAssertTrue(model.isSigningInAWS)
+        XCTAssertNil(model.errorMessage)
+        await model.syncInstances()
+        await model.signInAWS()
+        let waitingSignInRequests = await service.signInRequests()
+        let waitingWorkspaceRequests = await service.workspaceRequestCounts()
+        XCTAssertEqual(waitingSignInRequests, 1)
+        XCTAssertEqual(waitingWorkspaceRequests.instances, 1)
+
+        await service.completeSignIn()
+        await signIn.value
+
+        XCTAssertFalse(model.isSigningInAWS)
+        XCTAssertFalse(model.requiresAWSLogin)
+        XCTAssertEqual(model.instances.map(\.id), [instance.id])
+        let finishedWorkspaceRequests = await service.workspaceRequestCounts()
+        XCTAssertEqual(finishedWorkspaceRequests.instances, 2)
+    }
 }
 
 private actor SynchronizationService: PierServicing {
@@ -360,6 +478,13 @@ private actor SynchronizationService: PierServicing {
     private var unparkContinuation: CheckedContinuation<Void, any Error>?
     private var requestedUnparkIDs: [String] = []
     private var signedOut = false
+    private var authenticationExpired = false
+    private var launchRequiresLogin = false
+    private var instanceRequestCount = 0
+    private var projectRequestCount = 0
+    private var signInRequestCount = 0
+    private var pausesNextSignIn = false
+    private var signInContinuation: CheckedContinuation<Void, Never>?
 
     init(instance: PierInstance) {
         instances = [instance]
@@ -370,12 +495,58 @@ private actor SynchronizationService: PierServicing {
         self.tabs = tabs
     }
 
+    func expireAuthentication() {
+        authenticationExpired = true
+    }
+
+    func requireLoginAtLaunch() {
+        launchRequiresLogin = true
+    }
+
+    func workspaceRequestCounts() -> (instances: Int, projects: Int) {
+        (instanceRequestCount, projectRequestCount)
+    }
+
+    func pauseNextSignIn() {
+        pausesNextSignIn = true
+    }
+
+    func isWaitingForSignIn() -> Bool {
+        signInContinuation != nil
+    }
+
+    func completeSignIn() {
+        signInContinuation?.resume()
+        signInContinuation = nil
+    }
+
+    func signInRequests() -> Int {
+        signInRequestCount
+    }
+
     func setupStatus() async throws -> PierSetupStatus {
         PierSetupStatus(configured: !signedOut, configPath: "", cliVersion: "test", profiles: [], dependencies: [])
     }
 
-    func listInstances() async throws -> [PierInstance] { instances }
-    func listProjects() async throws -> [PierProject] { [] }
+    func listInstances() async throws -> [PierInstance] {
+        instanceRequestCount += 1
+        if launchRequiresLogin {
+            throw PierAPIError(
+                code: "aws_login_required",
+                message: "Your AWS session has expired. Sign in again."
+            )
+        }
+        if authenticationExpired {
+            throw PierServiceFailure.authenticationRequired(
+                "Your AWS session has expired. Sign in again to reconnect Pier."
+            )
+        }
+        return instances
+    }
+    func listProjects() async throws -> [PierProject] {
+        projectRequestCount += 1
+        return []
+    }
     func addProject(path: String) async throws -> PierProject {
         throw PierServiceFailure.unavailable("Not used in this test")
     }
@@ -416,7 +587,14 @@ private actor SynchronizationService: PierServicing {
         throw PierServiceFailure.unavailable("Not used in this test")
     }
     func closeTab(instanceID: String, tabID: String) async throws {}
-    func signInAWS() async throws {}
+    func signInAWS() async throws {
+        signInRequestCount += 1
+        if pausesNextSignIn {
+            pausesNextSignIn = false
+            await withCheckedContinuation { signInContinuation = $0 }
+        }
+        launchRequiresLogin = false
+    }
     func signOutMobile() async throws { signedOut = true }
 }
 

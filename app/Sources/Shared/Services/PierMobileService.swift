@@ -62,6 +62,7 @@ actor PierMobileCore {
 
     private init() {
         let stored = (try? keychain.load()) ?? ""
+        PierMobileSignInStorage.restoreRequest(from: stored)
         var restoreError: NSError?
         if let client = PierPiercoreNewClient(stored, &restoreError) {
             self.client = client
@@ -82,9 +83,11 @@ actor PierMobileCore {
     }
 
     func beginSignIn(_ request: PierMobileSignInRequest) throws -> PierMobileAuthorization {
-        try decode(coreString {
+        let authorization: PierMobileAuthorization = try decode(coreString {
             client.beginSign(in: request.startURL, ssoRegion: request.ssoRegion, awsRegion: request.awsRegion, error: $0)
         })
+        PierMobileSignInStorage.save(request)
+        return authorization
     }
 
     func completeSignIn() throws -> [PierAWSAccount] {
@@ -100,17 +103,17 @@ actor PierMobileCore {
     }
 
     func finishSetup(accountID: String, roleName: String) throws {
-        try client.finishSetup(accountID, roleName: roleName)
+        try coreOperation { try client.finishSetup(accountID, roleName: roleName) }
         try persistSession()
     }
 
     func refreshSignIn() throws {
-        try client.refreshSignIn()
+        try coreOperation { try client.refreshSignIn() }
         try persistSession()
     }
 
     func signOut() throws {
-        try client.signOut()
+        try coreOperation { try client.signOut() }
         try keychain.delete()
     }
 
@@ -133,12 +136,12 @@ actor PierMobileCore {
     }
 
     func removeInstance(id: String) throws {
-        try client.removeInstance(id)
+        try coreOperation { try client.removeInstance(id) }
         try persistSession()
     }
 
     func unparkInstance(id: String) throws {
-        try client.unparkInstance(id)
+        try coreOperation { try client.unparkInstance(id) }
         try persistSession()
     }
 
@@ -161,7 +164,7 @@ actor PierMobileCore {
     }
 
     func closeTab(instanceID: String, tabID: String) throws {
-        try client.closeTab(instanceID, tabID: tabID)
+        try coreOperation { try client.closeTab(instanceID, tabID: tabID) }
         try persistSession()
     }
 
@@ -170,7 +173,9 @@ actor PierMobileCore {
         tabID: String,
         listener: PierMobileTerminalListener
     ) throws -> PierMobileTerminalHandle {
-        let terminal = try client.openTerminal(instanceID, tabID: tabID, listener: listener)
+        let terminal = try coreValue {
+            try client.openTerminal(instanceID, tabID: tabID, listener: listener)
+        }
         try persistSession()
         return PierMobileTerminalHandle(terminal)
     }
@@ -192,13 +197,64 @@ actor PierMobileCore {
 
     private typealias ErrorPointer = AutoreleasingUnsafeMutablePointer<NSError?>?
 
+    private func coreOperation(_ operation: () throws -> Void) throws {
+        do {
+            try operation()
+        } catch {
+            throw mappedCoreError(error)
+        }
+    }
+
+    private func coreValue<Value>(_ operation: () throws -> Value) throws -> Value {
+        do {
+            return try operation()
+        } catch {
+            throw mappedCoreError(error)
+        }
+    }
+
     private func coreString(_ operation: (ErrorPointer) -> String) throws -> String {
         var operationError: NSError?
         let value = operation(&operationError)
-        if let operationError { throw operationError }
+        if let operationError { throw mappedCoreError(operationError) }
         return value
     }
 
+    private func mappedCoreError(_ error: Error) -> Error {
+        let description = error.localizedDescription
+        guard let markerRange = description.range(of: PierMobileSignInStorage.authenticationRequiredMarker) else {
+            return error
+        }
+        let message = description[markerRange.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return PierServiceFailure.authenticationRequired(
+            message.isEmpty ? "Your AWS session has expired. Sign in again to reconnect Pier." : message
+        )
+    }
+
+}
+
+enum PierMobileSignInStorage {
+    static let startURLKey = "pier.mobile.startURL"
+    static let ssoRegionKey = "pier.mobile.ssoRegion"
+    static let awsRegionKey = "pier.mobile.awsRegion"
+    static let authenticationRequiredMarker = "aws_login_required:"
+
+    private struct StoredSession: Decodable {
+        let request: PierMobileSignInRequest
+    }
+
+    static func save(_ request: PierMobileSignInRequest, defaults: UserDefaults = .standard) {
+        defaults.set(request.startURL, forKey: startURLKey)
+        defaults.set(request.ssoRegion, forKey: ssoRegionKey)
+        defaults.set(request.awsRegion, forKey: awsRegionKey)
+    }
+
+    static func restoreRequest(from sessionJSON: String, defaults: UserDefaults = .standard) {
+        guard let data = sessionJSON.data(using: .utf8),
+              let stored = try? JSONDecoder().decode(StoredSession.self, from: data) else { return }
+        save(stored.request, defaults: defaults)
+    }
 }
 
 final class PierMobileTerminalHandle: @unchecked Sendable {

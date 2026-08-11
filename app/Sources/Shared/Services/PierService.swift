@@ -59,10 +59,14 @@ enum PierServiceFailure: LocalizedError, Sendable {
     case unavailable(String)
     case commandFailed(String)
     case invalidResponse(String)
+    case authenticationRequired(String)
 
     var errorDescription: String? {
         switch self {
-        case .unavailable(let message), .commandFailed(let message), .invalidResponse(let message):
+        case .unavailable(let message),
+             .commandFailed(let message),
+             .invalidResponse(let message),
+             .authenticationRequired(let message):
             message
         }
     }

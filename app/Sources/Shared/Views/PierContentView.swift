@@ -39,11 +39,7 @@ struct PierContentView: View {
                         }
                         .id(instance.id)
                     } else {
-                        VStack(spacing: 0) {
-                            Color.clear.frame(height: 43)
-                            Divider()
-                            ContentUnavailableView("Select an instance", systemImage: "server.rack")
-                        }
+                        InstanceSelectionEmptyView()
                     }
                 }
                 .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
@@ -68,6 +64,38 @@ struct PierContentView: View {
 }
 
 #if os(macOS)
+private struct InstanceSelectionEmptyView: View {
+    var body: some View {
+        VStack(spacing: 20) {
+            ZStack {
+                Circle()
+                    .fill(PierTheme.accent.opacity(0.1))
+                    .frame(width: 104, height: 104)
+
+                Text("⚓️")
+                    .font(.system(size: 48))
+                    .offset(y: -3)
+                    .accessibilityHidden(true)
+            }
+
+            VStack(spacing: 8) {
+                Text("Welcome to Pier")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(PierTheme.ink)
+
+                Text("Select an instance from the sidebar to view its details and open a terminal.")
+                    .font(.body)
+                    .foregroundStyle(PierTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+            }
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(PierTheme.canvas)
+    }
+}
+
 private struct MacSidebarTitlebar: View {
     @Environment(PierAppModel.self) private var model
     @State private var showsNewProject = false

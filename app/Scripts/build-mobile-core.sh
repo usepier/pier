@@ -2,7 +2,7 @@
 set -eu
 
 APP_ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-CLI_ROOT=$(CDPATH= cd -- "$APP_ROOT/../cli" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$APP_ROOT/.." && pwd)
 OUTPUT="$APP_ROOT/Frameworks/PierCore.xcframework"
 
 if command -v gomobile >/dev/null 2>&1; then
@@ -23,7 +23,7 @@ if [ ! -x "$GOMOBILE" ]; then
 fi
 
 mkdir -p "$APP_ROOT/Frameworks"
-cd "$CLI_ROOT"
+cd "$REPO_ROOT"
 "$GOMOBILE" bind \
   -target=ios,iossimulator \
   -prefix Pier \

@@ -2,13 +2,14 @@
 
 # ⚓ pier
 
-[![CI](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml)
+[![CI](https://github.com/usepier/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/usepier/pier/actions/workflows/ci.yml)
 
 **Give every agent session its own VM. One command up, zero burn when idle.**
 
-Full dev environments on your own AWS account: your repo, your secrets, your
-tools. One command to set up. Detach and it parks itself. Attach and it's
-back in about 20 seconds. Outgrown the box? One command resizes it.
+Full dev environments on your own AWS or GCP account: your repo, your
+secrets, your tools. One command to set up. Detach and it parks itself.
+Attach and it's back in under a minute. Outgrown the box? One command
+resizes it.
 
 ![pier demo](docs/demo.gif)
 
@@ -62,7 +63,8 @@ pier makes each session a micro-VM that manages its own lifecycle.
 $ pier checkout-flow
 ```
 
-One command launches an EC2 instance and drops you into tmux inside it, with:
+One command launches a VM on your cloud account and drops you into tmux
+inside it, with:
 
 - your repo on a fresh branch, uncommitted edits included
 - Claude Code and Codex installed and authenticated
@@ -71,9 +73,10 @@ One command launches an EC2 instance and drops you into tmux inside it, with:
 
 Detach and forget it. An in-VM supervisor parks the VM once the agent goes
 quiet: the instance stops, the disk persists. Attach again and it resumes in
-about 20 seconds with files, branches, and credentials exactly as you left
-them. If the session outgrows its hardware, `pier resize` swaps the instance
-type in one 40-second cycle, disk intact. And to see what the agent built,
+about 20 seconds on AWS and about a minute on GCP, with files, branches, and
+credentials exactly as you left them. If the session outgrows its hardware,
+`pier resize` swaps the machine type in one park and resume cycle, disk
+intact. And to see what the agent built,
 `pier proxy` turns every running session into a hostname:
 `checkout-flow.pier:3000` opens in your browser like localhost.
 
@@ -83,40 +86,42 @@ type in one 40-second cycle, disk intact. And to see what the agent built,
 | parked | `~$3-4/mo` (disk only) |
 
 There is no control plane. No server, no database, no daemon on your laptop.
-Session state lives in EC2 instance tags. Every byte between you and the VM
-rides ssh straight to it at line rate, with port 22 open to your IP only.
-Networks that block that path fall back to an SSM tunnel automatically. Set
-`aws.direct = false` to force the tunnel.
+Session state lives in instance tags. Every byte between you and the VM is
+plain ssh. On AWS it dials the instance directly with port 22 open to your
+IP only, and networks that block that path fall back to an SSM tunnel
+automatically (`aws.direct = false` forces it). On GCP it rides Google's IAP
+tunnel and the instance accepts nothing else from the internet.
 
-**Why AWS first?** Most teams already have the account, the credits, the
+**Why AWS and GCP?** Most teams already have the account, the credits, the
 budget line, and the compliance review, so pier rides them instead of
-introducing a new vendor. EC2 is also the right substrate for park/resume:
-native stop/start keeps disks intact (measured: parked in 44s, resumed in
-21s), SSM gives audited access with no bastion, and tags are a free state
-store. A GCP driver is designed and parked (see the [roadmap](#roadmap)).
+introducing a new vendor. VMs are also the right substrate for park/resume:
+native stop/start keeps disks intact (measured on EC2: parked in 44s,
+resumed in 21s), SSM and IAP give audited access with no bastion, and tags
+are a free state store.
 
 ## Installation
 
 ```
-brew install kerem-kaynak/tap/pier
+brew install usepier/tap/pier
 ```
 
 Or build from source with `make`, not `go build` (the in-VM supervisor must
 be embedded):
 
 ```
-git clone https://github.com/kerem-kaynak/pier
+git clone https://github.com/usepier/pier
 cd pier
 make install
 ```
 
 You also need, on the laptop:
 
-- `aws` CLI v2 and the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+- on AWS: `aws` CLI v2 and the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+- on GCP: the [`gcloud` CLI](https://cloud.google.com/sdk/docs/install)
 - `git` and OpenSSH (already on macOS/Linux)
 - Go 1.24+ (only when building from source)
 
-`pier doctor` checks all of it, plus your AWS auth and account groundwork.
+`pier doctor` checks all of it, plus your cloud auth and account groundwork.
 
 ## Setup
 
@@ -126,9 +131,12 @@ pier setup
 
 The wizard handles the account groundwork once:
 
-1. Authenticates against your AWS profile.
-2. Creates an IAM role and instance profile carrying only
-   `AmazonSSMManagedInstanceCore`, plus one egress-only security group.
+1. Asks which cloud and authenticates against your AWS profile or GCP
+   project.
+2. Creates the groundwork. On AWS: an IAM role and instance profile carrying
+   only `AmazonSSMManagedInstanceCore`, plus one egress-only security group.
+   On GCP: the compute and IAP API enables, plus two firewall rules that
+   admit only Google's IAP range to pier VMs and shut everything else out.
 3. Writes `~/.config/pier/config.toml`.
 4. Detects the agent config and credentials it will copy into sessions.
 5. Offers to bake an image for the current repo.
@@ -137,8 +145,8 @@ The wizard handles the account groundwork once:
 Everything it creates is tagged and removable with `pier teardown`. Change
 any setting later from inside the TUI. Run `pier` and press `s`.
 
-No IAM permissions? `pier setup --print-admin` prints the handful of
-commands for an admin to run once. The wizard then works with what exists.
+No admin rights? `pier setup --print-admin` prints the handful of commands
+for an admin to run once. The wizard then works with what exists.
 
 ### AWS permissions
 
@@ -158,6 +166,27 @@ role, the instance profile, and the security group. Daily use needs only:
 headroom display reads `servicequotas:GetServiceQuota` and degrades politely
 without it. The same list ships as comments in `pier setup --print-admin`.
 
+### GCP permissions
+
+Setup needs a project owner or editor once, to enable the compute and IAP
+APIs and create two firewall rules. Daily use needs only:
+
+- `roles/compute.instanceAdmin.v1` (instances, disks, images, metadata,
+  labels)
+- `roles/iap.tunnelResourceAccessor` (the ssh tunnel)
+
+Sessions run with no service account, so no `roles/iam.serviceAccountUser`
+grant is needed. The CPU headroom display reads the region quotas, which
+`instanceAdmin` already covers. `pier setup --print-admin` prints the exact
+setup commands for an admin.
+
+pier locks its VMs down harder than a fresh project does. GCE default
+networks ship a rule that opens :22 to the whole internet, and pier VMs hold
+an external IP for egress. Setup therefore creates a deny-all ingress rule
+for pier VMs and one allow rule above it for exactly Google's IAP range
+(`35.235.240.0/20`). Both rules target only instances tagged
+`pier-session`. The rest of your network is untouched.
+
 ## Usage
 
 ```
@@ -169,11 +198,12 @@ pier <branch> [base]      new session off base (default HEAD), then attach
     --cap <dur|never>     unattended runaway cap (default 8h)
     --no-park             shorthand for --idle never
 pier ls                   plain list (pipeable)
-pier attach <session>     attach (parked sessions auto-resume, ~20-30s)
+pier attach <session>     attach (parked sessions auto-resume, ~20-60s)
+pier logs <session>       show the setup script log (-f follows)
 pier rm <session> [-f]    destroy the session and its disk
 pier keep <session>       pin: disable idle self-park
-pier resize <session> <type>   grow/shrink the VM (~40-60s, same CPU arch)
-pier bake                 prebake this repo's session image (~60-90s creates)
+pier resize <session> <type>   grow/shrink the VM (~1-2 min, same CPU arch)
+pier bake                 prebake this repo's session image (~1-2 min creates)
 pier mcp login <session>  one-time browser approvals for OAuth MCP servers
 pier proxy                every running session as <session>.pier (macOS)
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
@@ -205,18 +235,17 @@ NAME           REPO  STATE   AGE  COST
 checkout-flow  shop  parked  3h   ~$3-4/mo
 
 $ pier attach checkout-flow
-resuming checkout-flow (~20-30s)...
+resuming checkout-flow (~20-60s)...
 [right where you left it]
 ```
 
 ## Making your repo pier-ready
 
-Three optional files at the repo root, normally committed. Pier always carries
-the current local `.pier-setup.sh`, including an untracked or ignored copy:
+Three optional files at the repo root, all committed:
 
 | File | Runs / read | Contains |
 |---|---|---|
-| `.pier-setup.sh` | Every session's first boot, in a `setup` tmux window with live output during create | Repo state: deps, services, migrations, seeds |
+| `.pier-setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
 | `.pier-include` | At create | Untracked/ignored files to carry (env files, local certs) |
 | `.pier-bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
 
@@ -237,6 +266,10 @@ setup window closes.
 .env
 apps/*/.env.local
 ```
+
+A file symlink matched directly by a line or glob is dereferenced: its target
+contents arrive as a regular file at the symlink's repository path. Directory
+symlinks are never followed.
 
 ```bash
 # .pier-bake.sh (agent user, passwordless sudo, NO repo checkout yet)
@@ -263,7 +296,8 @@ Then ask your agent to "set this repo up for pier".
 
 ### Fast repo transfer, GitHub-first
 
-The SSM tunnel moves about 1 MB/s, so anything big avoids it:
+Tunnels are slow (the SSM one moves about 1 MB/s), so anything big avoids
+them:
 
 - Base commit on a GitHub origin: the VM fetches straight from GitHub, only
   secrets ride the tunnel.
@@ -286,8 +320,9 @@ Secrets travel once, at create, as an explicit manifest:
 - the repo files your `.pier-include` lists
 
 Nothing loose ships by default. The create prints which env files it is
-*not* carrying. The VM never holds cloud credentials, its instance role
-carries SSM and nothing else.
+*not* carrying. The VM never holds cloud credentials. On AWS its instance
+role carries SSM and nothing else. On GCP it runs with no service account
+at all.
 
 ### MCP servers, agents, skills
 
@@ -330,22 +365,22 @@ A stock create installs the harnesses under cloud-init, which takes minutes.
 Baking pays that cost once:
 
 ```
-pier bake    # one throwaway instance + your .pier-bake.sh, snapshotted as an AMI
+pier bake    # one throwaway instance + your .pier-bake.sh, snapshotted as an image
 ```
 
-Creates from a baked image drop to about 60-90 seconds. Images are keyed to
+Creates from a baked image drop to a minute or two. Images are keyed to
 the repo, so one project's toolchain never bleeds into another's. Re-baking
 supersedes the old image, and `pier teardown` sweeps them all by tag.
 
 ### Setup that can't fail silently
 
-`.pier-setup.sh` runs in its own tmux window on first boot, after the checkout,
-dirty patch, and `.pier-include` files are in place. Create follows its output
-live in both the CLI and native app and waits for its exit. The outcome always
-surfaces:
+`.pier-setup.sh` runs async in its own tmux window on first boot, after the
+checkout, dirty patch, and `.pier-include` files are in place. The outcome
+always surfaces:
 
-- the create command and native Setup tab show the live script log and exit status
 - `pier ls` and the TUI show `(setup running)` or `(setup failed)`
+- `pier logs <session>` prints the log from anywhere, no attach needed
+  (`-f` follows, `l` in the TUI)
 - `~/.pier-setup.log` ends with `pier setup: done` or `pier setup: FAILED (exit N)`
 - a failed window renames to `setup-failed` and stays open instead of vanishing
 
@@ -367,18 +402,20 @@ $ pier resize checkout-flow t4g.xlarge
 Or press `m` in the TUI. It lists same-arch machines with their vCPU, memory
 and hourly cost, so nobody memorizes instance type names.
 
-One park/resume cycle of about 40 seconds, disk and state intact.
-Deliberately not automatic: the VM holds no cloud credentials, and
-auto-scaling is a surprise-cost footgun.
+One park/resume cycle, about a minute on AWS and about two on GCP, disk and
+state intact. Deliberately not automatic: the VM holds no cloud credentials,
+and auto-scaling is a surprise-cost footgun.
 
 ### Honest states
 
-EC2 says "running" long before a session is usable, so pier doesn't:
+The cloud says "running" long before a session is usable, so pier doesn't:
 
-- A session lists as `creating` until the bootstrap's last act writes a
-  `pier:ready` tag.
+- A session lists as `creating` until the bootstrap's last act marks the
+  instance ready (a tag on AWS, a label on GCP).
 - Attaching early gets a plain "still setting up", not a raw connection error.
 - TUI creates run in the background and the row flips when ready.
+- A deleted session lists as `deleting` until the cloud actually removes it.
+  GCE takes a minute there and would otherwise read as parked.
 - A create that fails cleans up its own instance.
 
 ## Caveats
@@ -395,6 +432,9 @@ EC2 says "running" long before a session is usable, so pier doesn't:
 - **ssh-key-only GitHub auth pushes while attached.** The forwarded agent
   disconnects with you. Any token lifts this.
 - **`pier proxy` is macOS-only** for now. `pier port` works everywhere.
+- **GCP wakes slower than AWS.** Resume to attached is about a minute
+  against EC2's ~20s, and a running resize takes about two minutes. GCE
+  stop/start simply takes longer.
 - **Bake hooks live only in baked images.** A repo with a `.pier-bake.sh`
   that was never baked runs stock. Setup then fails loudly, not silently.
 - **Resize stays within the CPU arch** (t4g to t4g). Providers only allow
@@ -402,11 +442,12 @@ EC2 says "running" long before a session is usable, so pier doesn't:
 
 ## How it works
 
-A session is one EC2 instance plus its EBS disk, tagged and namespaced by
-your caller identity (`pier:user` is your STS ARN, so a team shares one
-account with zero collisions). All state lives in those tags and on the
-disk. `pier ls` is a filtered `describe-instances`, and there is nothing
-else to operate, back up, or pay for.
+A session is one VM plus its persistent disk, tagged and namespaced by your
+caller identity (your complete STS ARN on AWS, including the Identity Center
+user segment of an assumed-role ARN), so a team can share one role without
+sharing instances. All state lives in those tags and on the disk. `pier ls`
+is one filtered describe call, and there is nothing else to operate, back up,
+or pay for.
 
 ```
 laptop                              AWS account (yours)
@@ -420,6 +461,9 @@ pier CLI/TUI ── aws cli ──────────▶ EC2 API        (cr
                                     │     detached and quiet   │
                                     └─────────────────────────┘
 ```
+
+GCP is the same picture with `gcloud`, the GCE API, and Google's IAP tunnel
+in place of SSM.
 
 The supervisor samples every 5 seconds for *attached* (tmux clients, or a
 live forwarded TCP connection) and *busy* (a running setup script, agent
@@ -443,16 +487,16 @@ Full design, including the settled trade-offs and measured spike numbers:
 The choices contributors should know before proposing changes
 (details in [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/SPEC.md](docs/SPEC.md)):
 
-- **No control plane, ever.** State lives in EC2 tags. Adding a server,
+- **No control plane, ever.** State lives in instance tags. Adding a server,
   database, or laptop daemon needs an extraordinary reason.
-- **The AWS CLI, not the SDK.** The CLI is already required for the SSM
-  plugin, and SSO/profiles/MFA come with it for free. v1 has no SDK
-  dependency.
+- **The cloud CLI, not the SDK.** `aws` and `gcloud` are already required
+  for their tunnels, and SSO/profiles/MFA come with them for free. v1 has
+  no SDK dependency.
 - **No cloud credentials in the VM.** Parking is the VM shutting itself
   down. Resize is human-triggered. Anything needing account credentials
   happens from the laptop.
 - **One transport.** Attach, exec, file push, and port forwards are all
-  OpenSSH, straight to the VM or over the SSM fallback. No second
+  OpenSSH, straight to the VM or through the cloud's tunnel. No second
   mechanism to secure or debug.
 - **Guarded cloud-init, identical on stock and baked images.** Every
   install step is a no-op when the image already has it. Baking is an
@@ -461,15 +505,15 @@ The choices contributors should know before proposing changes
   tools. Deps, migrations, and env belong to `.pier-setup.sh` at boot.
 - **Dirty state travels as a git patch,** not rsync. Binary-safe,
   reviewable, applied atomically after checkout.
-- **Truth over optimism in states.** The `pier:ready` tag, the setup
-  status file, the strained flag: pier reports what is, not what EC2 claims.
+- **Truth over optimism in states.** The ready tag, the setup status file,
+  the strained flag: pier reports what is, not what the cloud claims.
 - **`pier ls` stays plain** (pipeable). The TUI is the pretty view.
 
 ## vs. other tools
 
 | | pier | Codespaces / devcontainers | Hosted agent platforms | DIY EC2 + tmux |
 |---|---|---|---|---|
-| Runs on | your AWS account | GitHub's infra | vendor's sandbox | your AWS account |
+| Runs on | your AWS or GCP account | GitHub's infra | vendor's sandbox | your AWS account |
 | Idle cost | `~$3-4/mo` (self-parks) | metered, auto-stop | per-seat / per-task | full rate unless you script it |
 | Agent-ready | harnesses + auth + MCP travel | you configure | their agent only | you configure |
 | Session lifetime | until you `rm` it | workspace-scoped | task-scoped | until you clean it up |
@@ -484,11 +528,9 @@ with your code, at storage prices when you're not using them.
 
 ## Roadmap
 
-- **GCP driver.** Designed (IAP tunnel, labels, TERMINATED-with-disks as
-  parked), parked until the AWS driver is fully hardened.
 - **Hibernate/suspend parking.** Keep RAM, resume mid-agent-run.
 - **Linux `pier proxy`.**
-- **Custom base AMIs.** Bring your own golden image under pier's harness
+- **Custom base images.** Bring your own golden image under pier's harness
   layer.
 
 ## Contributing

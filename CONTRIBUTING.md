@@ -8,22 +8,15 @@ change is to keep it that way.
 ```
 make          # cross-compiles the in-VM supervisor, embeds it, builds ./pier
 make install  # install to $(go env GOPATH)/bin
-make test
+go test ./...
 ```
 
 Always build with `make`, not `go build` — the supervisor binaries must be
 embedded or session creation fails at runtime.
 
-Requires: Go, `aws` CLI v2, `session-manager-plugin`, `git`, OpenSSH.
-`pier doctor` checks the runtime dependencies.
-
-## Repository layout
-
-- `cli/` is the Go module, including the `pier` and `pier-supervisor`
-  commands and their internal packages. `make` writes the CLI to `./pier`.
-- `app/` contains the shared SwiftUI app and XcodeGen specification for the
-  native iOS and macOS targets.
-- `docs/` and `skills/` are shared project resources.
+Requires: Go, `git`, OpenSSH, and the CLI of the cloud you test against
+(`aws` v2 + `session-manager-plugin`, or `gcloud`). `pier doctor` checks the
+runtime dependencies.
 
 ## Design ground rules
 
@@ -31,14 +24,14 @@ Requires: Go, `aws` CLI v2, `session-manager-plugin`, `git`, OpenSSH.
 open decisions — TODOs in code point there. The short version:
 
 - **Lean over general.** No server, no daemon, no database: all state lives
-  in EC2 tags and on the session's disk. Changes that add moving parts need
-  a strong reason.
-- **The AWS CLI, not the SDK.** pier already requires the `aws` CLI for the
-  SSM plugin, so the driver shells out to it and v1 carries no SDK
-  dependency.
-- **No cloud credentials in the VM.** The instance role carries SSM and
-  nothing else. Anything that would put account credentials on a session
-  box is out.
+  in instance tags and on the session's disk. Changes that add moving parts
+  need a strong reason.
+- **The cloud CLI, not the SDK.** pier already requires `aws` (for the SSM
+  plugin) or `gcloud` (for the IAP tunnel), so the drivers shell out to them
+  and v1 carries no SDK dependency.
+- **No cloud credentials in the VM.** On AWS the instance role carries SSM
+  and nothing else; on GCP sessions run with no service account. Anything
+  that would put account credentials on a session box is out.
 - **Guarded cloud-init.** The same user-data runs on stock and baked images;
   every install step is guarded so it no-ops when the image already has it.
   Guards must test something the stock image *lacks*.
@@ -51,12 +44,12 @@ open decisions — TODOs in code point there. The short version:
 
 ## Code conventions
 
-- Command output goes through `cli/internal/ui` (one accent color, ANSI palette,
+- Command output goes through `internal/ui` (one accent color, ANSI palette,
   lots of dim). Long-running commands print a bold header, `ui.Step` lines,
   and a green completion. `pier ls` output stays plain so it pipes cleanly;
   the TUI is the pretty view.
 - Comments explain *why*, not *what*. Match the density already there.
-- `make test` and `gofmt` clean before sending a PR. Some `modernize`
+- `go vet ./...` and `gofmt` clean before sending a PR. Some `modernize`
   suggestions (e.g. `SplitSeq`) are deliberately not applied.
 
 ## Sending changes
@@ -76,7 +69,7 @@ are no prebuilt artifacts to manage.
    `git tag -a vX.Y.Z -m "pier vX.Y.Z" && git push origin vX.Y.Z`.
    The release workflow re-runs the checks and publishes the GitHub release.
 3. Bump the Homebrew formula in
-   [kerem-kaynak/homebrew-tap](https://github.com/kerem-kaynak/homebrew-tap):
+   [usepier/homebrew-tap](https://github.com/usepier/homebrew-tap):
    point `url` at the new tag and update `sha256`
    (`curl -sL <tarball-url> | shasum -a 256`).
 

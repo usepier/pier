@@ -1,0 +1,1229 @@
+// Package tui is the bare `pier` screen: a session list you can attach to,
+// plus new/delete/pin/refresh. Full-screen on the alternate buffer, one
+// accent color, states color-coded; quitting restores the shell untouched.
+// Attach hands the terminal to ssh via tea.ExecProcess, so a tmux detach
+// lands back on this list instead of the shell. Quota loads asynchronously
+// so the screen opens instantly; a `loaded` flag separates "fetching" from
+// "genuinely empty" so the list never flashes "0 sessions" before the first
+// fetch lands.
+package tui
+
+import (
+	"errors"
+	"fmt"
+	"os/exec"
+	"sort"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/ui"
+)
+
+type Options struct {
+	FetchQuota func() string // e.g. "12/32 vCPUs in use"; nil/"" hides it
+	Fetch      func() ([]driver.Session, error)
+	// AuthExpired identifies a fetch error that an interactive login can fix;
+	// Reauthenticate builds that foreground login command. Together they make
+	// enter recover the list in place instead of forcing a trip back to shell.
+	AuthExpired    func(error) bool
+	Reauthenticate func() *exec.Cmd
+	Destroy        func(driver.Session) error
+	Pin            func(driver.Session) error
+	// CreateDetached starts a background create and returns its log path;
+	// the TUI stays open and the session appears in the list as "creating".
+	// nil disables creating from the TUI (tests).
+	CreateDetached func(branch string) (logPath string, err error)
+	// Resize + Machines power the m key: Machines lists same-arch picks for a
+	// session so nobody memorizes type names. nil hides the key.
+	Resize   func(s driver.Session, instanceType string) error
+	Machines func(s driver.Session) []driver.Machine
+	// SettingsMachines is the machine catalog for the settings machine picker,
+	// given a driver id ("aws-ec2"/"gcp-gce") and the currently configured
+	// type. nil falls the machine fields back to free-text editing.
+	SettingsMachines func(driverID, currentType string) []driver.Machine
+	// FetchLog returns a session's setup log for the l key's in-place viewer.
+	// nil hides the key.
+	FetchLog func(s driver.Session) (string, error)
+	// Attach returns a fresh ssh command for one attach attempt; the TUI runs
+	// it via tea.ExecProcess so the program survives a detach and lands back
+	// on the list. nil disables the enter key (tests).
+	Attach func(s driver.Session) (*exec.Cmd, error)
+	// Resume unparks a session's VM and blocks until its transport answers.
+	Resume func(s driver.Session) error
+	// RetryAttach + WaitReachable power the one bounded reconnect after a fast
+	// ssh transport failure (fresh or just-resumed VMs); nil disables the retry.
+	RetryAttach   func(err error, elapsed time.Duration) bool
+	WaitReachable func(s driver.Session) error
+}
+
+func Run(opts Options) error {
+	_, err := tea.NewProgram(model{opts: opts, loading: true}, tea.WithAltScreen()).Run()
+	return err
+}
+
+type mode int
+
+const (
+	modeList mode = iota
+	modeNew
+	modeConfirm
+	modeSettings
+	modeResize
+	modeLogs
+)
+
+type model struct {
+	opts      Options
+	sessions  []driver.Session
+	quota     string
+	cursor    int
+	mode      mode
+	input     string // branch name being typed in modeNew
+	status    string // transient line: errors, confirmations
+	statusBad bool   // status is an error (red) vs a notice (accent)
+	loading   bool
+	loaded    bool // first fetch has landed
+	// recoverable authentication state; while required, enter runs the
+	// foreground provider login instead of acting on a session row
+	authRequired     bool
+	reauthenticating bool
+	polling          bool // an auto-refresh poll is scheduled (creates in flight)
+	watch            int  // poll rounds left after a spawn (until it's listable)
+	frame            int  // spinner frame
+	// attach-in-flight state; enter is a no-op while attachSess is set
+	attachSess    driver.Session // row being attached; zero Name = none in flight
+	attachStart   time.Time      // last ExecProcess launch; feeds RetryAttach
+	attachRetried bool           // one bounded reconnect per attach, like the CLI
+	// settings page state; cfg loads fresh each time s opens the page
+	cfg      *config.Config
+	setIdx   int  // index into config.Settings (the selected field)
+	editing  bool // free-text editor open for the selected field
+	setInput string
+	// settings picker sub-state: a choice/machine field's dropdown
+	picking  bool
+	pickOpts []config.Option // options shown (machine catalog converted in)
+	pickIdx  int
+	// resize picker state; machines reload each time m opens the picker
+	machines []driver.Machine
+	machIdx  int
+	// log viewer state (modeLogs); content refetches on a slow cadence so a
+	// still-running setup streams in place
+	logSess    driver.Session
+	logText    string   // sanitized log, source of truth for rewrapping
+	logLines   []string // logText wrapped to the terminal width
+	logOff     int      // first visible wrapped line
+	logStick   bool     // pinned to the tail: new content keeps the end in view
+	logLoading bool
+	logPolling bool
+	width      int
+	height     int
+}
+
+func anyCreating(sessions []driver.Session) bool {
+	for _, s := range sessions {
+		if s.State == driver.StateCreating {
+			return true
+		}
+	}
+	return false
+}
+
+type sessionsMsg struct {
+	sessions []driver.Session
+	err      error
+}
+
+type quotaMsg string
+
+type tickMsg struct{}
+
+// pollMsg drives the slow auto-refresh that runs while a session is creating,
+// so a background create's progress lands in the list without pressing r.
+type pollMsg struct{}
+
+// spawnedMsg reports a detached create kicked off (or failed to).
+type spawnedMsg struct {
+	branch string
+	log    string
+	err    error
+}
+
+// resumedMsg reports a parked VM's blocking resume finished (or failed).
+type resumedMsg struct {
+	s   driver.Session
+	err error
+}
+
+// attachDoneMsg arrives when the foreground ssh exits: detach, remote exit,
+// or transport error.
+type attachDoneMsg struct {
+	s   driver.Session
+	err error
+}
+
+// reachableMsg reports the bounded wait before the one attach retry.
+type reachableMsg struct {
+	s   driver.Session
+	err error
+}
+
+// reauthenticatedMsg arrives after the foreground cloud login exits.
+type reauthenticatedMsg struct{ err error }
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+func pollCmd() tea.Cmd {
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg { return pollMsg{} })
+}
+
+func (m model) fetch() tea.Msg {
+	ss, err := m.opts.Fetch()
+	return sessionsMsg{ss, err}
+}
+
+func (m model) Init() tea.Cmd {
+	cmds := []tea.Cmd{m.fetch, tickCmd()}
+	if m.opts.FetchQuota != nil {
+		cmds = append(cmds, func() tea.Msg { return quotaMsg(m.opts.FetchQuota()) })
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case sessionsMsg:
+		m.loading = false
+		m.loaded = true
+		if msg.err != nil {
+			m.authRequired = m.opts.AuthExpired != nil && m.opts.AuthExpired(msg.err)
+			m.status, m.statusBad = msg.err.Error(), true
+			return m, nil
+		}
+		m.authRequired = false
+		m.sessions = msg.sessions
+		if m.cursor >= len(m.sessions) {
+			m.cursor = max(0, len(m.sessions)-1)
+		}
+		// While anything is still creating, keep refreshing on our own so a
+		// background create walks to "running" without the user pressing r.
+		if !m.polling && anyCreating(m.sessions) {
+			m.polling = true
+			return m, pollCmd()
+		}
+		return m, nil
+	case pollMsg:
+		m.polling = false
+		if m.watch > 0 {
+			m.watch--
+		}
+		// watch keeps the chain alive right after a spawn, before the new
+		// instance is visible in the provider's list.
+		if m.watch > 0 || anyCreating(m.sessions) {
+			m.polling = true
+			return m, tea.Batch(m.fetch, pollCmd()) // silent refresh: no spinner flicker
+		}
+		return m, nil
+	case spawnedMsg:
+		if msg.err != nil {
+			m.status, m.statusBad = msg.err.Error(), true
+			return m, nil
+		}
+		// Terse on purpose: the ◐ row appearing below already says "watch
+		// here", and every extra word pushes the log path off the right edge
+		// of a ~100-column terminal.
+		m.status, m.statusBad = "creating "+msg.branch+" in the background (log: "+ui.Tilde(msg.log)+")", false
+		m.watch = 12 // ~60s of polling even before the instance shows up
+		if !m.polling {
+			m.polling = true
+			return m, pollCmd()
+		}
+		return m, nil
+	case quotaMsg:
+		m.quota = string(msg)
+		return m, nil
+	case resumedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.attachSess = driver.Session{}
+			m.status, m.statusBad = "resume "+msg.s.Name+": "+msg.err.Error(), true
+			return m, nil
+		}
+		return m.startAttach(msg.s)
+	case attachDoneMsg:
+		if msg.err == nil { // clean detach or remote exit
+			m.attachSess, m.attachRetried = driver.Session{}, false
+			m.loading = true
+			m.status, m.statusBad = "detached from "+msg.s.Name+" — it keeps running", false
+			return m, tea.Batch(m.fetch, tickCmd())
+		}
+		if !m.attachRetried && m.opts.RetryAttach != nil && m.opts.WaitReachable != nil &&
+			m.opts.RetryAttach(msg.err, time.Since(m.attachStart)) {
+			m.attachRetried = true
+			m.loading = true
+			m.status, m.statusBad = "not reachable yet — waiting for "+msg.s.Name+" to come online (~30-60s)", false
+			wait := m.opts.WaitReachable
+			return m, tea.Batch(tickCmd(), func() tea.Msg { return reachableMsg{msg.s, wait(msg.s)} })
+		}
+		status := "attach " + msg.s.Name + ": " + msg.err.Error()
+		var exitErr *exec.ExitError
+		if errors.As(msg.err, &exitErr) && exitErr.ExitCode() != 255 && time.Since(m.attachStart) < 15*time.Second {
+			// the remote bootstrap-marker guard exits 1 fast when setup is
+			// still running — point at the log instead of a bare exit status
+			status += " — it may still be setting up; l shows the setup log"
+		}
+		m.attachSess, m.attachRetried = driver.Session{}, false
+		m.loading = true
+		m.status, m.statusBad = status, true
+		return m, tea.Batch(m.fetch, tickCmd()) // the refreshed state often explains it
+	case reachableMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.attachSess, m.attachRetried = driver.Session{}, false
+			m.status, m.statusBad = msg.err.Error(), true
+			return m, nil
+		}
+		return m.startAttach(msg.s) // second and final attempt; attachRetried stays set
+	case reauthenticatedMsg:
+		m.reauthenticating = false
+		if msg.err != nil {
+			m.status, m.statusBad = "reauthentication failed: "+msg.err.Error(), true
+			return m, nil
+		}
+		m.authRequired = false
+		m.loaded, m.loading = false, true
+		m.status, m.statusBad = "authenticated — refreshing sessions…", false
+		return m, tea.Batch(m.fetch, tickCmd())
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		if m.mode == modeLogs {
+			m.relayoutLog()
+		}
+		return m, nil
+	case logMsg:
+		if m.mode != modeLogs || msg.name != m.logSess.Name {
+			return m, nil // stale fetch from a viewer already left
+		}
+		m.logLoading = false
+		if msg.err != nil {
+			m.status, m.statusBad = msg.err.Error(), true
+			return m, nil
+		}
+		m.status = ""
+		m.setLogText(msg.text)
+		return m, nil
+	case logPollMsg:
+		m.logPolling = false
+		if m.mode != modeLogs {
+			return m, nil
+		}
+		m.logPolling = true
+		cmds := []tea.Cmd{logPollCmd()}
+		if !m.logLoading {
+			m.logLoading = true
+			cmds = append(cmds, m.fetchLog())
+		}
+		return m, tea.Batch(cmds...)
+	case tickMsg:
+		if m.loading {
+			m.frame++
+			return m, tickCmd()
+		}
+		return m, nil
+	case tea.KeyMsg:
+		switch m.mode {
+		case modeNew:
+			return m.updateNew(msg)
+		case modeConfirm:
+			return m.updateConfirm(msg)
+		case modeSettings:
+			return m.updateSettings(msg)
+		case modeResize:
+			return m.updateResize(msg)
+		case modeLogs:
+			return m.updateLogs(msg)
+		}
+		return m.updateList(msg)
+	}
+	return m, nil
+}
+
+func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Expired auth is a focused recovery state: enter temporarily hands the
+	// terminal to the provider login, then a successful login refetches the
+	// list. Keep the original error visible until that happens.
+	if m.authRequired {
+		switch msg.String() {
+		case "q", "ctrl+c", "esc":
+			return m, tea.Quit
+		case "enter":
+			if m.reauthenticating || m.opts.Reauthenticate == nil {
+				return m, nil
+			}
+			cmd := m.opts.Reauthenticate()
+			if cmd == nil {
+				return m, nil
+			}
+			m.reauthenticating = true
+			m.status, m.statusBad = "reauthenticating…", false
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return reauthenticatedMsg{err} })
+		}
+		return m, nil
+	}
+	m.status = ""
+	switch msg.String() {
+	case "q", "ctrl+c", "esc":
+		return m, tea.Quit
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j":
+		if m.cursor < len(m.sessions)-1 {
+			m.cursor++
+		}
+	case "enter":
+		if len(m.sessions) == 0 || m.opts.Attach == nil || m.attachSess.Name != "" {
+			return m, nil
+		}
+		s := m.sessions[m.cursor]
+		switch s.State {
+		case driver.StateCreating:
+			m.status, m.statusBad = s.Name+" is still setting up — attach when it shows running", false
+			return m, nil
+		case driver.StateDeleting:
+			m.status, m.statusBad = s.Name+" is being deleted", false
+			return m, nil
+		case driver.StateDead:
+			m.status, m.statusBad = s.Name+" is dead — no VM to attach to", false
+			return m, nil
+		case driver.StateParked:
+			if m.opts.Resume == nil {
+				m.status, m.statusBad = s.Name+" is parked — pier attach "+s.Name+" resumes it", false
+				return m, nil
+			}
+			m.attachSess, m.loading = s, true
+			m.status, m.statusBad = "resuming "+s.Name+" (~20-60s)…", false
+			resume := m.opts.Resume
+			return m, tea.Batch(tickCmd(), func() tea.Msg { return resumedMsg{s, resume(s)} })
+		}
+		return m.startAttach(s)
+	case "l":
+		if len(m.sessions) > 0 && m.opts.FetchLog != nil {
+			s := m.sessions[m.cursor]
+			switch s.State {
+			case driver.StateCreating:
+				m.status, m.statusBad = s.Name+" is still setting up — logs once it shows running", false
+				return m, nil
+			case driver.StateDeleting:
+				m.status, m.statusBad = s.Name+" is being deleted", false
+				return m, nil
+			case driver.StateParked:
+				// resuming a VM is a billing change — never a side effect of
+				// opening a log view
+				m.status, m.statusBad = s.Name+" is parked — pier logs "+s.Name+" resumes it and prints the log", false
+				return m, nil
+			case driver.StateDead:
+				m.status, m.statusBad = s.Name+" is dead — no VM to read the log from", false
+				return m, nil
+			}
+			m.mode = modeLogs
+			m.logSess, m.logText, m.logLines = s, "", nil
+			m.logOff, m.logStick, m.logLoading = 0, true, true
+			cmds := []tea.Cmd{m.fetchLog()}
+			if !m.logPolling {
+				m.logPolling = true
+				cmds = append(cmds, logPollCmd())
+			}
+			return m, tea.Batch(cmds...)
+		}
+	case "n":
+		m.mode = modeNew
+		m.input = ""
+	case "d":
+		if len(m.sessions) > 0 {
+			m.mode = modeConfirm
+		}
+	case "p":
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.cursor]
+			m.loading = true
+			return m, tea.Batch(func() tea.Msg {
+				if err := m.opts.Pin(s); err != nil {
+					return sessionsMsg{nil, err}
+				}
+				return m.fetch()
+			}, tickCmd())
+		}
+	case "m":
+		if len(m.sessions) > 0 && m.opts.Resize != nil && m.opts.Machines != nil {
+			s := m.sessions[m.cursor]
+			if s.State == driver.StateCreating {
+				m.status, m.statusBad = s.Name+" is still setting up — resize once it shows running", false
+				return m, nil
+			}
+			if s.State == driver.StateDeleting {
+				m.status, m.statusBad = s.Name+" is being deleted", false
+				return m, nil
+			}
+			m.machines = m.opts.Machines(s)
+			if len(m.machines) == 0 {
+				m.status, m.statusBad = "no machine picks for this driver — use pier resize <session> <type>", false
+				return m, nil
+			}
+			m.machIdx = 0
+			for i, mc := range m.machines {
+				if mc.Type == s.InstanceType {
+					m.machIdx = i
+				}
+			}
+			m.mode = modeResize
+		}
+	case "s":
+		cfg, err := config.Load()
+		if err != nil {
+			m.status, m.statusBad = err.Error(), true
+			return m, nil
+		}
+		m.cfg, m.setIdx, m.editing, m.picking = &cfg, 0, false, false
+		m.mode = modeSettings
+	case "r":
+		m.loading = true
+		return m, tea.Batch(m.fetch, tickCmd())
+	}
+	return m, nil
+}
+
+// startAttach hands the terminal to ssh via tea.ExecProcess: bubbletea leaves
+// the alt screen, restores the shell termios, runs the command, then restores
+// the TUI and delivers attachDoneMsg — a tmux detach lands back on this list.
+func (m model) startAttach(s driver.Session) (tea.Model, tea.Cmd) {
+	cmd, err := m.opts.Attach(s)
+	if err != nil {
+		m.attachSess, m.loading = driver.Session{}, false
+		m.status, m.statusBad = err.Error(), true
+		return m, nil
+	}
+	m.attachSess, m.attachStart, m.loading = s, time.Now(), false
+	m.status, m.statusBad = "attaching to "+s.Name+" — detach with C-b d (session keeps running)", false
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return attachDoneMsg{s, err} })
+}
+
+func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editing {
+		return m.updateSettingEdit(msg)
+	}
+	if m.picking {
+		return m.updateSettingPick(msg)
+	}
+	m.status = ""
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		m.mode = modeList
+	case "up", "k":
+		if m.setIdx > 0 {
+			m.setIdx--
+		}
+	case "down", "j":
+		if m.setIdx < len(config.Settings)-1 {
+			m.setIdx++
+		}
+	case "enter":
+		return m.openSetting()
+	}
+	return m, nil
+}
+
+// openSetting opens the selected field for editing: a picker for choice and
+// machine fields, the free-text editor for the rest. A machine field with no
+// catalog wired (tests) falls back to the editor.
+func (m model) openSetting() (tea.Model, tea.Cmd) {
+	f := config.Settings[m.setIdx]
+	cur := config.Get(*m.cfg, f.Key)
+	switch f.Kind {
+	case config.KindChoice:
+		m.picking, m.pickOpts, m.pickIdx = true, f.Options, optIndex(f.Options, cur)
+	case config.KindMachine:
+		var cat []driver.Machine
+		if m.opts.SettingsMachines != nil {
+			cat = m.opts.SettingsMachines(driverID(f.Group), cur)
+		}
+		if len(cat) == 0 {
+			m.editing, m.setInput = true, cur
+			return m, nil
+		}
+		m.pickOpts = make([]config.Option, len(cat))
+		for i, mc := range cat {
+			m.pickOpts[i] = config.Option{Value: mc.Type, Desc: fmt.Sprintf("%2s vCPU · %3s GiB · %s", mc.CPU, mc.Mem, mc.Cost)}
+		}
+		m.picking, m.pickIdx = true, optIndex(m.pickOpts, cur)
+	default:
+		m.editing, m.setInput = true, cur
+	}
+	return m, nil
+}
+
+func (m model) updateSettingEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.editing, m.status = false, ""
+	case "enter":
+		return m.saveSetting(m.setInput)
+	case "backspace":
+		if len(m.setInput) > 0 {
+			m.setInput = m.setInput[:len(m.setInput)-1]
+		}
+	default:
+		if msg.Type == tea.KeyRunes && !strings.ContainsRune(string(msg.Runes), ' ') {
+			m.setInput += string(msg.Runes)
+		}
+	}
+	return m, nil
+}
+
+func (m model) updateSettingPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	f := config.Settings[m.setIdx]
+	last := len(m.pickOpts) // the "custom…" row sits one past the real options
+	if f.NoCustom {
+		last = len(m.pickOpts) - 1
+	}
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		m.picking, m.status = false, ""
+	case "up", "k":
+		if m.pickIdx > 0 {
+			m.pickIdx--
+		}
+	case "down", "j":
+		if m.pickIdx < last {
+			m.pickIdx++
+		}
+	case "enter":
+		if !f.NoCustom && m.pickIdx == len(m.pickOpts) { // custom… → free text
+			m.picking = false
+			m.editing, m.setInput = true, config.Get(*m.cfg, f.Key)
+			return m, nil
+		}
+		return m.saveSetting(m.pickOpts[m.pickIdx].Value)
+	}
+	return m, nil
+}
+
+// saveSetting validates val through config.Set (the single write path) and
+// persists it. A rejected value keeps the editor/picker open so it can be
+// fixed; the config on disk is never touched by a bad value.
+func (m model) saveSetting(val string) (tea.Model, tea.Cmd) {
+	f := config.Settings[m.setIdx]
+	if err := config.Set(m.cfg, f.Key, val); err != nil {
+		m.status, m.statusBad = err.Error(), true
+		return m, nil
+	}
+	if err := m.cfg.Save(); err != nil {
+		m.status, m.statusBad = err.Error(), true
+		return m, nil
+	}
+	m.editing, m.picking = false, false
+	m.status, m.statusBad = f.Label+" saved — applies to new sessions", false
+	return m, nil
+}
+
+// optIndex is the position of val in opts, or 0 (a custom value not in the
+// list simply lands the cursor on the first option).
+func optIndex(opts []config.Option, val string) int {
+	for i, o := range opts {
+		if o.Value == val {
+			return i
+		}
+	}
+	return 0
+}
+
+// driverID maps a settings group to the driver id whose machine catalog and
+// conventions it follows.
+func driverID(group string) string {
+	if group == "gcp" {
+		return "gcp-gce"
+	}
+	return "aws-ec2"
+}
+
+func (m model) updateResize(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		m.mode = modeList
+	case "up", "k":
+		if m.machIdx > 0 {
+			m.machIdx--
+		}
+	case "down", "j":
+		if m.machIdx < len(m.machines)-1 {
+			m.machIdx++
+		}
+	case "enter":
+		s := m.sessions[m.cursor]
+		t := m.machines[m.machIdx].Type
+		m.mode = modeList
+		if t == s.InstanceType {
+			m.status, m.statusBad = s.Name+" is already a "+t, false
+			return m, nil
+		}
+		m.loading = true
+		m.status, m.statusBad = "resizing "+s.Name+" to "+t+" — a running session rides one park+resume (~40-60s)", false
+		return m, tea.Batch(func() tea.Msg {
+			if err := m.opts.Resize(s, t); err != nil {
+				return sessionsMsg{nil, err}
+			}
+			return m.fetch()
+		}, tickCmd())
+	}
+	return m, nil
+}
+
+func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.mode = modeList
+	case "enter":
+		if m.input == "" {
+			return m, nil
+		}
+		if m.opts.CreateDetached == nil { // no creator wired (tests)
+			m.mode = modeList
+			return m, nil
+		}
+		for _, s := range m.sessions {
+			if s.Name == m.input {
+				m.mode = modeList
+				m.status, m.statusBad = fmt.Sprintf("session %q already exists", m.input), true
+				return m, nil
+			}
+		}
+		branch := m.input
+		m.mode, m.input = modeList, ""
+		return m, func() tea.Msg {
+			log, err := m.opts.CreateDetached(branch)
+			return spawnedMsg{branch, log, err}
+		}
+	case "backspace":
+		if len(m.input) > 0 {
+			m.input = m.input[:len(m.input)-1]
+		}
+	default:
+		if msg.Type == tea.KeyRunes && !strings.ContainsRune(string(msg.Runes), ' ') {
+			m.input += string(msg.Runes)
+		}
+	}
+	return m, nil
+}
+
+func (m model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y":
+		s := m.sessions[m.cursor]
+		m.mode = modeList
+		m.loading = true
+		return m, tea.Batch(func() tea.Msg {
+			if err := m.opts.Destroy(s); err != nil {
+				return sessionsMsg{nil, err}
+			}
+			return m.fetch()
+		}, tickCmd())
+	default:
+		m.mode = modeList
+	}
+	return m, nil
+}
+
+var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func (m model) View() string {
+	if m.mode == modeSettings {
+		return m.settingsView()
+	}
+	if m.mode == modeLogs {
+		return m.logsView()
+	}
+	var b strings.Builder
+
+	head := " " + ui.Title.Render("⚓ pier")
+	var meta []string
+	if m.loaded {
+		meta = append(meta, fmt.Sprintf("%d session(s)", len(m.sessions)))
+	}
+	if m.quota != "" {
+		meta = append(meta, m.quota)
+	}
+	if len(meta) > 0 {
+		head += ui.Dim.Render("  " + strings.Join(meta, " · "))
+	}
+	if m.loading {
+		head += " " + ui.Accent.Render(spinner[m.frame%len(spinner)])
+	}
+	b.WriteString("\n" + head + "\n\n")
+
+	switch {
+	case m.authRequired:
+		b.WriteString(ui.Dim.Render("   session list unavailable — reauthenticate to continue") + "\n")
+	case !m.loaded:
+		b.WriteString(ui.Dim.Render("   fetching sessions…") + "\n")
+	case len(m.sessions) == 0:
+		b.WriteString(ui.Dim.Render("   no sessions — press n to start one") + "\n")
+	default:
+		b.WriteString(m.table())
+	}
+	b.WriteString("\n")
+
+	switch m.mode {
+	case modeNew:
+		b.WriteString(" " + ui.Dim.Render("new session branch") + "\n")
+		b.WriteString(ui.Box.Render(ui.Accent.Render("❯ ")+m.input+ui.Accent.Render("▌")) + "\n")
+		b.WriteString(" " + ui.Keys("enter", "create", "esc", "cancel") + "\n")
+	case modeConfirm:
+		b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("destroy %q and its disk? (y/n)", m.sessions[m.cursor].Name)) + "\n")
+	case modeResize:
+		s := m.sessions[m.cursor]
+		b.WriteString(" " + ui.Dim.Render("resize "+s.Name+" — same-arch machines, billed on-demand while running") + "\n")
+		for i, mc := range m.machines {
+			marker := "   "
+			row := fmt.Sprintf("%-12s  %2s vCPU  %3s GiB  %s", mc.Type, mc.CPU, mc.Mem, mc.Cost)
+			if mc.Type == s.InstanceType {
+				row += "  (current)"
+			}
+			if i == m.machIdx {
+				marker = " " + ui.Accent.Render("▸") + " "
+				row = ui.Bold.Render(row)
+			}
+			b.WriteString(marker + row + "\n")
+		}
+		b.WriteString(" " + ui.Keys("enter", "resize", "esc", "cancel") + "\n")
+	default:
+		if m.status != "" {
+			if m.statusBad {
+				b.WriteString(" " + ui.Bad.Render("! "+m.status) + "\n")
+			} else {
+				b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
+			}
+		}
+		if m.authRequired {
+			b.WriteString(" " + ui.Keys("enter", "reauthenticate", "q", "quit") + "\n")
+		} else {
+			b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "m", "resize", "l", "logs", "s", "settings", "r", "refresh", "q", "quit") + "\n")
+		}
+	}
+	return b.String()
+}
+
+// settingsView is the s page: fields grouped session → aws → gcp, the
+// inactive cloud dimmed but still editable, a detail footer for the selected
+// field, and a read-only section for what pier setup and pier bake manage.
+// Values save straight to config.toml and apply to new sessions.
+func (m model) settingsView() string {
+	if m.picking {
+		return m.pickerView()
+	}
+	fields := config.Settings
+
+	labelW, valW := 0, len("(default VPC)")
+	disp := make([]string, len(fields))
+	for i, f := range fields {
+		disp[i] = f.Display(config.Get(*m.cfg, f.Key))
+		labelW = max(labelW, len(f.Label))
+		valW = max(valW, len(disp[i]))
+	}
+
+	header := []string{
+		"",
+		" " + ui.Title.Render("⚓ pier settings") +
+			ui.Dim.Render("  "+ui.Tilde(config.Path())+" · changes apply to new sessions"),
+		"",
+	}
+
+	var body []string
+	cursorLine, lastGroup := 0, ""
+	for i, f := range fields {
+		if f.Group != lastGroup {
+			if lastGroup != "" {
+				body = append(body, "")
+			}
+			body = append(body, m.groupHeader(f.Group))
+			lastGroup = f.Group
+		}
+		if i == m.setIdx {
+			cursorLine = len(body)
+		}
+		body = append(body, m.settingRow(i, f, disp[i], labelW, valW))
+	}
+	body = append(body, "")
+	body = append(body, m.readonlyLines()...)
+
+	var footer []string
+	footer = append(footer, m.detailFooter(fields[m.setIdx])...)
+	if m.status != "" {
+		if m.statusBad {
+			footer = append(footer, " "+ui.Bad.Render("! "+m.status))
+		} else {
+			footer = append(footer, " "+ui.Accent.Render("▸ "+m.status))
+		}
+	}
+	if m.editing {
+		footer = append(footer, " "+ui.Keys("enter", "save", "esc", "cancel"))
+	} else {
+		verb := "edit"
+		if k := fields[m.setIdx].Kind; k == config.KindChoice || k == config.KindMachine {
+			verb = "choose"
+		}
+		footer = append(footer, " "+ui.Keys("↑↓", "move", "enter", verb, "esc", "back"))
+	}
+
+	body = m.windowBody(body, cursorLine, len(header)+len(footer))
+	return strings.Join(header, "\n") + "\n" +
+		strings.Join(body, "\n") + "\n" +
+		strings.Join(footer, "\n") + "\n"
+}
+
+// groupHeader labels a group; a cloud group that isn't the active driver reads
+// dim with a "used when…" note, matching its dimmed rows.
+func (m model) groupHeader(group string) string {
+	if group == "session" {
+		return " " + ui.Bold.Render("session")
+	}
+	if m.inactiveGroup(group) {
+		return " " + ui.Dim.Render(group+" — used when cloud is "+cloudName(group))
+	}
+	return " " + ui.Bold.Render(group)
+}
+
+// settingRow renders one field: accent cursor + bold when selected, the whole
+// line dimmed for the inactive cloud, the machine fields annotated with the
+// current type's specs. Padded as plain text before styling so the %-*s width
+// math survives (ANSI escapes would blow the column alignment).
+func (m model) settingRow(i int, f config.Field, disp string, labelW, valW int) string {
+	label := fmt.Sprintf("%-*s", labelW, f.Label)
+	hint := f.Hint
+	if f.Kind == config.KindMachine {
+		if h := m.machineHint(f); h != "" {
+			hint = h
+		}
+	}
+	if i == m.setIdx {
+		val := fmt.Sprintf("%-*s", valW, disp)
+		if m.editing {
+			val = m.setInput + ui.Accent.Render("▌")
+		}
+		return " " + ui.Accent.Render("▸") + " " + ui.Bold.Render(label) + "  " + val + "  " + ui.Dim.Render(hint)
+	}
+	val := fmt.Sprintf("%-*s", valW, disp)
+	if m.inactiveGroup(f.Group) {
+		return "   " + ui.Dim.Render(label+"  "+val+"  "+hint)
+	}
+	return "   " + label + "  " + val + "  " + ui.Dim.Render(hint)
+}
+
+// readonlyLines is the "managed elsewhere" section: what travels into sessions
+// and what's baked, shown so the answer to "what's carried?" doesn't require
+// opening config.toml. Strictly read-only — the write paths stay pier setup
+// and pier bake. The cursor never enters it.
+func (m model) readonlyLines() []string {
+	c := m.cfg
+
+	secrets := ui.Dim.Render("(none)")
+	if n := len(c.Secrets.Manifest); n > 0 {
+		show, more := c.Secrets.Manifest, ""
+		if n > 3 {
+			show, more = show[:3], fmt.Sprintf(" +%d more", n-3)
+		}
+		secrets = strings.Join(show, " · ") + more
+	}
+	token := "not set"
+	if c.Secrets.ClaudeOAuthToken != "" {
+		token = "set"
+	}
+	imgs := c.AWS.BakedAMIs
+	if c.Driver == "gcp-gce" {
+		imgs = c.GCP.BakedImages
+	}
+	baked := ui.Dim.Render("(none)")
+	if len(imgs) > 0 {
+		pairs := make([]string, 0, len(imgs))
+		for repo, img := range imgs {
+			pairs = append(pairs, repo+" → "+shorten(img, 22))
+		}
+		sort.Strings(pairs)
+		more := ""
+		if len(pairs) > 2 {
+			pairs, more = pairs[:2], fmt.Sprintf(" +%d more", len(pairs)-2)
+		}
+		baked = strings.Join(pairs, " · ") + more
+	}
+
+	// Pad by rune count, not bytes: "secrets → sessions" carries a multi-byte
+	// arrow, and %-*s would misalign the value column against the ASCII rows.
+	labelW := len([]rune("secrets → sessions"))
+	row := func(label, val, mgr string) string {
+		if pad := labelW - len([]rune(label)); pad > 0 {
+			label += strings.Repeat(" ", pad)
+		}
+		return "   " + ui.Dim.Render(label+"  ") + val + ui.Dim.Render("  ("+mgr+")")
+	}
+	return []string{
+		" " + ui.Dim.Render("managed elsewhere"),
+		row("secrets → sessions", secrets, "pier setup"),
+		row("claude token", token, "claude setup-token"),
+		row("baked images", baked, "pier bake"),
+	}
+}
+
+// detailFooter is the explanation panel for the selected field: a rule, the
+// label + prose, the underlying config key and default, another rule.
+func (m model) detailFooter(f config.Field) []string {
+	rule := ui.Dim.Render(strings.Repeat("─", m.ruleWidth()))
+	out := []string{rule}
+	lines := strings.Split(f.Detail, "\n")
+	out = append(out, " "+ui.Bold.Render(f.Label)+ui.Dim.Render(" — "+lines[0]))
+	for _, l := range lines[1:] {
+		out = append(out, " "+ui.Dim.Render(l))
+	}
+	meta := "config: " + f.Key
+	if f.Default != "" {
+		meta += " · default: " + f.Default
+	}
+	return append(out, " "+ui.Dim.Render(meta), rule)
+}
+
+// pickerView is the dropdown for a choice or machine field: the options with
+// their annotations, the current value marked, and (unless the field is a
+// closed enum) a custom… row that drops into the free-text editor.
+func (m model) pickerView() string {
+	f := config.Settings[m.setIdx]
+	var b strings.Builder
+	b.WriteString("\n " + ui.Title.Render("⚓ pier settings") + ui.Dim.Render("  "+f.Label) + "\n\n")
+	b.WriteString(" " + ui.Dim.Render(f.Label+" — "+strings.SplitN(f.Detail, "\n", 2)[0]) + "\n\n")
+
+	cur := config.Get(*m.cfg, f.Key)
+	leftW := 6
+	labels := make([]string, len(m.pickOpts))
+	for i, o := range m.pickOpts {
+		labels[i] = o.Label
+		if labels[i] == "" {
+			labels[i] = o.Value
+		}
+		leftW = max(leftW, len(labels[i]))
+	}
+	for i, o := range m.pickOpts {
+		row := fmt.Sprintf("%-*s", leftW, labels[i])
+		if o.Desc != "" {
+			row += "  " + o.Desc
+		}
+		if o.Value == cur {
+			row += "  (current)"
+		}
+		b.WriteString(m.pickRow(i, row))
+	}
+	if !f.NoCustom {
+		b.WriteString(m.pickRow(len(m.pickOpts), fmt.Sprintf("%-*s  ", leftW, "custom…")+"type your own"))
+	}
+	b.WriteString("\n " + ui.Keys("↑↓", "move", "enter", "select", "esc", "cancel") + "\n")
+	return b.String()
+}
+
+func (m model) pickRow(i int, row string) string {
+	if i == m.pickIdx {
+		return " " + ui.Accent.Render("▸") + " " + ui.Bold.Render(row) + "\n"
+	}
+	return "   " + row + "\n"
+}
+
+// windowBody trims the settings body to what the terminal can hold, centered
+// on the selected row — same idea as the session table, so the header and
+// footer never scroll off the alternate screen. height 0 (tests) renders all.
+func (m model) windowBody(body []string, cursorLine, chrome int) []string {
+	if m.height == 0 {
+		return body
+	}
+	budget := max(3, m.height-chrome-1)
+	if len(body) <= budget {
+		return body
+	}
+	lo := min(max(0, cursorLine-budget/2), len(body)-budget)
+	return body[lo : lo+budget]
+}
+
+func (m model) inactiveGroup(group string) bool {
+	if group != "aws" && group != "gcp" {
+		return false
+	}
+	active := m.cfg.Driver
+	if active == "" {
+		active = "aws-ec2"
+	}
+	return driverID(group) != active
+}
+
+func (m model) machineHint(f config.Field) string {
+	if m.opts.SettingsMachines == nil {
+		return ""
+	}
+	cur := config.Get(*m.cfg, f.Key)
+	for _, mc := range m.opts.SettingsMachines(driverID(f.Group), cur) {
+		if mc.Type == cur {
+			return fmt.Sprintf("%s vCPU · %s GiB · %s", mc.CPU, mc.Mem, mc.Cost)
+		}
+	}
+	return ""
+}
+
+func (m model) ruleWidth() int {
+	if m.width <= 0 {
+		return 58
+	}
+	return min(58, max(20, m.width-2))
+}
+
+func cloudName(group string) string {
+	if group == "gcp" {
+		return "GCP"
+	}
+	return "AWS"
+}
+
+func shorten(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+// listRows is the table's row budget: terminal height minus every non-row
+// line View emits in the current mode, so the footer never clips off the
+// alternate screen (the renderer keeps the LAST height lines on overflow).
+func (m model) listRows() int {
+	if m.height == 0 { // no WindowSizeMsg yet (tests) — render everything
+		return len(m.sessions)
+	}
+	chrome := 6 // top margin+title+blank, column header, blank after table, trailing newline
+	switch m.mode {
+	case modeNew:
+		chrome += 5 // label + 3-line box + keys
+	case modeConfirm:
+		chrome++
+	case modeResize:
+		chrome += 2 + len(m.machines) // label + machine rows + keys
+	default:
+		chrome++ // keys
+		if m.status != "" {
+			chrome++
+		}
+	}
+	return max(3, m.height-chrome)
+}
+
+// table renders the session rows: dim column header, accent cursor, states
+// color-coded. Cells are padded as plain text first, then styled — ANSI
+// escapes would defeat %-*s width math. When the terminal is shorter than
+// the list, a cursor-centered window of rows renders instead.
+func (m model) table() string {
+	nameW, repoW, stateW := 4, 4, 5
+	states := make([]string, len(m.sessions))
+	for i, s := range m.sessions {
+		states[i] = stateCell(s)
+		nameW = max(nameW, len(s.Name))
+		repoW = max(repoW, len(s.Repo))
+		stateW = max(stateW, len([]rune(states[i])))
+	}
+
+	var b strings.Builder
+	b.WriteString(ui.Dim.Render(fmt.Sprintf("   %-*s  %-*s  %-*s  %-4s  %s",
+		nameW, "NAME", repoW, "REPO", stateW, "STATE", "AGE", "COST")) + "\n")
+	rows, lo := m.listRows(), 0
+	if rows < len(m.sessions) {
+		lo = min(max(0, m.cursor-rows/2), len(m.sessions)-rows)
+	}
+	hi := min(len(m.sessions), lo+rows)
+	for i := lo; i < hi; i++ {
+		s := m.sessions[i]
+		marker := "   "
+		name := fmt.Sprintf("%-*s", nameW, s.Name)
+		if i == m.cursor {
+			marker = " " + ui.Accent.Render("▸") + " "
+			name = ui.Bold.Render(name)
+		}
+		pad := stateW - len([]rune(states[i]))
+		state := stateStyle(s).Render(states[i]) + strings.Repeat(" ", pad)
+		fmt.Fprintf(&b, "%s%s  %s  %s  %-4s  %s\n",
+			marker, name,
+			ui.Dim.Render(fmt.Sprintf("%-*s", repoW, s.Repo)),
+			state, age(s.Created), ui.Dim.Render(s.CostNote))
+	}
+	return b.String()
+}
+
+func stateCell(s driver.Session) string {
+	dots := map[driver.State]string{
+		driver.StateCreating: "◐",
+		driver.StateRunning:  "●",
+		driver.StateWorking:  "●",
+		driver.StateIdle:     "●",
+		driver.StateParked:   "◌",
+		driver.StateDeleting: "◌",
+		driver.StateDead:     "✗",
+	}
+	dot, ok := dots[s.State]
+	if !ok {
+		dot = "?"
+	}
+	cell := dot + " " + string(s.State)
+	if s.Strained {
+		cell += " ▲ strained"
+	}
+	switch s.Setup {
+	case "running":
+		cell += " (setting up)"
+	case "failed":
+		cell += " (setup failed)"
+	}
+	return cell
+}
+
+func stateStyle(s driver.Session) lipgloss.Style {
+	if s.Setup == "failed" {
+		return ui.Bad
+	}
+	if s.Strained {
+		return ui.Strain
+	}
+	switch s.State {
+	case driver.StateRunning:
+		return ui.OK
+	case driver.StateWorking:
+		return ui.Accent
+	case driver.StateCreating, driver.StateIdle:
+		return ui.Warn
+	case driver.StateDead:
+		return ui.Bad
+	default: // parked, deleting
+		return ui.Dim
+	}
+}
+
+func age(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}

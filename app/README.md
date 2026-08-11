@@ -11,7 +11,7 @@ directly.
 - macOS builds and embeds the Go CLI, then talks to its versioned `pier app`
   JSON interface. The native app never scrapes human-readable terminal output.
 - iOS links a gomobile-generated `PierCore.xcframework` built from
-  `cli/mobile/piercore`. PierCore uses only the modular Go AWS clients it needs
+  `mobile/piercore`. PierCore uses only the modular Go AWS clients it needs
   (SSO OIDC, SSO, STS, EC2, and EC2 Instance Connect), plus Go SSH. Swift owns
   the UI and stores PierCore's opaque session JSON in the iOS Keychain.
 - Interactive terminals use libghostty's native Metal renderer. macOS lets
@@ -34,6 +34,10 @@ make ios-testflight # archive and export an App Store Connect IPA
 make macos-release  # Developer ID sign, notarize, staple, and zip for GitHub
 make clean    # remove generated project and build output
 ```
+
+These app commands can also be run from the repository root. Use
+`make app-test` and `make app-clean` there to distinguish them from the CLI
+targets.
 
 Requirements: Xcode 26+, its Metal toolchain, XcodeGen, Zig 0.16+, Go 1.25+,
 and gomobile. Install the Metal toolchain with
