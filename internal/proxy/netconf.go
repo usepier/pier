@@ -22,21 +22,35 @@ import (
 //     Inert /32s, gone at reboot, re-added by the next run.
 //
 // Everything else the proxy does is unprivileged and dies with the process.
-func ensureNet(out io.Writer) error {
-	var steps []string
+func networkSteps() (steps []string, missing []string) {
 	content := "nameserver " + dnsAddr + "\nport " + dnsPort + "\ntimeout 1\n"
 	if b, err := os.ReadFile("/etc/resolver/" + domain); err != nil || string(b) != content {
 		esc := strings.ReplaceAll(content, "\n", `\n`)
 		steps = append(steps, "mkdir -p /etc/resolver && printf '"+esc+"' > /etc/resolver/"+domain)
 	}
 	have := lo0Aliases()
-	var missing []string
 	for _, ip := range proxyIPs() {
 		if !have[ip] {
 			missing = append(missing, ip)
 			steps = append(steps, "ifconfig lo0 alias "+ip+" 255.255.255.255")
 		}
 	}
+	return steps, missing
+}
+
+// NetworkSetupNeeded reports whether the one-time resolver/loopback setup is
+// missing. Native clients use this to ask for administrator authorization
+// only when it is genuinely required.
+func NetworkSetupNeeded() bool {
+	steps, _ := networkSteps()
+	return len(steps) > 0
+}
+
+// EnsureNet configures the local .pier split DNS and loopback aliases. When
+// already elevated (the native app's authorization flow), it executes the
+// bounded setup directly; terminal callers retain the transparent sudo path.
+func EnsureNet(out io.Writer) error {
+	steps, missing := networkSteps()
 	if len(steps) == 0 {
 		return nil
 	}
@@ -47,13 +61,19 @@ func ensureNet(out io.Writer) error {
 	if len(missing) > 0 {
 		fmt.Fprintf(out, ui.Dim.Render("  ifconfig lo0 alias %s 255.255.255.255   (%d loopback IPs)\n"), missing[0], len(missing))
 	}
-	cmd := exec.Command("sudo", "/bin/sh", "-ec", strings.Join(steps, "\n"))
+	command := []string{"/bin/sh", "-ec", strings.Join(steps, "\n")}
+	if os.Geteuid() != 0 {
+		command = append([]string{"sudo"}, command...)
+	}
+	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("network setup: %w", err)
 	}
 	return nil
 }
+
+func ensureNet(out io.Writer) error { return EnsureNet(out) }
 
 // lo0Aliases reads which of our IPs are already on the loopback interface.
 func lo0Aliases() map[string]bool {

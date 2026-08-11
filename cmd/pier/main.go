@@ -110,6 +110,8 @@ func main() {
 		cmdBake()
 	case "teardown":
 		cmdTeardown()
+	case "app":
+		cmdApp(args[1:])
 	case "version", "-v", "--version":
 		fmt.Println("pier " + version)
 	case "help", "-h", "--help":
@@ -938,14 +940,8 @@ func cmdTUI() {
 			enrich(drv, sessions)
 			return sessions, nil
 		},
-		AuthExpired: awsec2.LoginExpired,
-		Reauthenticate: func() *exec.Cmd {
-			args := []string{"login"}
-			if cfg.AWS.Profile != "" {
-				args = append(args, "--profile", cfg.AWS.Profile)
-			}
-			return exec.Command("aws", args...)
-		},
+		AuthExpired:    awsec2.LoginExpired,
+		Reauthenticate: func() *exec.Cmd { return awsec2.LoginCommand(cfg.AWS.Profile) },
 		Destroy: func(s driver.Session) error {
 			return drv.Destroy(context.Background(), s.ID)
 		},

@@ -554,3 +554,6 @@ func hostname(name string) string {
 	}
 	return s
 }
+
+// Hostname turns a session name into the DNS label used by the proxy.
+func Hostname(name string) string { return hostname(name) }

@@ -43,6 +43,17 @@ func LoginExpired(err error) bool {
 	return strings.Contains(msg, "session has expired") && strings.Contains(msg, "aws login")
 }
 
+// LoginCommand builds the foreground command that renews an expired opt-in
+// AWS CLI session. Keep this next to LoginExpired so every Pier frontend uses
+// the same authentication mechanism.
+func LoginCommand(profile string) *exec.Cmd {
+	args := []string{"login"}
+	if profile != "" {
+		args = append(args, "--profile", profile)
+	}
+	return exec.Command("aws", args...)
+}
+
 // --- SSH into the session ----------------------------------------------------
 // One mechanism for everything interactive and file-shaped: OpenSSH. No
 // standing keys — each session gets its own keypair at create, stored under

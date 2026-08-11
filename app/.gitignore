@@ -1,0 +1,10 @@
+.DS_Store
+Pier.xcodeproj/
+/.derived-data/
+/.ghostty-build/
+/Frameworks/
+/logs/
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
