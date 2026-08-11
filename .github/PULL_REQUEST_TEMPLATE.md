@@ -12,7 +12,7 @@
 
 ## Checklist
 
-- [ ] `gofmt` and `go vet ./...` pass
+- [ ] `gofmt -l .` produces no output and `go vet ./...` passes
 - [ ] `make build` succeeds (if this touches supervisor/session code)
 - [ ] Tests added or updated for behavior changes
 - [ ] Docs updated if applicable
