@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver"
 )
 
 // Workspace is where sessions check the repo out. Shared by every driver so

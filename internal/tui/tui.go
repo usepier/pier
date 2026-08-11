@@ -19,9 +19,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kerem-kaynak/pier/internal/config"
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/ui"
+	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/ui"
 )
 
 type Options struct {

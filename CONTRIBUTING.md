@@ -69,7 +69,7 @@ are no prebuilt artifacts to manage.
    `git tag -a vX.Y.Z -m "pier vX.Y.Z" && git push origin vX.Y.Z`.
    The release workflow re-runs the checks and publishes the GitHub release.
 3. Bump the Homebrew formula in
-   [kerem-kaynak/homebrew-tap](https://github.com/kerem-kaynak/homebrew-tap):
+   [usepier/homebrew-tap](https://github.com/usepier/homebrew-tap):
    point `url` at the new tag and update `sha256`
    (`curl -sL <tarball-url> | shasum -a 256`).
 

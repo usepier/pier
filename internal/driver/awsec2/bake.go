@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/driver/payload"
-	"github.com/kerem-kaynak/pier/internal/ui"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/ui"
 )
 
 // Bake launches a throwaway instance with the exact session user-data, lets

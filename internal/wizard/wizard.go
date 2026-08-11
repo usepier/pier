@@ -19,9 +19,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/kerem-kaynak/pier/internal/config"
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/ui"
+	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/ui"
 )
 
 // adminDoc is for devs without IAM rights: the exact groundwork their admin

@@ -2,7 +2,7 @@
 
 # ⚓ pier
 
-[![CI](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml)
+[![CI](https://github.com/usepier/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/usepier/pier/actions/workflows/ci.yml)
 
 **Give every agent session its own VM. One command up, zero burn when idle.**
 
@@ -102,14 +102,14 @@ are a free state store.
 ## Installation
 
 ```
-brew install kerem-kaynak/tap/pier
+brew install usepier/tap/pier
 ```
 
 Or build from source with `make`, not `go build` (the in-VM supervisor must
 be embedded):
 
 ```
-git clone https://github.com/kerem-kaynak/pier
+git clone https://github.com/usepier/pier
 cd pier
 make install
 ```

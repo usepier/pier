@@ -48,8 +48,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/ui"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/ui"
 )
 
 const (

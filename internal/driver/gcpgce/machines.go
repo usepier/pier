@@ -1,7 +1,7 @@
 package gcpgce
 
 import (
-	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver"
 )
 
 // Machines is the TUI resize picker's catalog, filtered to the session's CPU

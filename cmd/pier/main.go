@@ -24,15 +24,15 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/config"
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
-	"github.com/kerem-kaynak/pier/internal/driver/gcpgce"
-	"github.com/kerem-kaynak/pier/internal/driver/payload"
-	"github.com/kerem-kaynak/pier/internal/proxy"
-	"github.com/kerem-kaynak/pier/internal/tui"
-	"github.com/kerem-kaynak/pier/internal/ui"
-	"github.com/kerem-kaynak/pier/internal/wizard"
+	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/awsec2"
+	"github.com/usepier/pier/internal/driver/gcpgce"
+	"github.com/usepier/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/proxy"
+	"github.com/usepier/pier/internal/tui"
+	"github.com/usepier/pier/internal/ui"
+	"github.com/usepier/pier/internal/wizard"
 )
 
 //go:embed assets
