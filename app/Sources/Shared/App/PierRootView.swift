@@ -28,6 +28,26 @@ struct PierRootView: View {
         .ignoresSafeArea(.container, edges: .top)
         #endif
         .background(PierTheme.canvas.ignoresSafeArea())
+        .overlay {
+            if model.isSigningInAWS {
+                ZStack {
+                    Color.black.opacity(0.16).ignoresSafeArea()
+                    VStack(spacing: 10) {
+                        ProgressView()
+                        Text("Waiting for AWS sign-in…")
+                            .font(.headline)
+                        Text("Finish signing in in your browser. Pier will continue automatically.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(24)
+                    .frame(maxWidth: 360)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                    .shadow(radius: 18, y: 8)
+                }
+            }
+        }
         .tint(PierTheme.accent)
         .preferredColorScheme(appearance.preferredColorScheme)
         .task(id: terminalTheme) {

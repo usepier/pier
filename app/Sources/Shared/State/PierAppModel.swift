@@ -22,6 +22,7 @@ final class PierAppModel {
     var isLoadingProjects = false
     var isLoadingBranches = false
     var isCreatingInstance = false
+    private(set) var isSigningInAWS = false
     var mobileAuthorization: PierMobileAuthorization?
     var mobileAccounts: [PierAWSAccount] = []
     var mobileRoles: [PierAWSRole] = []
@@ -36,6 +37,7 @@ final class PierAppModel {
     private var branchRequestID = UUID()
     private var isRefreshingInstances = false
     private var refreshingSnapshotIDs: Set<PierInstance.ID> = []
+    private var awsSignInGeneration = 0
 
     init(service: any PierServicing) {
         self.service = service
@@ -90,7 +92,9 @@ final class PierAppModel {
     }
 
     private func updateInstances(reportsActivity: Bool, reportsErrors: Bool) async {
+        guard !isSigningInAWS else { return }
         guard !isRefreshingInstances else { return }
+        let signInGeneration = awsSignInGeneration
         isRefreshingInstances = true
         if reportsActivity { isLoading = true }
         if reportsErrors {
@@ -107,6 +111,7 @@ final class PierAppModel {
         } catch is CancellationError {
             // Foreground sync tasks are cancelled when the app becomes inactive.
         } catch {
+            guard !isSigningInAWS, signInGeneration == awsSignInGeneration else { return }
             if reportsErrors || isAuthenticationRequired(error) {
                 report(error)
             }
@@ -118,8 +123,10 @@ final class PierAppModel {
         reportsActivity: Bool,
         reportsErrors: Bool
     ) async {
+        guard !isSigningInAWS else { return }
         guard instance.state != .parked && instance.state != .creating && instance.state != .dead else { return }
         guard refreshingSnapshotIDs.insert(instance.id).inserted else { return }
+        let signInGeneration = awsSignInGeneration
         if reportsActivity { inspectingInstanceIDs.insert(instance.id) }
         if reportsErrors {
             errorMessage = nil
@@ -135,6 +142,7 @@ final class PierAppModel {
         } catch is CancellationError {
             // Selecting another session cancels this view task; that is not an error to surface.
         } catch {
+            guard !isSigningInAWS, signInGeneration == awsSignInGeneration else { return }
             if reportsErrors || isAuthenticationRequired(error) {
                 report(error)
             }
@@ -567,6 +575,10 @@ final class PierAppModel {
     }
 
     func signInAWS() async {
+        guard !isSigningInAWS else { return }
+        isSigningInAWS = true
+        awsSignInGeneration += 1
+        defer { isSigningInAWS = false }
         await perform {
             try await service.signInAWS()
             applyInstanceList(try await service.listInstances())

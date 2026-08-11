@@ -422,6 +422,54 @@ final class PierModelsTests: XCTestCase {
         XCTAssertEqual(signedInCounts.instances, 2)
         XCTAssertEqual(signedInCounts.projects, 1)
     }
+
+    @MainActor
+    func testAWSLoginPausesPollingAndCoalescesRepeatedRequests() async {
+        let instance = PierInstance(
+            id: "i-waiting-auth",
+            name: "waiting-auth",
+            repo: "pier",
+            branch: "main",
+            user: "developer",
+            driver: "aws-ec2",
+            state: .running,
+            strained: false,
+            setup: "",
+            instanceType: "t4g.medium",
+            createdAt: "2026-08-10T10:00:00Z",
+            costNote: "$0.034/h",
+            localPath: "~/Documents/pier",
+            projectID: "/tmp/pier"
+        )
+        let service = SynchronizationService(instance: instance)
+        await service.requireLoginAtLaunch()
+        await service.pauseNextSignIn()
+        let model = PierAppModel(service: service)
+
+        await model.start()
+        let signIn = Task { await model.signInAWS() }
+        while !(await service.isWaitingForSignIn()) {
+            await Task.yield()
+        }
+
+        XCTAssertTrue(model.isSigningInAWS)
+        XCTAssertNil(model.errorMessage)
+        await model.syncInstances()
+        await model.signInAWS()
+        let waitingSignInRequests = await service.signInRequests()
+        let waitingWorkspaceRequests = await service.workspaceRequestCounts()
+        XCTAssertEqual(waitingSignInRequests, 1)
+        XCTAssertEqual(waitingWorkspaceRequests.instances, 1)
+
+        await service.completeSignIn()
+        await signIn.value
+
+        XCTAssertFalse(model.isSigningInAWS)
+        XCTAssertFalse(model.requiresAWSLogin)
+        XCTAssertEqual(model.instances.map(\.id), [instance.id])
+        let finishedWorkspaceRequests = await service.workspaceRequestCounts()
+        XCTAssertEqual(finishedWorkspaceRequests.instances, 2)
+    }
 }
 
 private actor SynchronizationService: PierServicing {
@@ -434,6 +482,9 @@ private actor SynchronizationService: PierServicing {
     private var launchRequiresLogin = false
     private var instanceRequestCount = 0
     private var projectRequestCount = 0
+    private var signInRequestCount = 0
+    private var pausesNextSignIn = false
+    private var signInContinuation: CheckedContinuation<Void, Never>?
 
     init(instance: PierInstance) {
         instances = [instance]
@@ -454,6 +505,23 @@ private actor SynchronizationService: PierServicing {
 
     func workspaceRequestCounts() -> (instances: Int, projects: Int) {
         (instanceRequestCount, projectRequestCount)
+    }
+
+    func pauseNextSignIn() {
+        pausesNextSignIn = true
+    }
+
+    func isWaitingForSignIn() -> Bool {
+        signInContinuation != nil
+    }
+
+    func completeSignIn() {
+        signInContinuation?.resume()
+        signInContinuation = nil
+    }
+
+    func signInRequests() -> Int {
+        signInRequestCount
     }
 
     func setupStatus() async throws -> PierSetupStatus {
@@ -519,7 +587,14 @@ private actor SynchronizationService: PierServicing {
         throw PierServiceFailure.unavailable("Not used in this test")
     }
     func closeTab(instanceID: String, tabID: String) async throws {}
-    func signInAWS() async throws { launchRequiresLogin = false }
+    func signInAWS() async throws {
+        signInRequestCount += 1
+        if pausesNextSignIn {
+            pausesNextSignIn = false
+            await withCheckedContinuation { signInContinuation = $0 }
+        }
+        launchRequiresLogin = false
+    }
     func signOutMobile() async throws { signedOut = true }
 }
 

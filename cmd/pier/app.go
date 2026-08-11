@@ -130,6 +130,15 @@ func cmdApp(args []string) {
 	switch args[0] {
 	case "status":
 		appWrite(appStatus())
+	case "auth-status":
+		// Compatibility for an older native app paired with a newer bundled
+		// CLI. Use the same list operation as the current app rather than a
+		// second authorization probe.
+		if _, err := appListInstances(); err != nil {
+			code, message := appCloudError("aws_authorization_failed", err)
+			appWriteError(code, message)
+		}
+		appWrite(struct{}{})
 	case "login":
 		if err := appAWSLogin(); err != nil {
 			appWriteError("aws_login_failed", err.Error())
@@ -205,19 +214,10 @@ func cmdApp(args []string) {
 		}
 		appWrite(struct{}{})
 	case "list":
-		_, drv, err := appLoadDriver()
-		if err != nil {
-			appWriteError("not_configured", err.Error())
-		}
-		sessions, err := drv.List(context.Background())
+		items, err := appListInstances()
 		if err != nil {
 			code, message := appCloudError("list_failed", err)
 			appWriteError(code, message)
-		}
-		enrich(drv, sessions)
-		items := make([]appInstance, 0, len(sessions))
-		for _, session := range sessions {
-			items = append(items, appInstanceFrom(session))
 		}
 		appWrite(items)
 	case "inspect":
@@ -284,6 +284,23 @@ func appCloudError(fallbackCode string, err error) (string, string) {
 		return "aws_login_required", "Your AWS session has expired. Sign in again, then Pier can reload your instances."
 	}
 	return fallbackCode, err.Error()
+}
+
+func appListInstances() ([]appInstance, error) {
+	_, drv, err := appLoadDriver()
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := drv.List(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	enrich(drv, sessions)
+	items := make([]appInstance, 0, len(sessions))
+	for _, session := range sessions {
+		items = append(items, appInstanceFrom(session))
+	}
+	return items, nil
 }
 
 func appDiscoverProjects() ([]appProject, error) {
