@@ -1,0 +1,84 @@
+name: Bug Report
+description: Report something that isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please avoid pasting credentials, tokens, or unredacted config — redact anything sensitive before submitting.
+
+  - type: input
+    id: pier-version
+    attributes:
+      label: Pier version
+      description: Output of `pier version`
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options:
+        - AWS
+        - GCP
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: local-os
+    attributes:
+      label: Local OS
+      description: e.g. macOS 14, Ubuntu 22.04
+    validations:
+      required: true
+
+  - type: input
+    id: region-zone
+    attributes:
+      label: Region / zone
+    validations:
+      required: false
+
+  - type: dropdown
+    id: connection-mode
+    attributes:
+      label: Connection mode
+      options:
+        - SSH
+        - Session Manager (AWS)
+        - Other / not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you run, in order?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant output. Redact credentials, tokens, or unredacted config before pasting.
+      render: shell
+    validations:
+      required: false

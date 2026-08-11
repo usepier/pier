@@ -1,0 +1,37 @@
+name: Feature / Design Proposal
+description: Propose a new feature or a change to Pier's design
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For anything beyond a minor fix, please open an issue first to discuss the design before sending a PR — see CONTRIBUTING.md.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: design-alignment
+    attributes:
+      label: How does this align with Pier's documented design constraints?
+      description: e.g. VMs never hold cloud credentials, parking is self-initiated laptop-side, etc. Reference the design doc if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
