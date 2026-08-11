@@ -501,3 +501,23 @@ create → attach-ready 1m44s**; resume → ready 56s; running resize 1m42s with
 creationTimestamp (AGE) preserved; the deny rule verified live — public :22
 probes fail while IAP attach works; rm and teardown swept the project back
 to pristine.
+
+Warm-pool E2E (2026-08-10/11, eu-central-1, t4g.medium, stock AMI — the test
+repo had no bake, so fills paid the cloud-init wait a baked image skips):
+`pool set 1` spawned the detached fill itself; fill → parked ready member
+2m49s (foreground run; the detached first run landed ~3m10s). **Claim →
+session ready 25.8s** (a second claim: 25s) — branch created, dirty patch
+carried, setup re-ran to status 0, and the supervisor conf flipped from the
+2m fill leash to the user's 1h idle (journal: `parking: idle for 1h0m0s`,
+exactly an hour after claim activity ceased). The detached refill built and
+parked a replacement unprompted. Two-terminal race against one member: the
+winner claimed in 25s, the loser printed `no warm member to claim — creating
+fresh` and fell back. The laptop-death backstop got an unplanned live trial:
+the laptop's network died mid-refill (even the cleanup terminate couldn't
+reach EC2) — the VM finished setup on its own, the fill leash parked it
+(`parking: idle for 2m0s`), and that member claimed cleanly the next morning.
+Editing `.pier-setup.sh` made the next fill print `recycling stale member …`
+and replace it. A repo whose setup script fails on stock (pnpm absent) had
+its member destroyed, never parked, and the claim fell back to a fresh
+create. Every failed create terminated its own instance; account swept back
+to baseline after — instances, volumes, keys, logs, config all gone.
