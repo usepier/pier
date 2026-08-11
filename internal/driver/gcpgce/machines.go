@@ -10,6 +10,9 @@ import (
 // through `pier resize <session> <type>`.
 func Machines(currentType string) []driver.Machine {
 	if archOf(currentType) == "arm64" {
+		// Note: T2A and C4A availability is highly region-sensitive.
+		// If a selected target is unavailable in the session's zone, the resize 
+		// operation will fail, which leaves the instance in a stopped state.
 		return []driver.Machine{
 			{Type: "t2a-standard-1", CPU: "1", Mem: "4", Cost: "~$0.04/h"},
 			{Type: "t2a-standard-2", CPU: "2", Mem: "8", Cost: "~$0.08/h"},
