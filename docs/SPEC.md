@@ -130,11 +130,21 @@ for every connection. Teardown deletes the SG, rules included.
 
 ## 5. Identity & teams
 
-The caller's cloud identity (STS `GetCallerIdentity` ARN; GCP authed
-principal) is written to `pier:user` at create and filtered on at list. Many
-devs share one account with zero coordination: no name collisions, no shared
-state, nothing to configure. `pier ls --all` can show teammates' sessions
-(read-only visibility); everything else operates only on your own.
+The caller's cloud identity (the complete STS `GetCallerIdentity` ARN; GCP
+authed principal) is written to `pier:user` at create and filtered on at list.
+For an AWS assumed role, the final role-session segment is retained because it
+identifies the Identity Center user. Many devs can therefore choose the same
+permission-set role without sharing session state or creating name collisions.
+
+AWS instances created by Pier versions that stripped the role-session segment
+have a legacy role-wide `pier:user` tag. The original user cannot be recovered
+from that tag; each owner must retag their existing instances once with their
+complete current `sts get-caller-identity` ARN after identifying their instance:
+
+```sh
+aws ec2 create-tags --resources i-0123456789abcdef0 --tags \
+  Key=pier:user,Value="$(aws sts get-caller-identity --query Arn --output text)"
+```
 
 ## 6. Parking policy (supervisor)
 
