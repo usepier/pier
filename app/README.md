@@ -35,6 +35,10 @@ make macos-release  # Developer ID sign, notarize, staple, and zip for GitHub
 make clean    # remove generated project and build output
 ```
 
+These app commands can also be run from the repository root. Use
+`make app-test` and `make app-clean` there to distinguish them from the CLI
+targets.
+
 Requirements: Xcode 26+, its Metal toolchain, XcodeGen, Zig 0.16+, Go 1.25+,
 and gomobile. Install the Metal toolchain with
 `xcodebuild -downloadComponent MetalToolchain`. Install the binder once with
