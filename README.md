@@ -267,6 +267,10 @@ setup window closes.
 apps/*/.env.local
 ```
 
+A file symlink matched directly by a line or glob is dereferenced: its target
+contents arrive as a regular file at the symlink's repository path. Directory
+symlinks are never followed.
+
 ```bash
 # .pier-bake.sh (agent user, passwordless sudo, NO repo checkout yet)
 set -euo pipefail

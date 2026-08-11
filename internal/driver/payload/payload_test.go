@@ -375,6 +375,73 @@ func TestPierInclude(t *testing.T) {
 	}
 }
 
+func TestPierIncludeDereferencesDirectFileSymlinks(t *testing.T) {
+	root := t.TempDir()
+	sources := t.TempDir()
+	target := filepath.Join(sources, "api.env")
+	if err := os.WriteFile(target, []byte("API_KEY=local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "apps", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "uploads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for link, destination := range map[string]string{
+		"apps/api/.env": target,
+		"broken":        filepath.Join(sources, "missing"),
+		"source-dir":    sources,
+		"uploads/.env":  target,
+	} {
+		if err := os.Symlink(destination, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".pier-include"),
+		[]byte("apps/*/.env\nbroken\nsource-dir\nuploads/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The glob directly matches apps/api/.env, so its target is carried.
+	// Broken and directory links are ineligible, and the uploads directory
+	// walk must not follow the nested link it encounters.
+	if got, want := pierIncludeFiles(root), []string{"apps/api/.env"}; !slices.Equal(got, want) {
+		t.Fatalf("pierIncludeFiles() = %v, want %v", got, want)
+	}
+
+	dst := filepath.Join(t.TempDir(), "files.tar")
+	if err := buildFilesTar(dst, nil, root, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			t.Fatal("repo/apps/api/.env missing from files tar")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name != "repo/apps/api/.env" {
+			continue
+		}
+		contents, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Typeflag != tar.TypeReg || string(contents) != "API_KEY=local\n" {
+			t.Fatalf("carried symlink = type %d, contents %q", header.Typeflag, contents)
+		}
+		break
+	}
+}
+
 // Carried repo files must land world-readable (exec kept for scripts): the
 // VM's docker daemon is userns-remapped, so a 0600 .env that works under
 // Docker Desktop bind-mounts unreadable to every container on the VM.

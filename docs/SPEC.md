@@ -316,7 +316,9 @@ and the IAP tunnel are simply slower).
    ignored files travel **only** when a repo-root **`.pier-include`** names
    them: one path or glob per line, matched against the disk with no
    git-status distinction — listed = travels, extracted after checkout +
-   patch so listed content wins. Nothing loose ships by default — no env
+   patch so listed content wins. Directly matched file symlinks are
+   dereferenced into regular files at their repo-relative paths; directory
+   symlinks are not followed. Nothing loose ships by default — no env
    auto-transfer; the create prints which env files it is *not* carrying so
    a missing one fails loud at create, not deep in `make dev`.
 
@@ -331,7 +333,9 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 - repo files named by a repo-root `.pier-include` (path or glob per line) —
   the **only** loose-file channel: nothing untracked or ignored ships without
   a line here (env files included; the create warns about ones left behind).
-  Tracked content arrives with the fetch, dirty edits to it via the patch.
+  Directly matched file symlinks carry their target contents under the link's
+  repo-relative path. Tracked content arrives with the fetch, dirty edits to
+  it via the patch.
 - `~/.codex/` (auth.json, config.toml)
 - `~/.claude/` settings, `CLAUDE.md`, agents
 - a GitHub credential for git push/PRs and private-repo fetch: `gh auth
