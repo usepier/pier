@@ -10,7 +10,16 @@ import (
 // through `pier resize <session> <type>`.
 func Machines(currentType string) []driver.Machine {
 	if archOf(currentType) == "arm64" {
-		return nil // no curated arm catalog yet — pier resize still works
+		return []driver.Machine{
+			{Type: "t2a-standard-1", CPU: "1", Mem: "4", Cost: "~$0.04/h"},
+			{Type: "t2a-standard-2", CPU: "2", Mem: "8", Cost: "~$0.08/h"},
+			{Type: "t2a-standard-4", CPU: "4", Mem: "16", Cost: "~$0.15/h"},
+			{Type: "t2a-standard-8", CPU: "8", Mem: "32", Cost: "~$0.31/h"},
+			{Type: "c4a-standard-1", CPU: "1", Mem: "4", Cost: "~$0.04/h"},
+			{Type: "c4a-standard-2", CPU: "2", Mem: "8", Cost: "~$0.09/h"},
+			{Type: "c4a-standard-4", CPU: "4", Mem: "16", Cost: "~$0.18/h"},
+			{Type: "c4a-standard-8", CPU: "8", Mem: "32", Cost: "~$0.36/h"},
+		}
 	}
 	return []driver.Machine{
 		{Type: "e2-small", CPU: "2", Mem: "2", Cost: "~$0.02/h"},
