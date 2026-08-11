@@ -920,7 +920,7 @@ func confirm(prompt string, def bool) bool {
 // --- TUI --------------------------------------------------------------------------
 
 func cmdTUI() {
-	_, drv := loadDriver()
+	cfg, drv := loadDriver()
 	err := tui.Run(tui.Options{
 		// Async: the TUI opens instantly and the quota fills in when it lands.
 		FetchQuota: func() string {
@@ -937,6 +937,14 @@ func cmdTUI() {
 			}
 			enrich(drv, sessions)
 			return sessions, nil
+		},
+		AuthExpired: awsec2.LoginExpired,
+		Reauthenticate: func() *exec.Cmd {
+			args := []string{"login"}
+			if cfg.AWS.Profile != "" {
+				args = append(args, "--profile", cfg.AWS.Profile)
+			}
+			return exec.Command("aws", args...)
 		},
 		Destroy: func(s driver.Session) error {
 			return drv.Destroy(context.Background(), s.ID)
