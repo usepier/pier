@@ -84,6 +84,7 @@ intact. And to see what the agent built,
 |---|---|
 | running | `~$0.04/h` |
 | parked | `~$3-4/mo` (disk only) |
+| warm pool member (parked) | `~$3-4/mo` (disk only) |
 
 There is no control plane. No server, no database, no daemon on your laptop.
 Session state lives in instance tags. Every byte between you and the VM is
@@ -191,12 +192,13 @@ for pier VMs and one allow rule above it for exactly Google's IAP range
 
 ```
 pier                      the TUI: sessions live-updating
-                          enter attach · n new · d delete · p pin · m resize · s settings · r refresh · q quit
+                          enter attach · n new · d delete · p pin · m resize · w pools · s settings · r refresh · q quit
 pier <branch> [base]      new session off base (default HEAD), then attach
     -d, --detach          create without attaching
     --idle <dur|never>    idle self-park timeout (default 30m)
     --cap <dur|never>     unattended runaway cap (default 8h)
     --no-park             shorthand for --idle never
+    --no-pool             skip this repo's warm pool for this create
 pier ls                   plain list (pipeable)
 pier attach <session>     attach (parked sessions auto-resume, ~20-60s)
 pier logs <session>       show the setup script log (-f follows)
@@ -204,6 +206,10 @@ pier rm <session> [-f]    destroy the session and its disk
 pier keep <session>       pin: disable idle self-park
 pier resize <session> <type>   grow/shrink the VM (~1-2 min, same CPU arch)
 pier bake                 prebake this repo's session image (~1-2 min creates)
+pier pool                 warm pool status + cost (the TUI's w page, scriptable)
+pier pool set <size>      keep <size> warm sessions ready for this repo (0 = off)
+pier pool fill [--detach] top this repo's pool up to size now
+pier pool drain [repo]    destroy a repo's warm members
 pier mcp login <session>  one-time browser approvals for OAuth MCP servers
 pier proxy                every running session as <session>.pier (macOS)
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
@@ -367,6 +373,29 @@ pier bake    # one throwaway instance + your .pier-bake.sh, snapshotted as an im
 Creates from a baked image drop to a minute or two. Images are keyed to
 the repo, so one project's toolchain never bleeds into another's. Re-baking
 supersedes the old image, and `pier teardown` sweeps them all by tag.
+
+### Warm pools: the create is already done
+
+Even a baked create spends a minute booting and then runs your setup script.
+A warm pool does that work ahead of time:
+
+```
+cd ~/code/shop && pier pool set 2
+```
+
+pier now keeps two parked, **setup-complete** sessions ready for `shop`. The
+next `pier <branch>` claims one instead of creating — resume, check out your
+branch, re-push secrets, apply your dirty edits — and refills the pool in
+the background. An empty pool just means a normal create; the pool
+accelerates, never gates, and `--no-pool` skips it for one create.
+
+Warm members are parked instances, so each costs disk only (~$3-4/mo).
+They recycle themselves when they go stale — after a re-bake, a
+setup-script change, or 14 days (`pool.max_age`) — and `pier pool` shows
+every pool you're holding with what it costs. In the TUI, `w` opens the
+pool page: `+`/`-` and enter size the current repo's pool, `d` drains any
+repo's members, and the header counts what's warm. Strictly opt-in;
+`pier pool set 0` turns it off and drains.
 
 ### Setup that can't fail silently
 

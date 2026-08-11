@@ -115,3 +115,8 @@ the laptop for the VM.
   in the repo (~8 min, once per hook change). Then create a session and
   watch `pier ls` — `(setup running)` should clear; if it shows
   `(setup failed)`, attach and read `~/.pier-setup.log`.
+- If `.pier-setup.sh` is heavy (long installs, docker pulls, migrations),
+  mention `pier pool set <n>`: it keeps n parked, setup-complete sessions
+  ready to claim, so new sessions skip the wait entirely (~$3-4/mo per
+  warm member, disk only). Changing `.pier-setup.sh` later is safe — warm
+  members notice and recycle on the next claim or fill.

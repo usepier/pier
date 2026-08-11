@@ -474,6 +474,216 @@ func TestTableWindowFollowsCursor(t *testing.T) {
 	}
 }
 
+// FoldPool classifies members the way reconcile would; the generation check
+// applies only to the repo whose local checkout produced curGen — other
+// repos' gens are unknowable here.
+func TestFoldPool(t *testing.T) {
+	now := time.Now()
+	ss := []driver.Session{
+		{Repo: "shop", PoolGen: "aaa", State: driver.StateParked, Created: now.Add(-time.Hour)},
+		{Repo: "shop", PoolGen: "bbb", State: driver.StateParked, Created: now}, // wrong gen
+		{Repo: "shop", PoolGen: "aaa", State: driver.StateCreating, Created: now},
+		{Repo: "shop", PoolGen: "aaa", State: driver.StateDead, Created: now},
+		{Repo: "shop", PoolGen: "aaa", State: driver.StateDeleting, Created: now},
+		{Repo: "shop", State: driver.StateRunning, Created: now}, // a real session
+		{Repo: "tools", PoolGen: "zzz", State: driver.StateParked, Created: now},
+	}
+	if st := FoldPool(ss, "shop", "shop", "aaa", 0, now); st.Ready != 1 || st.Filling != 1 || st.Stale != 2 {
+		t.Errorf("shop = %+v, want 1 ready, 1 filling, 2 stale", st)
+	}
+	if st := FoldPool(ss, "tools", "shop", "aaa", 0, now); st.Ready != 1 || st.Stale != 0 {
+		t.Errorf("tools = %+v, want its member ready (gen unknowable from here)", st)
+	}
+
+	// Age judgments: a parked member past max_age is stale even for repos
+	// whose gen is unknowable, and an unparked member past the fill grace is
+	// a corpse, not "filling" — its fill died hours ago.
+	old := []driver.Session{
+		{Repo: "tools", PoolGen: "zzz", State: driver.StateParked, Created: now.Add(-30 * 24 * time.Hour)},
+		{Repo: "tools", PoolGen: "zzz", State: driver.StateCreating, Created: now.Add(-3 * time.Hour)},
+	}
+	if st := FoldPool(old, "tools", "", "", 14*24*time.Hour, now); st.Ready != 0 || st.Filling != 0 || st.Stale != 2 {
+		t.Errorf("old members = %+v, want both stale (over-age + grace-blown)", st)
+	}
+	if st := FoldPool(old[:1], "tools", "", "", 0, now); st.Ready != 1 {
+		t.Errorf("maxAge 0 = %+v, want the age check skipped", st)
+	}
+}
+
+// The w page is the primary pool surface: members split out of the session
+// list (never as table rows), the header counts them, and the page shows
+// per-repo warmth with what it costs.
+func TestPoolPage(t *testing.T) {
+	if got, _ := (model{loaded: true}).updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")}); got.(model).mode != modeList {
+		t.Error("w without pool hooks wired must be a no-op")
+	}
+
+	now := time.Now()
+	m := model{loaded: true, opts: Options{
+		PoolSizes:   func() map[string]int { return map[string]int{"shop": 2} },
+		CurrentRepo: "shop",
+		CurrentGen:  "aaaaaaaaaaaa",
+	}}
+	got, _ := m.Update(sessionsMsg{sessions: []driver.Session{
+		{Name: "fix-auth", Repo: "shop", State: driver.StateRunning, Created: now},
+		{Name: "pool-shop-a1b2", Repo: "shop", State: driver.StateParked, PoolGen: "aaaaaaaaaaaa", Created: now.Add(-time.Hour)},
+		{Name: "pool-shop-c3d4", Repo: "shop", State: driver.StateCreating, PoolGen: "aaaaaaaaaaaa", Created: now},
+		{Name: "pool-tools-e5f6", Repo: "tools", State: driver.StateParked, PoolGen: "bbbbbbbbbbbb", Created: now},
+	}})
+	m = got.(model)
+
+	v := m.View()
+	if strings.Contains(v, "pool-shop-a1b2") {
+		t.Errorf("pool members must never render as session rows:\n%s", v)
+	}
+	if !strings.Contains(v, "1 session(s)") || !strings.Contains(v, "3 warm") {
+		t.Errorf("header must count sessions and warm members separately:\n%s", v)
+	}
+
+	got, _ = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = got.(model)
+	if m.mode != modePool {
+		t.Fatalf("w must open the pool page, got mode=%v", m.mode)
+	}
+	if m.poolRepos[m.poolIdx] != "shop" {
+		t.Errorf("cursor must land on the current repo, got %q", m.poolRepos[m.poolIdx])
+	}
+	v = m.View()
+	for _, want := range []string{"pier pools", "shop", "1 ready", "1 filling", "tools", "$3-4/mo", "this repo"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("pool page missing %q:\n%s", want, v)
+		}
+	}
+	// tools has a member but no configured pool — that's money leaking.
+	if !strings.Contains(v, "orphaned") {
+		t.Errorf("members without a configured pool must show as orphaned:\n%s", v)
+	}
+}
+
+// Sizing works only on the current repo's row, stages with +/- (rendered as
+// from→to), applies on enter through PoolSet, and esc cancels the staging
+// before it leaves the page.
+func TestPoolSizeEditing(t *testing.T) {
+	applied := -1
+	sizes := map[string]int{"shop": 1}
+	m := model{loaded: true, mode: modePool,
+		poolSizes: sizes, poolRepos: []string{"other", "shop"}, poolIdx: 1, poolPend: -1,
+		members: []driver.Session{{Name: "pool-other-x", Repo: "other", State: driver.StateParked, PoolGen: "g", Created: time.Now()}},
+		opts: Options{
+			CurrentRepo: "shop",
+			PoolSizes:   func() map[string]int { return sizes },
+			Fetch:       func() ([]driver.Session, error) { return nil, nil },
+			PoolSet:     func(size int) (string, error) { applied = size; return "/tmp/pool-shop.log", nil },
+		}}
+
+	for range 2 {
+		got, _ := m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+		m = got.(model)
+	}
+	if m.poolPend != 3 || applied != -1 {
+		t.Fatalf("+ must stage, not apply: pend=%d applied=%d", m.poolPend, applied)
+	}
+	if v := m.View(); !strings.Contains(v, "1→3") {
+		t.Errorf("a staged size must render as from→to:\n%s", v)
+	}
+
+	got, _ := m.updatePool(tea.KeyMsg{Type: tea.KeyEsc})
+	m = got.(model)
+	if m.poolPend != -1 || m.mode != modePool {
+		t.Fatalf("first esc must only cancel the staged size, got pend=%d mode=%v", m.poolPend, m.mode)
+	}
+
+	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+	m = got.(model)
+	got, cmd := m.updatePool(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if cmd == nil {
+		t.Fatal("enter on a staged size must return the apply command")
+	}
+	var act tea.Msg
+	if batch, ok := cmd().(tea.BatchMsg); ok { // Batch wraps, doesn't run
+		for _, c := range batch {
+			if msg, ok := c().(poolActMsg); ok {
+				act = msg
+			}
+		}
+	}
+	if applied != 2 || act == nil {
+		t.Fatalf("apply must call PoolSet with the staged size, got applied=%d msg=%v", applied, act)
+	}
+	got, _ = m.Update(act)
+	m = got.(model)
+	if !strings.Contains(m.status, "pool size 2") || m.statusBad {
+		t.Errorf("a landed apply must confirm with the log path, got status=%q", m.status)
+	}
+
+	// Another repo's row can't be sized from here — its checkout is elsewhere.
+	m.poolIdx, m.poolPend = 0, -1
+	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+	m = got.(model)
+	if m.poolPend != -1 || !strings.Contains(m.status, "inside other") {
+		t.Errorf("sizing another repo must be refused with a pointer, got pend=%d status=%q", m.poolPend, m.status)
+	}
+}
+
+// Draining destroys money-costing VMs, so d asks y/n first; it works for any
+// repo (no checkout needed) but refuses politely when there's nothing there.
+func TestPoolDrainConfirm(t *testing.T) {
+	drained := ""
+	m := model{loaded: true, mode: modePool,
+		poolRepos: []string{"old"}, poolPend: -1,
+		members: []driver.Session{{Name: "pool-old-x", Repo: "old", State: driver.StateParked, PoolGen: "g", Created: time.Now()}},
+		opts: Options{
+			PoolSizes: func() map[string]int { return nil },
+			Fetch:     func() ([]driver.Session, error) { return nil, nil },
+			PoolDrain: func(repo string) (int, error) { drained = repo; return 1, nil },
+		}}
+	got, _ := m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = got.(model)
+	if !m.poolConfirm {
+		t.Fatal("d on a repo with members must ask for confirmation")
+	}
+	if v := m.View(); !strings.Contains(v, "drain old") || !strings.Contains(v, "(y/n)") {
+		t.Errorf("the confirm prompt must name the repo:\n%s", v)
+	}
+	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = got.(model)
+	if m.poolConfirm || drained != "" {
+		t.Fatalf("n must cancel the drain, got confirm=%v drained=%q", m.poolConfirm, drained)
+	}
+
+	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = got.(model)
+	got, cmd := m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = got.(model)
+	if cmd == nil {
+		t.Fatal("y must fire the drain")
+	}
+	var act tea.Msg
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if msg, ok := c().(poolActMsg); ok {
+				act = msg
+			}
+		}
+	}
+	if drained != "old" || act == nil {
+		t.Fatalf("drain must target the selected repo, got %q", drained)
+	}
+	got, _ = m.Update(act)
+	m = got.(model)
+	if !strings.Contains(m.status, "drained 1 member") {
+		t.Errorf("a landed drain must report the count, got %q", m.status)
+	}
+
+	m.members, m.poolConfirm, m.status = nil, false, ""
+	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = got.(model)
+	if m.poolConfirm || !strings.Contains(m.status, "no warm members") {
+		t.Errorf("d on an empty pool must notice, not prompt, got confirm=%v status=%q", m.poolConfirm, m.status)
+	}
+}
+
 func TestSanitizeLog(t *testing.T) {
 	// pnpm/docker progress spam: color codes plus \r-redrawn meters. Only
 	// each line's final state should survive.

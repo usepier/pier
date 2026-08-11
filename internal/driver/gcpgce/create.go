@@ -141,6 +141,10 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, id, pub
 		MetaBranch + "=" + spec.Branch,
 		MetaUser + "=" + me,
 	}, ",")
+	labels := LabelManaged + "=1," + LabelUser + "=" + labelValue(me)
+	if spec.PoolGen != "" {
+		labels += "," + LabelPool + "=" + spec.PoolGen
+	}
 	args := []string{"compute", "instances", "create", id,
 		"--zone", d.Zone,
 		"--machine-type", d.MachineType,
@@ -148,7 +152,7 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, id, pub
 		"--boot-disk-type", "pd-balanced",
 		"--no-service-account", "--no-scopes",
 		"--tags", NetworkTag,
-		"--labels", LabelManaged + "=1," + LabelUser + "=" + labelValue(me),
+		"--labels", labels,
 		"--metadata-from-file", "user-data=" + udPath,
 		"--metadata", meta,
 		"--format", "value(name)",

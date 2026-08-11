@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
 	"github.com/kerem-kaynak/pier/internal/driver/gcpgce"
 	"github.com/kerem-kaynak/pier/internal/driver/payload"
+	"github.com/kerem-kaynak/pier/internal/pool"
 	"github.com/kerem-kaynak/pier/internal/proxy"
 	"github.com/kerem-kaynak/pier/internal/tui"
 	"github.com/kerem-kaynak/pier/internal/ui"
@@ -56,6 +58,7 @@ const usage = `usage:
       --idle <dur|never>      idle self-park timeout (default from config)
       --cap <dur|never>       unattended runaway cap
       --no-park               shorthand for --idle never
+      --no-pool               skip this repo's warm pool for this create
   pier ls                   list sessions
   pier attach <session>     attach (auto-resumes if parked)
   pier logs <session>       show the setup script log (-f follows)
@@ -69,6 +72,10 @@ const usage = `usage:
   pier rm <session> [-f]    destroy session and its disk
   pier keep <session>       pin: disable idle self-park
   pier resize <session> <type>  grow/shrink the VM (running: ~1-2 min park+resume; same arch only)
+  pier pool                 warm pool status + cost
+  pier pool set <size>      keep <size> warm sessions ready for this repo (0 = off)
+  pier pool fill [--detach] top this repo's pool up to size now
+  pier pool drain [repo]    destroy a repo's warm members
   pier setup                first-run wizard (creates cloud groundwork)
       --print-admin           print the admin-runnable setup commands instead
   pier doctor               environment + account checks
@@ -102,6 +109,8 @@ func main() {
 		cmdKeep(args[1:])
 	case "resize":
 		cmdResize(args[1:])
+	case "pool":
+		cmdPool(args[1:])
 	case "setup":
 		cmdSetup(args[1:])
 	case "doctor":
@@ -213,10 +222,11 @@ func cmdNew(args []string) {
 		}
 	}
 	fs := flag.NewFlagSet("new", flag.ExitOnError)
-	var detach, noPark bool
+	var detach, noPark, noPool bool
 	fs.BoolVar(&detach, "d", false, "")
 	fs.BoolVar(&detach, "detach", false, "")
 	fs.BoolVar(&noPark, "no-park", false, "")
+	fs.BoolVar(&noPool, "no-pool", false, "")
 	idleS := fs.String("idle", "", "")
 	capS := fs.String("cap", "", "")
 	fs.Parse(flagArgs)
@@ -242,6 +252,9 @@ func cmdNew(args []string) {
 		fatal(err)
 	}
 	for _, s := range sessions {
+		if s.PoolGen != "" {
+			continue // unclaimed pool members hold placeholder names, not sessions'
+		}
 		if s.Name == branch {
 			fatal(fmt.Errorf("session %q already exists — `pier attach %s`", branch, branch))
 		}
@@ -264,13 +277,48 @@ func cmdNew(args []string) {
 	image := cfg.BakedImage(filepath.Base(repo))
 	fmt.Printf("%s %s\n", ui.Bold.Render("creating "+branch),
 		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(repo), base)))
-	sess, err := drv.Create(ctx, driver.CreateSpec{
-		Name: branch, Repo: repo, Branch: branch, BaseRef: base, Image: image,
-		IdleTimeout: idle, UnattendedCap: cap_,
-		Progress: func(step string) { fmt.Println(ui.Step(step)) },
-	})
-	if err != nil {
-		fatal(err)
+
+	// A configured pool turns the create into claim-a-warm-member (resume +
+	// freshen, setup already done); an empty or lost pool falls through to the
+	// full create below.
+	poolable := cfg.PoolSize(filepath.Base(repo)) > 0 && !noPool
+	var sess *driver.Session
+	if poolable {
+		pp, err := poolParams(cfg, drv, repo)
+		if err != nil {
+			fatal(err)
+		}
+		// This create's --idle/--cap land on the claimed member's supervisor.
+		pp.IdleTimeout, pp.UnattendedCap = idle, cap_
+		if sess, err = pool.Claim(ctx, pp, sessions, branch, branch, base); err != nil {
+			// The pool accelerates, never gates: whatever broke the claim
+			// (bad name, throttled API), the create below gives the same
+			// answer or a session.
+			fmt.Println(ui.Warn.Render("!") + " claim failed: " + err.Error())
+			sess = nil
+		}
+		if sess == nil {
+			fmt.Println(ui.Step("no warm member to claim — creating fresh"))
+		}
+	}
+	if sess == nil {
+		sess, err = drv.Create(ctx, driver.CreateSpec{
+			Name: branch, Repo: repo, Branch: branch, BaseRef: base, Image: image,
+			IdleTimeout: idle, UnattendedCap: cap_,
+			Progress: func(step string) { fmt.Println(ui.Step(step)) },
+		})
+		if err != nil {
+			fatal(err)
+		}
+	}
+	if poolable {
+		// Top the pool back up in the background — after a claim (a member was
+		// consumed) and after a fallback create (the pool was short) alike.
+		if logPath, err := spawnPoolFill(repo); err != nil {
+			fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(" pool refill didn't start: "+err.Error()))
+		} else {
+			fmt.Println(ui.Dim.Render("pool refilling in the background — log: " + ui.Tilde(logPath)))
+		}
 	}
 	stop() // create done — ctrl-c back to its default for the prompt + attach
 	fmt.Println(ui.OK.Render("session " + sess.Name + " ready"))
@@ -370,13 +418,31 @@ func waitReachable(drv driver.Driver, id string, timeout time.Duration) error {
 
 func cmdLS() {
 	_, drv := loadDriver()
-	sessions, err := drv.List(context.Background())
+	all, err := drv.List(context.Background())
 	if err != nil {
 		fatal(err)
 	}
+	// Warm pool members are inventory, not sessions: one dim summary line
+	// below the table instead of rows.
+	var sessions []driver.Session
+	members := 0
+	for _, s := range all {
+		if s.PoolGen != "" {
+			members++
+			continue
+		}
+		sessions = append(sessions, s)
+	}
 	enrich(drv, sessions)
+	poolLine := ""
+	if members > 0 {
+		poolLine = ui.Dim.Render(fmt.Sprintf("+ %d warm pool member(s) — `pier pool`", members))
+	}
 	if len(sessions) == 0 {
 		fmt.Println(ui.Dim.Render("no sessions — start one with `pier <branch>`"))
+		if poolLine != "" {
+			fmt.Println(poolLine)
+		}
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
@@ -388,6 +454,9 @@ func cmdLS() {
 		anySetupFailed = anySetupFailed || s.Setup == "failed"
 	}
 	w.Flush()
+	if poolLine != "" {
+		fmt.Println(poolLine)
+	}
 	if anyStrained {
 		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`"))
 	}
@@ -416,7 +485,9 @@ func stateLabel(s driver.Session) string {
 func enrich(drv driver.Driver, sessions []driver.Session) {
 	var wg sync.WaitGroup
 	for i := range sessions {
-		if sessions[i].State != driver.StateRunning {
+		// Pool members run headless between create and park; their beacon
+		// detail is nobody's business until they're claimed.
+		if sessions[i].State != driver.StateRunning || sessions[i].PoolGen != "" {
 			continue
 		}
 		wg.Add(1)
@@ -487,6 +558,9 @@ func match(drv driver.Driver, query string) driver.Session {
 	}
 	var hits []driver.Session
 	for _, s := range sessions {
+		if s.PoolGen != "" {
+			continue // unclaimed pool members are managed via `pier pool`, not by name
+		}
 		if s.Name == query {
 			return s
 		}
@@ -822,6 +896,254 @@ func cmdResize(args []string) {
 	fmt.Println(ui.OK.Render(s.Name + " is now a " + itype))
 }
 
+// --- warm pools --------------------------------------------------------------------
+
+// poolParams assembles everything internal/pool needs from config + driver,
+// including the generation fingerprint — which is why it must run from inside
+// the repo (the local setup script feeds the hash).
+func poolParams(cfg config.Config, drv driver.Driver, repoRoot string) (pool.Params, error) {
+	maxAge, err := cfg.PoolMaxAge()
+	if err != nil {
+		return pool.Params{}, err
+	}
+	idle, err := config.ParkDuration(cfg.IdleTimeout)
+	if err != nil {
+		return pool.Params{}, err
+	}
+	cap_, err := config.ParkDuration(cfg.UnattendedCap)
+	if err != nil {
+		return pool.Params{}, err
+	}
+	itype, disk := cfg.AWS.InstanceType, cfg.AWS.DiskGiB
+	if cfg.Driver == "gcp-gce" {
+		itype, disk = cfg.GCP.MachineType, cfg.GCP.DiskGiB
+	}
+	repo := filepath.Base(repoRoot)
+	image := cfg.BakedImage(repo)
+	return pool.Params{
+		Driver:      drv,
+		RepoRoot:    repoRoot,
+		Gen:         pool.Generation(drv.Name(), image, itype, disk, pool.SetupScript(repoRoot)),
+		Size:        cfg.PoolSize(repo),
+		MaxAge:      maxAge,
+		Image:       image,
+		IdleTimeout: idle, UnattendedCap: cap_,
+		Manifest: cfg.Secrets.Manifest, SessionEnv: sessionEnv(cfg),
+		Progress: func(step string) { fmt.Println(ui.Step(step)) },
+	}, nil
+}
+
+// cmdPool: repo-scoped warm session pools — parked, setup-complete members
+// that `pier <branch>` claims instead of creating. The TUI's w page is the
+// primary surface; these commands are its scriptable equivalents.
+func cmdPool(args []string) {
+	if len(args) == 0 {
+		poolStatus()
+		return
+	}
+	switch args[0] {
+	case "set":
+		poolSet(args[1:])
+	case "fill":
+		poolFill(args[1:])
+	case "drain":
+		poolDrain(args[1:])
+	default:
+		fatal(fmt.Errorf("usage: pier pool [set <size> | fill [--detach] | drain [repo]]"))
+	}
+}
+
+// poolStatus lists every pool the account holds — configured ones and
+// leftovers alike — with what the parked members actually cost.
+func poolStatus() {
+	cfg, drv := loadDriver()
+	sessions, err := drv.List(context.Background())
+	if err != nil {
+		fatal(err)
+	}
+	repos := map[string]bool{}
+	for r := range cfg.Pool.Sizes {
+		repos[r] = true
+	}
+	for _, s := range sessions {
+		if s.PoolGen != "" {
+			repos[s.Repo] = true
+		}
+	}
+	if len(repos) == 0 {
+		fmt.Println(ui.Dim.Render("no warm pools — `pier pool set <size>` from a repo keeps sessions ready to claim"))
+		return
+	}
+	// Staleness is only computable for the repo we're standing in: the
+	// generation hashes its local setup script.
+	curRepo, curGen := "", ""
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+		root := strings.TrimSpace(string(out))
+		if pp, err := poolParams(cfg, drv, root); err == nil {
+			curRepo, curGen = filepath.Base(root), pp.Gen
+		}
+	}
+	maxAge, _ := cfg.PoolMaxAge() // unparsable → 0, which skips the age check
+	names := make([]string, 0, len(repos))
+	for r := range repos {
+		names = append(names, r)
+	}
+	sort.Strings(names)
+	now := time.Now()
+	for _, repo := range names {
+		st := tui.FoldPool(sessions, repo, curRepo, curGen, maxAge, now)
+		line := fmt.Sprintf("%s: %d/%d warm", repo, st.Ready, cfg.PoolSize(repo))
+		if len(st.Ages) > 0 {
+			line += ui.Dim.Render(" (ages " + strings.Join(st.Ages, ", ") + ")")
+		}
+		if st.Filling > 0 {
+			line += fmt.Sprintf(", %d filling", st.Filling)
+		}
+		if st.Stale > 0 {
+			line += ui.Warn.Render(fmt.Sprintf(", %d stale", st.Stale)) + ui.Dim.Render(" (recycles on next claim/fill)")
+		}
+		if st.Ready > 0 {
+			line += ui.Dim.Render(fmt.Sprintf(" — %d × ~$3-4/mo disk", st.Ready))
+		}
+		if cfg.PoolSize(repo) == 0 {
+			line += ui.Warn.Render(" — no pool configured") + ui.Dim.Render(" — `pier pool drain "+repo+"` removes them")
+		}
+		fmt.Println(line)
+	}
+}
+
+func poolSet(args []string) {
+	if len(args) != 1 {
+		fatal(fmt.Errorf("usage: pier pool set <size>   (0-8; 0 turns the pool off — run from inside the repo)"))
+	}
+	n, err := strconv.Atoi(args[0])
+	if err != nil || n < 0 || n > 8 {
+		fatal(fmt.Errorf("pool size: want a number 0-8 (got %q)", args[0]))
+	}
+	cfg, drv := loadDriver()
+	root := repoRoot()
+	if err := applyPoolSize(cfg, drv, root, n, func(s string) { fmt.Println(ui.Step(s)) }); err != nil {
+		fatal(err)
+	}
+	repo := filepath.Base(root)
+	if n == 0 {
+		fmt.Println(ui.OK.Render("pool off for " + repo))
+		return
+	}
+	fmt.Println(ui.OK.Render(fmt.Sprintf("pool size %d for %s", n, repo)) +
+		ui.Dim.Render(" — each warm member costs ~$3-4/mo parked (disk only)"))
+	fmt.Println(ui.Dim.Render("filling in the background — log: " + ui.Tilde(poolLogPath(repo))))
+}
+
+// applyPoolSize is the one write path for a pool size, shared by the CLI and
+// the TUI: saves the config, then drains (0) or starts a detached fill (>0).
+func applyPoolSize(cfg config.Config, drv driver.Driver, repoRoot string, n int, progress func(string)) error {
+	repo := filepath.Base(repoRoot)
+	cfg.SetPoolSize(repo, n)
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	if n == 0 {
+		sessions, err := drv.List(context.Background())
+		if err != nil {
+			return err
+		}
+		_, err = pool.Drain(context.Background(), drv, sessions, repo, progress)
+		return err
+	}
+	_, err := spawnPoolFill(repoRoot)
+	return err
+}
+
+func poolFill(args []string) {
+	detach := len(args) > 0 && (args[0] == "--detach" || args[0] == "-d")
+	cfg, drv := loadDriver()
+	root := repoRoot()
+	repo := filepath.Base(root)
+	if cfg.PoolSize(repo) == 0 {
+		fatal(fmt.Errorf("no pool configured for %s — `pier pool set <size>` first", repo))
+	}
+	if detach {
+		if _, err := spawnPoolFill(root); err != nil {
+			fatal(err)
+		}
+		fmt.Println(ui.Dim.Render("filling in the background — log: " + ui.Tilde(poolLogPath(repo))))
+		return
+	}
+	pp, err := poolParams(cfg, drv, root)
+	if err != nil {
+		fatal(err)
+	}
+	// ctrl-c mid-fill must cancel the ctx (not just kill the process) so
+	// Create's deferred cleanup can terminate a half-made member.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := pool.Fill(ctx, pp); err != nil {
+		fatal(err)
+	}
+}
+
+func poolDrain(args []string) {
+	cfg, drv := loadDriver()
+	var repo string
+	if len(args) > 0 {
+		repo = args[0]
+	} else {
+		repo = filepath.Base(repoRoot())
+	}
+	sessions, err := drv.List(context.Background())
+	if err != nil {
+		fatal(err)
+	}
+	count, err := pool.Drain(context.Background(), drv, sessions, repo, func(s string) { fmt.Println(ui.Step(s)) })
+	if err != nil {
+		fatal(err)
+	}
+	if count == 0 {
+		fmt.Println(ui.Dim.Render("no warm members for " + repo))
+		return
+	}
+	fmt.Println(ui.OK.Render(fmt.Sprintf("drained %d member(s)", count)))
+	if n := cfg.PoolSize(repo); n > 0 {
+		fmt.Println(ui.Dim.Render(fmt.Sprintf("pool size for %s is still %d — the next claim or fill re-warms it; `pier pool set 0` turns it off", repo, n)))
+	}
+}
+
+func poolLogPath(repo string) string {
+	return filepath.Join(config.Dir(), "logs", "pool-"+repo+".log")
+}
+
+// spawnPoolFill re-execs `pier pool fill` as a detached child working in
+// repoRoot — the spawnCreate pattern — so a refill survives the invoking
+// command (or the TUI) exiting.
+func spawnPoolFill(repoRoot string) (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	logPath := poolLogPath(filepath.Base(repoRoot))
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return "", err
+	}
+	// Append, never truncate: a claim can spawn a refill while the previous
+	// fill is still writing here, and clobbering a live writer's log turns
+	// both runs into confetti. Fills are rare enough that growth is noise.
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	cmd := exec.Command(exe, "pool", "fill")
+	cmd.Dir = repoRoot
+	cmd.Stdout, cmd.Stderr = f, f
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	go cmd.Wait() // reap if this process outlives the fill
+	return logPath, nil
+}
+
 // --- setup / doctor / bake / teardown ---------------------------------------------
 
 func cmdSetup(args []string) {
@@ -832,8 +1154,8 @@ func cmdSetup(args []string) {
 }
 
 func cmdDoctor() {
-	cfg, err := config.Load()
-	if err != nil {
+	cfg, cfgErr := config.Load()
+	if cfgErr != nil {
 		fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(" no config yet — checking with defaults (run `pier setup`)"))
 		cfg = config.Default()
 	}
@@ -841,7 +1163,41 @@ func cmdDoctor() {
 	if err != nil {
 		fatal(err)
 	}
-	if !printChecks(drv.Doctor(context.Background())) {
+	checks := drv.Doctor(context.Background())
+	// Orphaned pool members are parked money nothing will ever claim: they
+	// belong to repos whose pool was turned off (or another machine's config).
+	// Members unparked past the fill grace are worse — a fill died before its
+	// member parked, and the instance bills at full rate until something
+	// notices; the next fill reconciles it away, but only doctor and the pool
+	// pages will say so unprompted.
+	if cfgErr == nil {
+		if sessions, err := drv.List(context.Background()); err == nil {
+			orphans, stuck := map[string]int{}, map[string]int{}
+			for _, s := range sessions {
+				switch {
+				case s.PoolGen == "" || s.State == driver.StateDeleting:
+				case s.State != driver.StateParked && s.State != driver.StateDead &&
+					time.Since(s.Created) >= pool.FillGrace:
+					stuck[s.Repo]++
+				case cfg.PoolSize(s.Repo) == 0:
+					orphans[s.Repo]++
+				}
+			}
+			for repo, n := range orphans {
+				checks = append(checks, driver.Check{
+					Name:   "pool " + repo,
+					Detail: fmt.Sprintf("%d warm member(s) but no pool configured — `pier pool drain %s`", n, repo),
+				})
+			}
+			for repo, n := range stuck {
+				checks = append(checks, driver.Check{
+					Name:   "pool " + repo,
+					Detail: fmt.Sprintf("%d member(s) stuck filling for 2h+ — running at full price; `pier pool fill` (from the repo) or `pier pool drain %s` recycles them", n, repo),
+				})
+			}
+		}
+	}
+	if !printChecks(checks) {
 		os.Exit(1)
 	}
 }
@@ -888,6 +1244,9 @@ func cmdBake() {
 		fatal(err)
 	}
 	fmt.Println(ui.OK.Render("baked "+img) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~1-2 min"))
+	if cfg.PoolSize(name) > 0 {
+		fmt.Println(ui.Dim.Render("the warm pool was built on the old image — members recycle on the next claim or `pier pool fill`"))
+	}
 }
 
 func cmdTeardown() {
@@ -895,10 +1254,28 @@ func cmdTeardown() {
 	if !confirm("remove all pier groundwork and baked images from the account?", false) {
 		return
 	}
+	// Pool members are invisible to `pier rm`, so teardown drains every pool
+	// itself — Teardown refuses while instances exist, and rightly so.
+	sessions, err := drv.List(context.Background())
+	if err != nil {
+		fatal(err)
+	}
+	repos := map[string]bool{}
+	for _, s := range sessions {
+		if s.PoolGen != "" {
+			repos[s.Repo] = true
+		}
+	}
+	for repo := range repos {
+		if _, err := pool.Drain(context.Background(), drv, sessions, repo, func(s string) { fmt.Println(ui.Step(s)) }); err != nil {
+			fatal(err)
+		}
+	}
 	if err := drv.Teardown(context.Background()); err != nil {
 		fatal(err)
 	}
 	cfg.ClearBakes()
+	cfg.Pool.Sizes = nil
 	cfg.Save()
 	fmt.Println(ui.OK.Render("groundwork removed — the account is clean"))
 }
@@ -920,7 +1297,22 @@ func confirm(prompt string, def bool) bool {
 // --- TUI --------------------------------------------------------------------------
 
 func cmdTUI() {
-	_, drv := loadDriver()
+	cfg, drv := loadDriver()
+	// Pool sizing edits the repo pier launched from; outside a repo the w page
+	// is read-only — a fill needs the local checkout and its setup script.
+	// Inside a repo whose pool params don't resolve (a broken [pool] value,
+	// say) the page is read-only too, but says why instead of pretending we
+	// are not in a repo.
+	curRoot, curRepo, curGen, poolNote := "", "", "", ""
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+		curRoot = strings.TrimSpace(string(out))
+		if pp, err := poolParams(cfg, drv, curRoot); err == nil {
+			curRepo, curGen = filepath.Base(curRoot), pp.Gen
+		} else {
+			poolNote = "pool config unusable (" + err.Error() + ")"
+		}
+	}
+	poolMaxAge, _ := cfg.PoolMaxAge() // unparsable → 0, which skips the age check
 	err := tui.Run(tui.Options{
 		// Async: the TUI opens instantly and the quota fills in when it lands.
 		FetchQuota: func() string {
@@ -980,6 +1372,42 @@ func cmdTUI() {
 		RetryAttach: retryAttach,
 		WaitReachable: func(s driver.Session) error {
 			return waitReachable(drv, s.ID, 4*time.Minute)
+		},
+		CurrentRepo: curRepo,
+		CurrentGen:  curGen,
+		PoolMaxAge:  poolMaxAge,
+		PoolNote:    poolNote,
+		// Sizes reload from disk on each read so the w page sees a `pier pool
+		// set` from another terminal.
+		PoolSizes: func() map[string]int {
+			c, err := config.Load()
+			if err != nil {
+				return cfg.Pool.Sizes
+			}
+			return c.Pool.Sizes
+		},
+		PoolSet: func(size int) (string, error) {
+			c, err := config.Load()
+			if err != nil {
+				return "", err
+			}
+			if err := applyPoolSize(c, drv, curRoot, size, nil); err != nil {
+				return "", err
+			}
+			if size == 0 {
+				return "", nil
+			}
+			return poolLogPath(curRepo), nil
+		},
+		PoolFill: func() (string, error) {
+			return spawnPoolFill(curRoot)
+		},
+		PoolDrain: func(repo string) (int, error) {
+			sessions, err := drv.List(context.Background())
+			if err != nil {
+				return 0, err
+			}
+			return pool.Drain(context.Background(), drv, sessions, repo, nil)
 		},
 	})
 	if err != nil {
