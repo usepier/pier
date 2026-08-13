@@ -246,6 +246,12 @@ func setupDummyRepo(t *testing.T) string {
 	dir := t.TempDir()
 	// Use the real os/exec to initialize a dummy repo so payload.Build succeeds.
 	exec.Command("git", "init", "-b", "main", dir).Run()
+	configName := exec.Command("git", "config", "user.name", "Test User")
+	configName.Dir = dir
+	configName.Run()
+	configEmail := exec.Command("git", "config", "user.email", "test@example.com")
+	configEmail.Dir = dir
+	configEmail.Run()
 	cmd := exec.Command("git", "commit", "--allow-empty", "-m", "init")
 	cmd.Dir = dir
 	cmd.Run()
