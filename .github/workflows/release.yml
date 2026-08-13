@@ -37,13 +37,15 @@ jobs:
         run: |
           url="https://github.com/usepier/pier/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          escaped_url=$(printf '%s\n' "$url" | sed 's/[&|\\]/\\&/g')
           sed -i \
-            -e "s|^  url .*|  url \"${url}\"|" \
+            -e "s|^  url .*|  url \"${escaped_url}\"|" \
             -e "s|^  sha256 .*|  sha256 \"${sha}\"|" \
             homebrew-tap/Formula/pier.rb
           # a formula reformat that dodges the sed patterns must fail here,
           # not push a stale formula silently
-          grep -q "$sha" homebrew-tap/Formula/pier.rb
+          grep -Fqx -- "  url \"${url}\"" homebrew-tap/Formula/pier.rb
+          grep -Fqx -- "  sha256 \"${sha}\"" homebrew-tap/Formula/pier.rb
       - name: push the tap bump
         working-directory: homebrew-tap
         run: |
@@ -52,6 +54,6 @@ jobs:
           if git diff --quiet; then
             echo "formula already at ${GITHUB_REF_NAME}, nothing to push"
           else
-            git commit -am "pier ${GITHUB_REF_NAME#v}"
+            git commit -am "chore: bump pier ${GITHUB_REF_NAME#v}"
             git push
           fi
