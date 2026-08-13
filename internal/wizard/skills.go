@@ -3,6 +3,9 @@ package wizard
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -75,22 +78,26 @@ func offerSkills(in *bufio.Reader, cfg *config.Config, home string) error {
 	}
 	saved := false
 	for _, agent := range chosen {
-		notes, err := InstallSkills(home, []string{agent})
+		notes, installErr := InstallSkills(home, []string{agent})
 		for _, n := range notes {
 			fmt.Println(n)
 		}
-		if err != nil {
-			return err
-		}
 
 		entry := agent + "/skills"
-		if len(cfg.Secrets.Manifest) > 0 && !slices.Contains(cfg.Secrets.Manifest, entry) {
+		// Cleanup/index bookkeeping can fail after every bundled file is safely
+		// in place. Verify the actual installation before deciding whether the
+		// directory belongs in the session manifest.
+		installed := installErr == nil || bundledSkillsCurrent(filepath.Join(home, entry))
+		if installed && len(cfg.Secrets.Manifest) > 0 && !slices.Contains(cfg.Secrets.Manifest, entry) {
 			cfg.Secrets.Manifest = append(cfg.Secrets.Manifest, entry)
 			if err := cfg.Save(); err != nil {
 				return err
 			}
 			saved = true
 			fmt.Println(ui.Dim.Render("    + ~/" + entry + " added to the session manifest"))
+		}
+		if installErr != nil {
+			return installErr
 		}
 	}
 	if saved {
@@ -101,19 +108,30 @@ func offerSkills(in *bufio.Reader, cfg *config.Config, home string) error {
 
 const bundledSkillsIndex = ".pier-bundled-files"
 
+type bundledSkillsIndexData struct {
+	Version int               `json:"version"`
+	Files   map[string]string `json:"files"`
+}
+
 // syncSkills refreshes every embedded file and removes paths that an earlier
 // bundle owned but the current bundle no longer contains. The ownership index
 // leaves untracked, user-created files alone, including additions within a
 // bundled skill directory. It reports whether anything was written or removed.
 func syncSkills(dst string) (changed bool, err error) {
-	current := make(map[string]struct{})
+	current := make(map[string]string)
+	contents := make(map[string][]byte)
 	var currentFiles []string
 	err = fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !d.IsDir() {
-			current[path] = struct{}{}
+			content, err := fs.ReadFile(skills.FS, path)
+			if err != nil {
+				return err
+			}
+			current[path] = bundledSkillHash(content)
+			contents[path] = content
 			currentFiles = append(currentFiles, path)
 		}
 		return nil
@@ -126,38 +144,30 @@ func syncSkills(dst string) (changed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	for _, path := range previousFiles {
+	for path, previousHash := range previousFiles {
 		if _, stillBundled := current[path]; stillBundled {
 			continue
 		}
-		removed, err := removeBundledSkillFile(dst, path)
+		removed, err := removeBundledSkillFile(dst, path, previousHash)
 		changed = changed || removed
 		if err != nil {
 			return changed, err
 		}
 	}
 
-	err = fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		want, err := fs.ReadFile(skills.FS, path)
-		if err != nil {
-			return err
-		}
+	for _, path := range currentFiles {
 		target := filepath.Join(dst, filepath.FromSlash(path))
-		wrote, err := writeBundledSkillFile(dst, target, want)
+		wrote, err := writeBundledSkillFile(dst, target, contents[path])
 		if err != nil {
-			return err
+			return changed, err
 		}
 		changed = changed || wrote
-		return nil
-	})
+	}
+
+	index, err := marshalBundledSkillsIndex(current)
 	if err != nil {
 		return changed, err
 	}
-
-	index := []byte(strings.Join(currentFiles, "\n") + "\n")
 	indexPath := filepath.Join(dst, bundledSkillsIndex)
 	wrote, err := writeBundledSkillFile(dst, indexPath, index)
 	if err != nil {
@@ -166,11 +176,11 @@ func syncSkills(dst string) (changed bool, err error) {
 	return changed || wrote, nil
 }
 
-func readBundledSkillsIndex(dst string) ([]string, error) {
+func readBundledSkillsIndex(dst string) (map[string]string, error) {
 	indexPath := filepath.Join(dst, bundledSkillsIndex)
 	info, err := os.Lstat(indexPath)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return map[string]string{}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -186,17 +196,53 @@ func readBundledSkillsIndex(dst string) ([]string, error) {
 		return nil, err
 	}
 
-	var paths []string
-	for _, path := range strings.Split(string(b), "\n") {
-		if path == "" {
-			continue
+	// The path-only format existed on this PR before hashes were introduced.
+	// Preserve those files rather than guessing ownership during migration.
+	if !bytes.HasPrefix(bytes.TrimSpace(b), []byte("{")) {
+		files := make(map[string]string)
+		for _, path := range strings.Split(string(b), "\n") {
+			if path == "" {
+				continue
+			}
+			if !validBundledSkillPath(path) {
+				return nil, fmt.Errorf("invalid path %q in %s", path, bundledSkillsIndex)
+			}
+			files[path] = ""
 		}
-		if path == "." || path == bundledSkillsIndex || !fs.ValidPath(path) || strings.Contains(path, `\`) {
+		return files, nil
+	}
+
+	var index bundledSkillsIndexData
+	if err := json.Unmarshal(b, &index); err != nil {
+		return nil, fmt.Errorf("read bundled skills index %s: %w", indexPath, err)
+	}
+	if index.Version != 1 || index.Files == nil {
+		return nil, fmt.Errorf("read bundled skills index %s: unsupported version %d", indexPath, index.Version)
+	}
+	for path, hash := range index.Files {
+		decoded, err := hex.DecodeString(hash)
+		if !validBundledSkillPath(path) || err != nil || len(decoded) != sha256.Size {
 			return nil, fmt.Errorf("invalid path %q in %s", path, bundledSkillsIndex)
 		}
-		paths = append(paths, path)
 	}
-	return paths, nil
+	return index.Files, nil
+}
+
+func marshalBundledSkillsIndex(files map[string]string) ([]byte, error) {
+	b, err := json.MarshalIndent(bundledSkillsIndexData{Version: 1, Files: files}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+func validBundledSkillPath(path string) bool {
+	return path != "." && path != bundledSkillsIndex && fs.ValidPath(path) && !strings.Contains(path, `\`)
+}
+
+func bundledSkillHash(content []byte) string {
+	hash := sha256.Sum256(content)
+	return hex.EncodeToString(hash[:])
 }
 
 // writeBundledSkillFile refuses to follow symlinks at a managed path or in a
@@ -254,8 +300,18 @@ func writeBundledSkillFile(dst, target string, want []byte) (bool, error) {
 // existing symlink cannot redirect a bundled subtree. dst itself may be a
 // symlink because users commonly keep their whole agent config elsewhere.
 func ensureBundledSkillParent(dst, dir string) error {
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return err
+	return bundledSkillParent(dst, dir, true)
+}
+
+func checkBundledSkillParent(dst, dir string) error {
+	return bundledSkillParent(dst, dir, false)
+}
+
+func bundledSkillParent(dst, dir string, create bool) error {
+	if create {
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
 	}
 	info, err := os.Stat(dst)
 	if err != nil {
@@ -276,7 +332,7 @@ func ensureBundledSkillParent(dst, dir string) error {
 		}
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
-		if os.IsNotExist(err) {
+		if create && os.IsNotExist(err) {
 			if err := os.Mkdir(current, 0o755); err != nil {
 				return err
 			}
@@ -295,10 +351,13 @@ func ensureBundledSkillParent(dst, dir string) error {
 	return nil
 }
 
-// removeBundledSkillFile removes one path claimed by the previous ownership
-// index, then prunes only empty parent directories. A directory where the
-// index promised a file is left intact because it may contain user data.
-func removeBundledSkillFile(dst, path string) (bool, error) {
+// removeBundledSkillFile removes a formerly bundled path only while its
+// contents still match what Pier wrote. Modified, recreated, legacy-indexed,
+// and non-regular paths are user-owned and deliberately preserved.
+func removeBundledSkillFile(dst, path, previousHash string) (bool, error) {
+	if previousHash == "" {
+		return false, nil
+	}
 	target := filepath.Join(dst, filepath.FromSlash(path))
 	info, err := os.Lstat(target)
 	if os.IsNotExist(err) {
@@ -307,13 +366,55 @@ func removeBundledSkillFile(dst, path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if info.IsDir() {
-		return false, fmt.Errorf("remove obsolete bundled file %s: path is now a directory", target)
+	if !info.Mode().IsRegular() {
+		return false, nil
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		return false, err
+	}
+	if bundledSkillHash(content) != previousHash {
+		return false, nil
 	}
 	if err := os.Remove(target); err != nil {
 		return false, err
 	}
 	return true, pruneEmptySkillDirs(filepath.Dir(target), dst)
+}
+
+// bundledSkillsCurrent checks usability independently of cleanup metadata.
+// The wizard uses it after an error so an already-complete installation is
+// still carried into sessions, while an absent or partial installation is not.
+func bundledSkillsCurrent(dst string) bool {
+	err := fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		want, err := fs.ReadFile(skills.FS, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, filepath.FromSlash(path))
+		if err := checkBundledSkillParent(dst, filepath.Dir(target)); err != nil {
+			return err
+		}
+		info, err := os.Lstat(target)
+		if err != nil || !info.Mode().IsRegular() {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("bundled skill file %s is not regular", target)
+		}
+		have, err := os.ReadFile(target)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(have, want) {
+			return fmt.Errorf("bundled skill file %s is not current", target)
+		}
+		return nil
+	})
+	return err == nil
 }
 
 func pruneEmptySkillDirs(dir, stop string) error {
