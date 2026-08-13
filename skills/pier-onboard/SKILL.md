@@ -14,7 +14,7 @@ directory control the rest:
 |---|---|---|
 | `.pier/bake.sh` | Once, during `pier bake`, on a throwaway instance that becomes the repo's AMI | **Toolchains** — language runtimes, package managers |
 | `.pier/setup.sh` | On every session's first boot, async, after the repo lands | **Repo state** — dependency install, services, migrations, seeds |
-| `.pier/include` | List read at create time; matching files ride to the VM | **Untracked/ignored files** dev needs — env files, local certs |
+| `.pier/include` | List read at create time; matching files ride to the VM | **Ignored files** dev needs — env files, local certs |
 
 Your job: inspect this repo, write the files that apply, protect loose local
 files through `.gitignore`, and tell the user what to run next. All three
@@ -36,9 +36,10 @@ From that, determine:
 2. **The dev-setup sequence** — the commands a human runs after a fresh
    clone (install deps, start services, migrate, seed). That's
    `.pier/setup.sh`.
-3. **Files git doesn't carry** that dev needs — usually `.env*`. That's
-   `.pier/include`. Nothing untracked or gitignored ships unless listed
-   here; pier prints which env files it is *not* carrying at create time.
+3. **Ignored files** that dev needs — usually `.env*`. That's `.pier/include`.
+   Non-ignored untracked files travel automatically when creating from HEAD;
+   ignored files travel only when listed here. Pier prints which ignored env
+   files it is *not* carrying at create time.
 
 ## Step 2 — write `.pier/bake.sh` (only if toolchains are needed)
 
@@ -67,9 +68,10 @@ For apt installs, use `sudo DEBIAN_FRONTEND=noninteractive apt-get install -y �
 ## Step 3 — write `.pier/setup.sh`
 
 Runs asynchronously in a `setup` tmux window on the session's first boot,
-with the repo root as cwd, after the checkout, dirty patch, and
-`.pier/include` files are all in place. The user's secrets env
-(`~/.config/pier/env`) is loaded. Output logs to `~/.pier-setup.log`; a
+with the repo root as cwd, after the checkout, dirty patch, non-ignored
+untracked files, and `.pier/include` extras are all in place. The user's
+secrets env (`~/.config/pier/env`) is loaded. Output logs to
+`~/.pier-setup.log`; a
 nonzero exit shows as `(setup failed)` in `pier ls`, so **let failures
 fail** — start with `set -euo pipefail`, don't swallow errors.
 
@@ -93,7 +95,7 @@ where possible. A bare background process must fully detach —
 when the script ends and SIGHUPs its process group (`nohup` alone does not
 detach it).
 
-## Step 4 — write `.pier/include` (only if loose files are needed)
+## Step 4 — write `.pier/include` (only if ignored files are needed)
 
 One path or glob per line, relative to the repo root. `*`, `?`, `[]` match
 within a path segment — **no `**`**. A directory line carries its whole
@@ -111,11 +113,11 @@ apps/*/.env.local
 Only list what a dev session genuinely needs — everything listed leaves
 the laptop for the VM.
 
-For every untracked local file or path added here, ensure the repository-root
-`.gitignore` ignores it so it cannot be committed accidentally. Add only
+Ensure every loose local file or path added here has a repository-root or
+nested `.gitignore` rule so it cannot be committed accidentally. Add only
 missing rules and preserve all existing content. **Never ignore `.pier/`**:
 the Pier config directory contains project configuration and is meant to be
-committed.
+committed (but a new, not-yet-committed `.pier/setup.sh` still travels).
 
 ## Step 5 — finish
 

@@ -246,7 +246,7 @@ Pier uses one committed `.pier/` directory with three optional files:
 | File | Runs / read | Contains |
 |---|---|---|
 | `.pier/setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
-| `.pier/include` | At create | Untracked/ignored files to carry (env files, local certs) |
+| `.pier/include` | At create | Ignored files to carry (env files, local certs) |
 | `.pier/bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
 
 Do not ignore `.pier/`: it is shared project configuration. Loose local files
@@ -319,15 +319,16 @@ when you do).
 
 ### Secrets, deliberately boring
 
-Secrets travel once, at create, as an explicit manifest:
+Local files and secrets travel once, at create, in the files payload:
 
 - `~/.claude`, `~/.codex`, tokens (`gh auth token`, `claude setup-token`)
-- the repo files your `.pier/include` lists
+- non-ignored untracked repo files, plus ignored files your `.pier/include` lists
 
-Nothing loose ships by default. The create prints which env files it is
-*not* carrying. The VM never holds cloud credentials. On AWS its instance
-role carries SSM and nothing else. On GCP it runs with no service account
-at all.
+Untracked files that Git does not ignore ship by default. Ignored files ship
+only when `.pier/include` lists them; create prints which ignored env files it
+is *not* carrying. The VM never holds cloud credentials. On AWS its instance
+role carries SSM and nothing else. On GCP it runs with no service account at
+all.
 
 ### MCP servers, agents, skills
 
@@ -380,8 +381,8 @@ supersedes the old image, and `pier teardown` sweeps them all by tag.
 ### Setup that can't fail silently
 
 `.pier/setup.sh` runs async in its own tmux window on first boot, after the
-checkout, dirty patch, and `.pier/include` files are in place. The outcome
-always surfaces:
+checkout, dirty patch, untracked files, and `.pier/include` extras are in
+place. The outcome always surfaces:
 
 - `pier ls` and the TUI show `(setup running)` or `(setup failed)`
 - `pier logs <session>` prints the log from anywhere, no attach needed

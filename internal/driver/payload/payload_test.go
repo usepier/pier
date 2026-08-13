@@ -243,10 +243,10 @@ func TestRenderUserDataGuards(t *testing.T) {
 	}
 }
 
-// Nothing loose ships by default — but the create warns about env files it
-// is NOT carrying (untracked or ignored, any depth), minus wholly-ignored
-// dirs (node_modules fixtures), tracked ones (they arrive with the fetch),
-// and whatever .pier/include already carries.
+// Non-ignored untracked files travel automatically. The create warns about
+// ignored env files it is NOT carrying, minus wholly-ignored dirs
+// (node_modules fixtures), tracked ones (they arrive with the fetch), and
+// whatever .pier/include already carries.
 func TestEnvFilesNotCarried(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
@@ -277,7 +277,14 @@ func TestEnvFilesNotCarried(t *testing.T) {
 	git("add", ".gitignore", "apps/api/.env.example")
 
 	if files := pierIncludeFiles(root); files != nil {
-		t.Errorf("no .pier/include must mean nothing loose ships, got %v", files)
+		t.Errorf("no .pier/include must mean no explicit extras, got %v", files)
+	}
+	untracked, err := untrackedFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"apps/api/main.go"}; !slices.Equal(untracked, want) {
+		t.Errorf("untrackedFiles = %v, want %v", untracked, want)
 	}
 	got := envFilesNotCarried(root, nil)
 	want := []string{".env", "apps/api/.env", "apps/api/.env.local"}
@@ -292,8 +299,8 @@ func TestEnvFilesNotCarried(t *testing.T) {
 }
 
 // Uncommitted work on tracked files — edits and staged adds — travels as one
-// patch; untracked files don't (that's .pier/include's channel). A clean
-// tree writes no patch at all.
+// patch; untracked files use the files tar instead. A clean tree writes no
+// patch at all.
 func TestDirtyPatch(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
@@ -336,11 +343,90 @@ func TestDirtyPatch(t *testing.T) {
 		}
 	}
 	if strings.Contains(string(b), "c.txt") {
-		t.Error("untracked file leaked into the dirty patch")
+		t.Error("untracked file leaked into the tracked-files patch")
 	}
 }
 
-// .pier/include is the only loose-file channel: lines are paths or globs,
+// Every non-ignored untracked file travels automatically; standard Git
+// ignores are the boundary. .pier/include can explicitly opt an ignored file
+// back in, and an untracked .pier/setup.sh itself needs no special case.
+func TestUntrackedFilesTravelAndIgnoredFilesRequireInclude(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	write(".gitignore", ".env\nignored/\n")
+	write("tracked.txt", "base\n")
+	git("add", ".gitignore", "tracked.txt")
+	git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "init")
+
+	write(".pier/setup.sh", "#!/bin/sh\nmake build\n")
+	write("notes.txt", "local\n")
+	write(".env", "SECRET=1\n")
+	write("ignored/cache.txt", "large\n")
+
+	untracked, err := untrackedFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{".pier/setup.sh", "notes.txt"}; !slices.Equal(untracked, want) {
+		t.Fatalf("untrackedFiles = %v, want %v", untracked, want)
+	}
+
+	write(".pier/include", ".env\n")
+	untracked, err = untrackedFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(root))
+	wantFiles := []string{".env", ".pier/include", ".pier/setup.sh", "notes.txt"}
+	if !slices.Equal(repoFiles, wantFiles) {
+		t.Fatalf("repo files = %v, want %v", repoFiles, wantFiles)
+	}
+
+	dst := filepath.Join(t.TempDir(), "files.tar")
+	if err := buildFilesTar(dst, nil, root, repoFiles, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	got := []string{}
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(h.Name, "repo/") {
+			got = append(got, strings.TrimPrefix(h.Name, "repo/"))
+		}
+	}
+	if !slices.Equal(got, wantFiles) {
+		t.Errorf("files tar = %v, want %v", got, wantFiles)
+	}
+}
+
+// .pier/include is the ignored-file escape hatch: lines are paths or globs,
 // matched against the disk with no git-status distinction (the fixture isn't
 // even a git repo). Directory lines carry their whole subtree; escapes and
 // comments are dropped.
@@ -418,7 +504,7 @@ func TestPierIncludeDereferencesDirectFileSymlinks(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "files.tar")
-	if err := buildFilesTar(dst, nil, root, nil, ""); err != nil {
+	if err := buildFilesTar(dst, nil, root, pierIncludeFiles(root), nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(dst)
@@ -468,7 +554,7 @@ func TestFilesTarWidensCarriedModes(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "files.tar")
-	if err := buildFilesTar(dst, nil, root, nil, ""); err != nil {
+	if err := buildFilesTar(dst, nil, root, pierIncludeFiles(root), nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(dst)
