@@ -30,6 +30,7 @@ import (
 	"github.com/usepier/pier/internal/driver/gcpgce"
 	"github.com/usepier/pier/internal/driver/payload"
 	"github.com/usepier/pier/internal/proxy"
+	"github.com/usepier/pier/internal/tombstone"
 	"github.com/usepier/pier/internal/tui"
 	"github.com/usepier/pier/internal/ui"
 	"github.com/usepier/pier/internal/wizard"
@@ -266,6 +267,16 @@ func cmdNew(args []string) {
 	// Images are repo-specific; a repo that never baked launches from stock
 	// (guarded cloud-init installs live).
 	image := cfg.BakedImage(filepath.Base(repo))
+	// A repo with a bake hook has declared that stock isn't enough for it —
+	// its toolchain lives in .pier/bake.sh and nowhere else. Launching stock
+	// anyway is legal but almost never what was wanted: the create succeeds,
+	// then .pier/setup.sh dies minutes later on a missing toolchain, and the
+	// two events look unrelated. Say it here, while it's still one sentence.
+	if image == "" && driver.BakeHook(repo) != "" {
+		fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(" no baked image for "+filepath.Base(repo)+
+			" — launching from stock, so .pier/bake.sh toolchains will be missing and .pier/setup.sh may fail"))
+		fmt.Println(ui.Dim.Render("  fix: `pier bake` in this repo (~5 min once)"))
+	}
 	fmt.Printf("%s %s\n", ui.Bold.Render("creating "+branch),
 		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(repo), base)))
 	sess, err := drv.Create(ctx, driver.CreateSpec{
@@ -274,6 +285,10 @@ func cmdNew(args []string) {
 		Progress: func(step string) { fmt.Println(ui.Step(step)) },
 	})
 	if err != nil {
+		// The instance is already gone (Create destroys its own wreckage), so
+		// leave a tombstone: without one this create vanishes without trace,
+		// and a detached create has no terminal to have shown the error in.
+		buryCreate(cfg, branch, repo, err)
 		fatal(err)
 	}
 	stop() // create done — ctrl-c back to its default for the prompt + attach
@@ -374,24 +389,33 @@ func waitReachable(drv driver.Driver, id string, timeout time.Duration) error {
 
 func cmdLS() {
 	_, drv := loadDriver()
-	sessions, err := drv.List(context.Background())
+	sessions, err := listSessions(drv)
 	if err != nil {
 		fatal(err)
 	}
-	enrich(drv, sessions)
 	if len(sessions) == 0 {
 		fmt.Println(ui.Dim.Render("no sessions — start one with `pier <branch>`"))
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
-	anyStrained, anySetupFailed := false, false
+	anyStrained, anySetupFailed, anyFailedCreate := false, false, false
 	for _, s := range sessions {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.Created), s.CostNote)
 		anyStrained = anyStrained || s.Strained
 		anySetupFailed = anySetupFailed || s.Setup == "failed"
+		anyFailedCreate = anyFailedCreate || s.State == driver.StateFailed
 	}
 	w.Flush()
+	if anyFailedCreate {
+		fmt.Println("\n" + ui.Bad.Render("✗") + ui.Dim.Render(" create failed = the instance was rolled back, nothing is running — `pier rm <session>` clears the row"))
+		for _, s := range sessions {
+			if s.State != driver.StateFailed || s.FailReason == "" {
+				continue
+			}
+			fmt.Println(ui.Dim.Render("  " + s.Name + ": " + tombstone.Summarize(s.FailReason)))
+		}
+	}
 	if anyStrained {
 		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`"))
 	}
@@ -402,6 +426,12 @@ func cmdLS() {
 
 // stateLabel renders the state plus the supervisor's strain and setup flags.
 func stateLabel(s driver.Session) string {
+	if s.State == driver.StateFailed {
+		// "create failed", never a bare "failed": the neighbouring rows say
+		// "setup failed" for a live session whose setup script died, and the
+		// two mean very different things — one has a VM, this one does not.
+		return "create failed"
+	}
 	l := string(s.State)
 	if s.Strained {
 		l += " (strained)"
@@ -485,7 +515,7 @@ func age(t time.Time) string {
 }
 
 func match(drv driver.Driver, query string) driver.Session {
-	sessions, err := drv.List(context.Background())
+	sessions, err := listSessions(drv)
 	if err != nil {
 		fatal(err)
 	}
@@ -548,6 +578,22 @@ func cmdLogs(args []string) {
 // interprets the progress-meter escapes natively. The TUI's l key renders a
 // sanitized in-place view instead.
 func showLogs(drv driver.Driver, s driver.Session, follow bool) {
+	// A failed create has no VM and no setup log, but it does have the create
+	// log — which is the log the user is asking for. Serve that instead of
+	// refusing: "what broke" is the same question either way.
+	if s.State == driver.StateFailed {
+		if s.LogPath == "" {
+			fmt.Println(s.FailReason)
+			return
+		}
+		b, err := os.ReadFile(s.LogPath)
+		if err != nil {
+			fmt.Println(s.FailReason)
+			return
+		}
+		os.Stdout.Write(b)
+		return
+	}
 	requireReady(s)
 	if s.State == driver.StateParked {
 		resumeIfParked(drv, s)
@@ -575,6 +621,14 @@ func showLogs(drv driver.Driver, s driver.Session, follow bool) {
 // before any ssh is spawned, so the user never sees a raw transport error
 // from the window between cloud-running and actually-attachable.
 func requireReady(s driver.Session) {
+	if s.State == driver.StateFailed {
+		hint := "`pier " + s.Name + "` retries it"
+		if s.LogPath != "" {
+			hint += ", " + s.LogPath + " has the create log"
+		}
+		fatal(fmt.Errorf("%s never finished creating (%s) — nothing is running; %s",
+			s.Name, tombstone.Summarize(s.FailReason), hint))
+	}
 	if s.State == driver.StateCreating {
 		fatal(fmt.Errorf("%s is still setting up — try again when `pier ls` shows it running", s.Name))
 	}
@@ -775,6 +829,14 @@ func cmdRM(args []string) {
 	}
 	_, drv := loadDriver()
 	s := match(drv, names[0])
+	// A tombstone has no instance and no disk — rm just forgets the record.
+	if s.State == driver.StateFailed {
+		if err := tombstone.Dismiss(config.Dir(), s.Name); err != nil {
+			fatal(err)
+		}
+		fmt.Println(ui.OK.Render("cleared failed create " + s.Name))
+		return
+	}
 	if !force && !confirm(fmt.Sprintf("destroy session %q and its disk?", s.Name), false) {
 		return
 	}
@@ -910,23 +972,32 @@ func cmdBake() {
 	if err != nil {
 		fatal(err)
 	}
-	cfg.RecordBake(name, img)
-	if err := cfg.Save(); err != nil {
+	// Update, not Save: a bake takes minutes, and cfg was read before it
+	// started. Saving it wholesale would revert anything written meanwhile —
+	// including another repo's bake.
+	if _, err := config.Update(func(c *config.Config) error {
+		c.RecordBake(name, img)
+		return nil
+	}); err != nil {
 		fatal(err)
 	}
 	fmt.Println(ui.OK.Render("baked "+img) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~1-2 min"))
 }
 
 func cmdTeardown() {
-	cfg, drv := loadDriver()
+	_, drv := loadDriver()
 	if !confirm("remove all pier groundwork and baked images from the account?", false) {
 		return
 	}
 	if err := drv.Teardown(context.Background()); err != nil {
 		fatal(err)
 	}
-	cfg.ClearBakes()
-	cfg.Save()
+	if _, err := config.Update(func(c *config.Config) error {
+		c.ClearBakes()
+		return nil
+	}); err != nil {
+		fatal(err)
+	}
 	fmt.Println(ui.OK.Render("groundwork removed — the account is clean"))
 }
 
@@ -957,14 +1028,7 @@ func cmdTUI() {
 			}
 			return q.Detail
 		},
-		Fetch: func() ([]driver.Session, error) {
-			sessions, err := drv.List(context.Background())
-			if err != nil {
-				return nil, err
-			}
-			enrich(drv, sessions)
-			return sessions, nil
-		},
+		Fetch:       func() ([]driver.Session, error) { return listSessions(drv) },
 		AuthExpired: awsec2.LoginExpired,
 		Reauthenticate: func() *exec.Cmd {
 			args := []string{"login"}
@@ -974,6 +1038,10 @@ func cmdTUI() {
 			return exec.Command("aws", args...)
 		},
 		Destroy: func(s driver.Session) error {
+			// d on a tombstone clears the record; there is no instance to kill.
+			if s.State == driver.StateFailed {
+				return tombstone.Dismiss(config.Dir(), s.Name)
+			}
 			return drv.Destroy(context.Background(), s.ID)
 		},
 		Pin: func(s driver.Session) error {
@@ -996,6 +1064,15 @@ func cmdTUI() {
 		},
 		CreateDetached: spawnCreate,
 		FetchLog: func(s driver.Session) (string, error) {
+			// A tombstone has no VM to read from — its log is the local create
+			// log, which is the whole point of keeping the row around.
+			if s.State == driver.StateFailed {
+				b, err := os.ReadFile(s.LogPath)
+				if err != nil {
+					return s.FailReason, nil
+				}
+				return string(b), nil
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			// The viewer refetches every few seconds, so the transfer stays
@@ -1022,6 +1099,74 @@ func cmdTUI() {
 	}
 }
 
+// createLogPath is where a detached create's output lands. spawnCreate writes
+// it and the create itself reads it back to point its tombstone at the log —
+// so the formula lives here once rather than being re-derived on both sides.
+func createLogPath(branch string) string {
+	return filepath.Join(config.Dir(), "logs",
+		"create-"+strings.ReplaceAll(branch, "/", "-")+".log")
+}
+
+// listSessions is the one list every surface shows: the driver's real
+// sessions plus local tombstones for creates that died before becoming one.
+// A tombstone whose name came back as a live session (the retry worked) is
+// dropped here, so a successful re-create silently clears its own gravestone.
+func listSessions(drv driver.Driver) ([]driver.Session, error) {
+	sessions, err := drv.List(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	enrich(drv, sessions)
+	merged, revived := mergeTombstones(sessions, tombstone.List(config.Dir()))
+	for _, name := range revived {
+		tombstone.Dismiss(config.Dir(), name)
+	}
+	return merged, nil
+}
+
+// mergeTombstones appends a failed row per tombstone and reports the ones the
+// cloud has since answered for. A name that is live again means the create
+// was retried and worked, so its gravestone is stale — the user shouldn't
+// have to clear a row that the obvious next action already resolved.
+func mergeTombstones(sessions []driver.Session, recs []tombstone.Record) (merged []driver.Session, revived []string) {
+	live := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		live[s.Name] = true
+	}
+	for _, r := range recs {
+		if live[r.Name] {
+			revived = append(revived, r.Name)
+			continue
+		}
+		sessions = append(sessions, driver.Session{
+			Name: r.Name, Repo: r.Repo, Branch: r.Branch, Driver: r.Driver,
+			State: driver.StateFailed, Created: r.When,
+			FailReason: r.Reason, LogPath: r.LogPath,
+			CostNote: "—", // nothing is running; nothing is being charged
+		})
+	}
+	return sessions, revived
+}
+
+// buryCreate records a failed create so it leaves a trace in the list instead
+// of a silent gap. Best-effort: the create already failed and its own error is
+// what the user acts on — a graveyard write that fails must not mask it.
+func buryCreate(cfg config.Config, branch, repo string, cause error) {
+	rec := tombstone.Record{
+		Name: branch, Repo: filepath.Base(repo), Branch: branch,
+		Driver: or(cfg.Driver, "aws-ec2"), Reason: cause.Error(), When: time.Now(),
+	}
+	if p := createLogPath(branch); fileExists(p) {
+		rec.LogPath = p
+	}
+	_ = tombstone.Write(config.Dir(), rec)
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
 // spawnCreate re-execs `pier <branch> --detach` as a detached child (own
 // session, output to a log file), so a TUI-initiated create runs in the
 // background and survives the TUI closing. The list shows it as "creating"
@@ -1034,11 +1179,10 @@ func spawnCreate(branch string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	logDir := filepath.Join(config.Dir(), "logs")
-	if err := os.MkdirAll(logDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(config.Dir(), "logs"), 0o700); err != nil {
 		return "", err
 	}
-	logPath := filepath.Join(logDir, "create-"+strings.ReplaceAll(branch, "/", "-")+".log")
+	logPath := createLogPath(branch)
 	f, err := os.Create(logPath)
 	if err != nil {
 		return "", err

@@ -403,6 +403,9 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case driver.StateDead:
 			m.status, m.statusBad = s.Name+" is dead — no VM to attach to", false
 			return m, nil
+		case driver.StateFailed:
+			m.status, m.statusBad = s.Name+" never finished creating — n starts it again, d clears the row", false
+			return m, nil
 		case driver.StateParked:
 			if m.opts.Resume == nil {
 				m.status, m.statusBad = s.Name+" is parked — pier attach "+s.Name+" resumes it", false
@@ -432,6 +435,14 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case driver.StateDead:
 				m.status, m.statusBad = s.Name+" is dead — no VM to read the log from", false
 				return m, nil
+			case driver.StateFailed:
+				// The create log is local and outlived the instance, so a
+				// tombstone can still explain itself — as long as the create
+				// wrote one (a foreground create printed to the terminal).
+				if s.LogPath == "" {
+					m.status, m.statusBad = s.Name+": "+s.FailReason, true
+					return m, nil
+				}
 			}
 			m.mode = modeLogs
 			m.logSess, m.logText, m.logLines = s, "", nil
@@ -453,6 +464,10 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		if len(m.sessions) > 0 {
 			s := m.sessions[m.cursor]
+			if s.State == driver.StateFailed {
+				m.status, m.statusBad = s.Name+" never finished creating — nothing to pin", false
+				return m, nil
+			}
 			m.loading = true
 			return m, tea.Batch(func() tea.Msg {
 				if err := m.opts.Pin(s); err != nil {
@@ -466,6 +481,10 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s := m.sessions[m.cursor]
 			if s.State == driver.StateCreating {
 				m.status, m.statusBad = s.Name+" is still setting up — resize once it shows running", false
+				return m, nil
+			}
+			if s.State == driver.StateFailed {
+				m.status, m.statusBad = s.Name+" never finished creating — nothing to resize", false
 				return m, nil
 			}
 			if s.State == driver.StateDeleting {
@@ -620,14 +639,23 @@ func (m model) updateSettingPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // fixed; the config on disk is never touched by a bad value.
 func (m model) saveSetting(val string) (tea.Model, tea.Cmd) {
 	f := config.Settings[m.setIdx]
+	// Validate against the page's copy first so a bad value never reaches
+	// disk and the editor can stay open on it.
 	if err := config.Set(m.cfg, f.Key, val); err != nil {
 		m.status, m.statusBad = err.Error(), true
 		return m, nil
 	}
-	if err := m.cfg.Save(); err != nil {
+	// Then write through Update rather than saving the page's copy: the TUI
+	// can sit on this page while a `pier bake` finishes in another terminal,
+	// and saving a stale struct would erase the image it just recorded.
+	saved, err := config.Update(func(c *config.Config) error {
+		return config.Set(c, f.Key, val)
+	})
+	if err != nil {
 		m.status, m.statusBad = err.Error(), true
 		return m, nil
 	}
+	m.cfg = &saved
 	m.editing, m.picking = false, false
 	m.status, m.statusBad = f.Label+" saved — applies to new sessions", false
 	return m, nil
@@ -785,7 +813,12 @@ func (m model) View() string {
 		b.WriteString(ui.Box.Render(ui.Accent.Render("❯ ")+m.input+ui.Accent.Render("▌")) + "\n")
 		b.WriteString(" " + ui.Keys("enter", "create", "esc", "cancel") + "\n")
 	case modeConfirm:
-		b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("destroy %q and its disk? (y/n)", m.sessions[m.cursor].Name)) + "\n")
+		if s := m.sessions[m.cursor]; s.State == driver.StateFailed {
+			// No disk, no instance — clearing a tombstone destroys nothing.
+			b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("clear the failed create %q? (y/n)", s.Name)) + "\n")
+		} else {
+			b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("destroy %q and its disk? (y/n)", s.Name)) + "\n")
+		}
 	case modeResize:
 		s := m.sessions[m.cursor]
 		b.WriteString(" " + ui.Dim.Render("resize "+s.Name+" — same-arch machines, billed on-demand while running") + "\n")
@@ -1172,10 +1205,16 @@ func stateCell(s driver.Session) string {
 		driver.StateParked:   "◌",
 		driver.StateDeleting: "◌",
 		driver.StateDead:     "✗",
+		driver.StateFailed:   "✗",
 	}
 	dot, ok := dots[s.State]
 	if !ok {
 		dot = "?"
+	}
+	// A tombstone reads "create failed", never a bare "failed" — the row above
+	// it may say "running (setup failed)", and those are not the same thing.
+	if s.State == driver.StateFailed {
+		return dot + " create failed"
 	}
 	cell := dot + " " + string(s.State)
 	if s.Strained {
@@ -1191,7 +1230,7 @@ func stateCell(s driver.Session) string {
 }
 
 func stateStyle(s driver.Session) lipgloss.Style {
-	if s.Setup == "failed" {
+	if s.Setup == "failed" || s.State == driver.StateFailed {
 		return ui.Bad
 	}
 	if s.Strained {
