@@ -33,13 +33,14 @@ func AgentDirs(home string) []string {
 // user skills directory. Claude Code and Codex read the same SKILL.md
 // layout, so one tree serves both. Existing copies are refreshed in place,
 // so a pier upgrade propagates skill fixes. Runs from the wizard's skills
-// step and standalone as `pier skills`; returns print-ready progress lines.
-func InstallSkills(home string, agents []string) []string {
+// step and standalone as `pier skills`; returns print-ready progress lines
+// and any installation error.
+func InstallSkills(home string, agents []string) ([]string, error) {
 	var notes []string
 	for _, agent := range agents {
 		switch changed, err := syncSkills(filepath.Join(home, agent, "skills")); {
 		case err != nil:
-			notes = append(notes, "  "+ui.Mark(false)+" pier-onboard skill: "+err.Error())
+			return notes, fmt.Errorf("install pier-onboard skill in ~/%s/skills: %w", agent, err)
 		case changed:
 			notes = append(notes, "  "+ui.OK.Render("+")+" installed the pier-onboard skill "+
 				ui.Dim.Render("~/"+agent+"/skills — ask your agent to \"set this repo up for pier\""))
@@ -47,7 +48,7 @@ func InstallSkills(home string, agents []string) []string {
 			notes = append(notes, ui.Dim.Render("  = pier-onboard skill up to date in ~/"+agent+"/skills"))
 		}
 	}
-	return notes
+	return notes, nil
 }
 
 // offerSkills is the wizard's skills step: one confirm per detected agent,
@@ -72,8 +73,12 @@ func offerSkills(in *bufio.Reader, cfg *config.Config, home string) error {
 		fmt.Println(ui.Dim.Render("  (skipped — `pier skills` installs them anytime)"))
 		return nil
 	}
-	for _, n := range InstallSkills(home, chosen) {
+	notes, err := InstallSkills(home, chosen)
+	for _, n := range notes {
 		fmt.Println(n)
+	}
+	if err != nil {
+		return err
 	}
 	saved := false
 	for _, agent := range chosen {
@@ -93,9 +98,62 @@ func offerSkills(in *bufio.Reader, cfg *config.Config, home string) error {
 	return nil
 }
 
-// syncSkills writes every embedded skill file under dst, skipping files
-// already at the embedded content, and reports whether anything was written.
+// syncSkills makes each bundled skill subtree match the embedded copy while
+// leaving sibling, user-managed skills alone. It reports whether anything was
+// written or removed.
 func syncSkills(dst string) (changed bool, err error) {
+	expected := make(map[string]bool)
+	var roots []string
+	err = fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		expected[path] = d.IsDir()
+		if path != "." && !strings.Contains(path, "/") {
+			roots = append(roots, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+
+	// Remove paths no longer present in the bundle, plus file/directory type
+	// conflicts that would prevent the new copy from being written. Restrict
+	// reconciliation to embedded top-level roots so other installed skills are
+	// never touched.
+	for _, root := range roots {
+		rootPath := filepath.Join(dst, filepath.FromSlash(root))
+		if _, err := os.Lstat(rootPath); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return changed, err
+		}
+		if err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(dst, path)
+			if err != nil {
+				return err
+			}
+			wantDir, ok := expected[filepath.ToSlash(rel)]
+			if ok && wantDir == d.IsDir() {
+				return nil
+			}
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+			changed = true
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}); err != nil {
+			return changed, err
+		}
+	}
+
 	err = fs.WalkDir(skills.FS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err

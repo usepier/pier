@@ -849,8 +849,12 @@ func cmdSkills() {
 		fmt.Println(ui.Dim.Render("  no agent config found (~/.claude or ~/.codex) — nothing to install into"))
 		return
 	}
-	for _, n := range wizard.InstallSkills(home, agents) {
+	notes, err := wizard.InstallSkills(home, agents)
+	for _, n := range notes {
 		fmt.Println(n)
+	}
+	if err != nil {
+		fatal(err)
 	}
 }
 
