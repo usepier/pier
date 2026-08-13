@@ -1,10 +1,9 @@
 // Package payload assembles everything a new session VM receives: the
 // repo-transfer decision (github fetch, thin bundle, or full bundle), the
 // dirty-tracked patch, the files tar (secrets manifest + .pier/include extras
-// + the selected .pier/setup.sh + session env), the cloud-init user-data, and
-// the bootstrap script that puts it all in place. Cloud-agnostic by
-// construction — drivers launch, push, and run; nothing here knows which
-// cloud is on the other end.
+// + session env), the cloud-init user-data, and the bootstrap script that
+// puts it all in place. Cloud-agnostic by construction — drivers launch,
+// push, and run; nothing here knows which cloud is on the other end.
 package payload
 
 import (

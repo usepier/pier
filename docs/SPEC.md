@@ -19,7 +19,7 @@ pier                    # TUI: sessions + states; pick one to reattach (~30-60s 
 ```
 
 A session comes prepacked with: the repo on a fresh branch, the dev
-environment (repo's local `.pier/setup.sh`, run automatically), the user's
+environment (repo's `.pier/setup.sh`, run automatically), the user's
 secrets (one-way copy from the laptop), and both agent harnesses installed.
 Everything else is bloat.
 
@@ -258,11 +258,11 @@ Targets: **create → attached 60–90s; resume → attached ~30s** (measured
 numbers in §14; GCP runs about a minute behind AWS on each — GCE stop/start
 and the IAP tunnel are simply slower).
 
-Repo-specific Pier config lives locally under `.pier/`, with `/.pier/` in
-the repository's `.gitignore`. Create reads `.pier/include` on the laptop and
-explicitly puts the selected `.pier/setup.sh` into the files tar; bake reads
-`.pier/bake.sh` directly. The config directory therefore stays local without
-depending on the git checkout that lands on the VM.
+Repo-specific Pier config is committed under `.pier/`; the directory must not
+be ignored. Create reads `.pier/include` on the laptop, `.pier/setup.sh`
+arrives with the git checkout, and bake reads `.pier/bake.sh` directly. Loose
+local files named by `.pier/include` stay protected by the repository's
+`.gitignore`.
 
 1. **`pier bake`** — prebaked **per-repo** image: agent user, tmux, git, gh,
    docker (with compose + buildx — docker.io alone is the bare engine; the

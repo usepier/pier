@@ -241,7 +241,7 @@ resuming checkout-flow (~20-60s)...
 
 ## Making your repo pier-ready
 
-Pier uses one local, gitignored `.pier/` directory with three optional files:
+Pier uses one committed `.pier/` directory with three optional files:
 
 | File | Runs / read | Contains |
 |---|---|---|
@@ -249,9 +249,8 @@ Pier uses one local, gitignored `.pier/` directory with three optional files:
 | `.pier/include` | At create | Untracked/ignored files to carry (env files, local certs) |
 | `.pier/bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
 
-Add `/.pier/` to the repository's `.gitignore`. Pier reads these files from
-the laptop and explicitly carries the selected setup script into each new
-session.
+Do not ignore `.pier/`: it is shared project configuration. Loose local files
+listed in `.pier/include`, such as `.env`, should remain in `.gitignore`.
 
 ```bash
 # .pier/setup.sh (cwd is the repo root, logs to ~/.pier-setup.log)
@@ -287,8 +286,8 @@ COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack install -g pnpm@10.6.5
 
 Don't write those files by hand. This repo ships
 [`skills/pier-onboard`](skills/pier-onboard/SKILL.md), a skill that teaches
-a coding agent to inspect your repo, update `.gitignore`, and write all three
-files with the right boundaries.
+a coding agent to inspect your repo, write all three files with the right
+boundaries, and keep loose local files protected by `.gitignore`.
 
 ```
 cp -r pier/skills/pier-onboard ~/.claude/skills/    # or your repo's .claude/skills/

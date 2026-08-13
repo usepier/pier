@@ -379,63 +379,6 @@ func TestPierInclude(t *testing.T) {
 	}
 }
 
-func TestFilesTarCarriesIgnoredSetupScript(t *testing.T) {
-	root := t.TempDir()
-	configDir := filepath.Join(root, ".pier")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	setup := filepath.Join(configDir, "setup.sh")
-	if err := os.WriteFile(setup, []byte("#!/bin/sh\necho ready\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PIER_SETUP_SCRIPT", "")
-	got, warn := setupScriptOverride(root)
-	if got != "" || warn != "" {
-		t.Fatalf("setupScriptOverride() = %q, %q; want no override or warning", got, warn)
-	}
-
-	dst := filepath.Join(t.TempDir(), "files.tar")
-	if err := buildFilesTar(dst, nil, root, nil, ""); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	found := false
-	tr := tar.NewReader(f)
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if header.Name == "repo/.pier/setup.sh" {
-			contents, err := io.ReadAll(tr)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(contents) != "#!/bin/sh\necho ready\n" {
-				t.Fatalf("carried setup contents = %q", contents)
-			}
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("ignored .pier/setup.sh was not carried in files tar")
-	}
-
-	t.Setenv("PIER_SETUP_SCRIPT", "missing.sh")
-	got, warn = setupScriptOverride(root)
-	if got != "" || !strings.Contains(warn, "not found") {
-		t.Fatalf("missing override = %q, %q; want repo fallback and warning", got, warn)
-	}
-}
-
 func TestPierIncludeDereferencesDirectFileSymlinks(t *testing.T) {
 	root := t.TempDir()
 	sources := t.TempDir()

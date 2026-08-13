@@ -181,10 +181,10 @@ fi
 # cloud-init wait above.
 tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
 # Background setup, after checkout + patch + .pier/include extras are all in
-# place: the ignored .pier/setup.sh rode the tar into the repo; a
-# PIER_SETUP_SCRIPT override rides into ~/.config/pier and takes precedence.
-# Outer double quotes expand $setup now, into the single-quoted bash -c; \$
-# defers the rest to run time. The outcome must be impossible to
+# place: the repo's .pier/setup.sh, unless a PIER_SETUP_SCRIPT override rode
+# the tar into ~/.config/pier. Outer double quotes expand $setup now, into the
+# single-quoted bash -c; \$ defers the rest to run time. The outcome must be
+# impossible to
 # miss — a failed setup used to vanish with its window: ~/.pier-setup.status
 # holds "running" then the exit code (the supervisor beacons it to ls/TUI),
 # the log's last line says done/FAILED, and a failed window renames to

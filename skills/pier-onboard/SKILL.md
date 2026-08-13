@@ -1,6 +1,6 @@
 ---
 name: pier-onboard
-description: Set up a repository for pier — inspect the project, ignore its local .pier directory, and write setup.sh, include, and bake.sh there so pier sessions boot ready to work. Use when asked to set up, onboard, or configure pier for a repo.
+description: Set up a repository for pier — inspect the project, write its committed .pier configuration, and update .gitignore for loose local files so pier sessions boot ready to work. Use when asked to set up, onboard, or configure pier for a repo.
 ---
 
 # Onboard a repository to pier
@@ -16,8 +16,8 @@ directory control the rest:
 | `.pier/setup.sh` | On every session's first boot, async, after the repo lands | **Repo state** — dependency install, services, migrations, seeds |
 | `.pier/include` | List read at create time; matching files ride to the VM | **Untracked/ignored files** dev needs — env files, local certs |
 
-Your job: inspect this repo, add the local Pier directory to `.gitignore`,
-write the files that apply, and tell the user what to run next. All three
+Your job: inspect this repo, write the files that apply, protect loose local
+files through `.gitignore`, and tell the user what to run next. All three
 files are optional — write only what the repo needs.
 
 ## Step 1 — inspect the repo
@@ -40,22 +40,7 @@ From that, determine:
    `.pier/include`. Nothing untracked or gitignored ships unless listed
    here; pier prints which env files it is *not* carrying at create time.
 
-## Step 2 — prepare the local config directory
-
-Ensure the repository-root `.gitignore` contains this exact root-anchored
-entry, adding the file if it does not exist and preserving all existing
-rules:
-
-```gitignore
-/.pier/
-```
-
-Add the entry only once, then create `.pier/`. The `.gitignore` change is
-shared repository policy; the config files under `.pier/` stay local. Pier
-explicitly carries the selected setup script when it creates a session, so
-do not add `.pier/` to `.pier/include`.
-
-## Step 3 — write `.pier/bake.sh` (only if toolchains are needed)
+## Step 2 — write `.pier/bake.sh` (only if toolchains are needed)
 
 Runs as the `agent` user with passwordless sudo on the bake instance.
 **There is no repo checkout yet** — bake predates any session — so nothing
@@ -79,7 +64,7 @@ COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack install -g pnpm@10.6.5
 
 For apt installs, use `sudo DEBIAN_FRONTEND=noninteractive apt-get install -y …`.
 
-## Step 4 — write `.pier/setup.sh`
+## Step 3 — write `.pier/setup.sh`
 
 Runs asynchronously in a `setup` tmux window on the session's first boot,
 with the repo root as cwd, after the checkout, dirty patch, and
@@ -108,7 +93,7 @@ where possible. A bare background process must fully detach —
 when the script ends and SIGHUPs its process group (`nohup` alone does not
 detach it).
 
-## Step 5 — write `.pier/include` (only if loose files are needed)
+## Step 4 — write `.pier/include` (only if loose files are needed)
 
 One path or glob per line, relative to the repo root. `*`, `?`, `[]` match
 within a path segment — **no `**`**. A directory line carries its whole
@@ -126,11 +111,16 @@ apps/*/.env.local
 Only list what a dev session genuinely needs — everything listed leaves
 the laptop for the VM.
 
-## Step 6 — finish
+For every untracked local file or path added here, ensure the repository-root
+`.gitignore` ignores it so it cannot be committed accidentally. Add only
+missing rules and preserve all existing content. **Never ignore `.pier/`**:
+the Pier config directory contains project configuration and is meant to be
+committed.
 
-- The `.gitignore` update is meant to be committed. The `.pier/` files remain
-  local and ignored. Pier runs both scripts with bash, so the exec bit is
-  optional.
+## Step 5 — finish
+
+- The `.pier/` files and any `.gitignore` updates are meant to be committed.
+  Pier runs both scripts with bash, so the exec bit is optional.
 - Tell the user: if you wrote or changed `.pier/bake.sh`, run `pier bake`
   in the repo (~8 min, once per hook change). Then create a session and
   watch `pier ls` — `(setup running)` should clear; if it shows

@@ -236,11 +236,10 @@ func setupScriptOverride(repoRoot string) (path, warn string) {
 }
 
 // buildFilesTar packs, into one tar: manifest files/dirs under $HOME (prefix
-// home/), the repo files named by .pier/include plus the ignored
-// .pier/setup.sh (relative paths kept, prefix repo/), a PIER_SETUP_SCRIPT
-// override (as home/.config/pier/setup.sh), and a generated
-// home/.config/pier/env with the session tokens. The bootstrap extracts the
-// two prefixes to the right places.
+// home/), the repo files named by .pier/include (relative paths kept, prefix
+// repo/), a PIER_SETUP_SCRIPT override (as home/.config/pier/setup.sh), and a
+// generated home/.config/pier/env with the session tokens. The bootstrap
+// extracts the two prefixes to the right places.
 func buildFilesTar(dst string, manifest []string, repoRoot string, env map[string]string, setupSrc string) error {
 	f, err := os.Create(dst)
 	if err != nil {
@@ -301,13 +300,6 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 			return err
 		}
 		if _, err := tw.Write(seed); err != nil {
-			return err
-		}
-	}
-
-	repoSetup := filepath.Join(repoRoot, ".pier", "setup.sh")
-	if fi, err := os.Stat(repoSetup); err == nil && fi.Mode().IsRegular() {
-		if err := addFile(repoSetup, "repo/.pier/setup.sh", 0o755); err != nil {
 			return err
 		}
 	}
