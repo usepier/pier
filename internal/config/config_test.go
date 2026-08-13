@@ -118,10 +118,10 @@ func TestConfig_BakedReplaces(t *testing.T) {
 
 func TestConfig_RecordBake(t *testing.T) {
 	tests := []struct {
-		name      string
-		c         Config
-		repo      string
-		image     string
+		name       string
+		c          Config
+		repo       string
+		image      string
 		wantConfig Config
 	}{
 		{
@@ -214,8 +214,8 @@ func TestConfig_RecordBake(t *testing.T) {
 
 func TestConfig_ClearBakes(t *testing.T) {
 	tests := []struct {
-		name      string
-		c         Config
+		name       string
+		c          Config
 		wantConfig Config
 	}{
 		{
