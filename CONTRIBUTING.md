@@ -8,7 +8,7 @@ change is to keep it that way.
 ```
 make          # cross-compiles the in-VM supervisor, embeds it, builds ./pier
 make install  # install to $(go env GOPATH)/bin
-go test ./...
+make test     # go vet + go test -race
 ```
 
 Always build with `make`, not `go build` — the supervisor binaries must be
