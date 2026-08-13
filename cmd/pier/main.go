@@ -71,6 +71,8 @@ const usage = `usage:
   pier resize <session> <type>  grow/shrink the VM (running: ~1-2 min park+resume; same arch only)
   pier setup                first-run wizard (creates cloud groundwork)
       --print-admin           print the admin-runnable setup commands instead
+  pier skills               install/refresh the bundled agent skills
+                            (~/.claude/skills + ~/.codex/skills)
   pier doctor               environment + account checks
   pier bake                 prebake this repo's session image (~1-2 min creates)
   pier teardown             remove all pier groundwork from the account
@@ -104,6 +106,8 @@ func main() {
 		cmdResize(args[1:])
 	case "setup":
 		cmdSetup(args[1:])
+	case "skills":
+		cmdSkills()
 	case "doctor":
 		cmdDoctor()
 	case "bake":
@@ -822,12 +826,31 @@ func cmdResize(args []string) {
 	fmt.Println(ui.OK.Render(s.Name + " is now a " + itype))
 }
 
-// --- setup / doctor / bake / teardown ---------------------------------------------
+// --- setup / skills / doctor / bake / teardown ------------------------------------
 
 func cmdSetup(args []string) {
 	printAdmin := len(args) > 0 && args[0] == "--print-admin"
 	if err := wizard.Run(newDriver, printAdmin); err != nil {
 		fatal(err)
+	}
+}
+
+// cmdSkills is the standalone version of the wizard's skills step, minus
+// the questions — running the command is the confirmation, so it stays
+// scriptable. Refreshes the bundled skills for every agent on the machine,
+// e.g. after a pier upgrade. Idempotent; a no-op prints as such.
+func cmdSkills() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatal(err)
+	}
+	agents := wizard.AgentDirs(home)
+	if len(agents) == 0 {
+		fmt.Println(ui.Dim.Render("  no agent config found (~/.claude or ~/.codex) — nothing to install into"))
+		return
+	}
+	for _, n := range wizard.InstallSkills(home, agents) {
+		fmt.Println(n)
 	}
 }
 

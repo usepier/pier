@@ -1,5 +1,6 @@
 // Package wizard implements `pier setup`: detect → ask (plain prompts, ≤6
-// questions) → apply groundwork → doctor → write config → offer bake.
+// questions) → apply groundwork → doctor → write config → offer skills →
+// offer bake.
 // Everything detected becomes a prefilled default, so a second dev on a
 // prepared account just presses enter a few times.
 package wizard
@@ -213,7 +214,15 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		fmt.Println(line)
 	}
 
-	// 5. offer bake — images are repo-specific, so only when the wizard runs
+	// 5. offer the bundled skills — per-agent confirms, before bake so no
+	// question hides behind a ~5 min build.
+	if home, err := os.UserHomeDir(); err == nil {
+		if err := offerSkills(in, &cfg, home); err != nil {
+			return err
+		}
+	}
+
+	// 6. offer bake — images are repo-specific, so only when the wizard runs
 	// inside a repo; otherwise point at `pier bake` from one.
 	fmt.Println()
 	if repo := gitToplevel(); repo == "" {

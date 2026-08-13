@@ -284,14 +284,16 @@ COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack install -g pnpm@10.6.5
 
 ## The pier-onboard skill
 
-Don't write those files by hand. This repo ships
+Don't write those files by hand. pier ships
 [`skills/pier-onboard`](skills/pier-onboard/SKILL.md), a skill that teaches
 a coding agent to inspect your repo, write all three files with the right
 boundaries, and keep loose local files protected by `.gitignore`.
 
-```
-cp -r pier/skills/pier-onboard ~/.claude/skills/    # or your repo's .claude/skills/
-```
+`pier setup` offers it at the end, one confirm per agent on the machine —
+Claude Code (`~/.claude/skills`) and Codex (`~/.codex/skills`) read the
+same skill format — and `pier skills` runs the same install without
+questions, e.g. to refresh after a pier upgrade. To pin it to one repo
+instead, copy it into that repo's `.claude/skills/`.
 
 Then ask your agent to "set this repo up for pier".
 

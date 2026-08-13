@@ -342,8 +342,8 @@ written back. Sources (wizard-detected, confirmed into the manifest):
   Directly matched file symlinks carry their target contents under the link's
   repo-relative path. Tracked content arrives with the fetch, dirty edits to
   it via the patch.
-- `~/.codex/` (auth.json, config.toml)
-- `~/.claude/` settings, `CLAUDE.md`, agents
+- `~/.codex/` (auth.json, config.toml, skills)
+- `~/.claude/` settings, `CLAUDE.md`, agents, skills
 - a GitHub credential for git push/PRs and private-repo fetch: `gh auth
   token` if gh is logged in, else the laptop's https git credential
   (`git credential fill`), else the ssh agent relayed via forwarding (fetch
@@ -375,7 +375,7 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 
 ## 9. Setup wizard
 
-`pier setup` — plain stdin prompts (no TUI form), four phases, under 3
+`pier setup` — plain stdin prompts (no TUI form), five phases, under 3
 minutes:
 
 1. **Detect** — CLIs, profiles/projects, plugin, gh, harness configs; all
@@ -391,6 +391,13 @@ minutes:
    IAM rights. `pier teardown` reverses it.
 4. **Doctor** — quota headroom, connectivity, plugin; writes
    `~/.config/pier/config.toml`; prints `cd <repo> && pier <branch>`.
+5. **Skills** — one confirm per detected agent (claude, codex — same
+   SKILL.md format), then the bundled pier-onboard skill (embedded in the
+   binary) is installed/refreshed under `~/.<agent>/skills`. A dir
+   confirmed here postdates manifest detection, so it's appended to the
+   session manifest — only when the manifest was accepted at all. Runs
+   before the bake offer so no question hides behind the build.
+   `pier skills` is the same install standalone, no questions.
 
 Second dev on a prepared account: detect finds groundwork (`Existed`),
 creates nothing, done in ~90s.
@@ -420,6 +427,7 @@ pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
 pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)
 pier setup              wizard (--print-admin for the no-IAM-rights path)
+pier skills             install/refresh the bundled agent skills standalone
 pier bake               build/refresh the prebaked image
 pier doctor             checks
 pier teardown           remove account groundwork
