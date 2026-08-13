@@ -146,6 +146,38 @@ func TestInstallSkillsReturnsErrorsBeforeManifestSave(t *testing.T) {
 	}
 }
 
+func TestInstallSkillsRefusesSymlinkedBundledFile(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallSkills(home, []string{".claude"}); err != nil {
+		t.Fatal(err)
+	}
+
+	skill := filepath.Join(home, ".claude/skills/pier-onboard/SKILL.md")
+	external := filepath.Join(home, "user-managed.md")
+	if err := os.WriteFile(external, []byte("do not overwrite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(skill); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, skill); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallSkills(home, []string{".claude"}); err == nil {
+		t.Fatal("refresh followed a symlinked bundled file")
+	}
+	if b, err := os.ReadFile(external); err != nil || string(b) != "do not overwrite" {
+		t.Fatalf("external symlink target changed: %q, %v", b, err)
+	}
+	if info, err := os.Lstat(skill); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("user-managed symlink changed: %v, %v", info, err)
+	}
+}
+
 func TestOfferSkillsPersistsSuccessBeforeLaterFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

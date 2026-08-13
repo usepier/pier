@@ -146,16 +146,11 @@ func syncSkills(dst string) (changed bool, err error) {
 			return err
 		}
 		target := filepath.Join(dst, filepath.FromSlash(path))
-		if have, err := os.ReadFile(target); err == nil && bytes.Equal(have, want) {
-			return nil
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		wrote, err := writeBundledSkillFile(dst, target, want)
+		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(target, want, 0o644); err != nil {
-			return err
-		}
-		changed = true
+		changed = changed || wrote
 		return nil
 	})
 	if err != nil {
@@ -164,23 +159,29 @@ func syncSkills(dst string) (changed bool, err error) {
 
 	index := []byte(strings.Join(currentFiles, "\n") + "\n")
 	indexPath := filepath.Join(dst, bundledSkillsIndex)
-	if have, err := os.ReadFile(indexPath); err == nil && bytes.Equal(have, index) {
-		return changed, nil
-	}
-	if err := os.MkdirAll(dst, 0o755); err != nil {
+	wrote, err := writeBundledSkillFile(dst, indexPath, index)
+	if err != nil {
 		return changed, err
 	}
-	if err := os.WriteFile(indexPath, index, 0o644); err != nil {
-		return changed, err
-	}
-	return true, nil
+	return changed || wrote, nil
 }
 
 func readBundledSkillsIndex(dst string) ([]string, error) {
-	b, err := os.ReadFile(filepath.Join(dst, bundledSkillsIndex))
+	indexPath := filepath.Join(dst, bundledSkillsIndex)
+	info, err := os.Lstat(indexPath)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("read bundled skills index %s: path is a symlink", indexPath)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("read bundled skills index %s: path is not a regular file", indexPath)
+	}
+	b, err := os.ReadFile(indexPath)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +197,102 @@ func readBundledSkillsIndex(dst string) ([]string, error) {
 		paths = append(paths, path)
 	}
 	return paths, nil
+}
+
+// writeBundledSkillFile refuses to follow symlinks at a managed path or in a
+// bundled subtree. Writing through either could replace user data outside the
+// skills directory. A temporary regular file and rename also make the final
+// replacement atomic and prevent a last-component symlink race.
+func writeBundledSkillFile(dst, target string, want []byte) (bool, error) {
+	if err := ensureBundledSkillParent(dst, filepath.Dir(target)); err != nil {
+		return false, err
+	}
+
+	info, err := os.Lstat(target)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, fmt.Errorf("write bundled skill file %s: path is a symlink", target)
+		}
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("write bundled skill file %s: path is not a regular file", target)
+		}
+		have, err := os.ReadFile(target)
+		if err != nil {
+			return false, err
+		}
+		if bytes.Equal(have, want) {
+			return false, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".pier-skill-*")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if _, err := tmp.Write(want); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ensureBundledSkillParent creates directories below dst one at a time so an
+// existing symlink cannot redirect a bundled subtree. dst itself may be a
+// symlink because users commonly keep their whole agent config elsewhere.
+func ensureBundledSkillParent(dst, dir string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("skills path %s is not a directory", dst)
+	}
+
+	rel, err := filepath.Rel(dst, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("bundled skill directory %s is outside %s", dir, dst)
+	}
+	current := dst
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(current, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("write bundled skill directory %s: path is a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("write bundled skill directory %s: path is not a directory", current)
+		}
+	}
+	return nil
 }
 
 // removeBundledSkillFile removes one path claimed by the previous ownership
