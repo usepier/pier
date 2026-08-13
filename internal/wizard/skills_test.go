@@ -13,9 +13,17 @@ import (
 
 // TestInstallSkills covers the lifecycle: no agents → nothing to do,
 // claude only → claude gets the skill, re-run → no rewrite, stale copy →
-// refreshed, codex appears → codex gets it too.
+// refreshed, obsolete bundled file → removed, codex appears → codex gets it too.
 func TestInstallSkills(t *testing.T) {
 	home := t.TempDir()
+	install := func() []string {
+		t.Helper()
+		notes, err := InstallSkills(home, AgentDirs(home))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return notes
+	}
 
 	if dirs := AgentDirs(home); len(dirs) != 0 {
 		t.Fatalf("no agents on the machine, got %q", dirs)
@@ -27,7 +35,7 @@ func TestInstallSkills(t *testing.T) {
 	if dirs := AgentDirs(home); !slices.Equal(dirs, []string{".claude"}) {
 		t.Fatalf("want just .claude, got %q", dirs)
 	}
-	notes := InstallSkills(home, AgentDirs(home))
+	notes := install()
 	if len(notes) != 1 || !strings.Contains(notes[0], "installed") {
 		t.Fatalf("want one install note, got %q", notes)
 	}
@@ -47,28 +55,77 @@ func TestInstallSkills(t *testing.T) {
 		t.Fatal(".codex was conjured for a machine without codex")
 	}
 
-	if notes := InstallSkills(home, AgentDirs(home)); len(notes) != 1 || !strings.Contains(notes[0], "up to date") {
+	if notes := install(); len(notes) != 1 || !strings.Contains(notes[0], "up to date") {
 		t.Fatalf("second run should be a no-op, got %q", notes)
 	}
 
 	if err := os.WriteFile(claudeSkill, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if notes := InstallSkills(home, AgentDirs(home)); len(notes) != 1 || !strings.Contains(notes[0], "installed") {
+	if notes := install(); len(notes) != 1 || !strings.Contains(notes[0], "installed") {
 		t.Fatalf("stale copy should refresh, got %q", notes)
 	}
 	if b, _ := os.ReadFile(claudeSkill); string(b) == "stale" {
 		t.Fatal("stale skill was not refreshed")
 	}
 
+	obsolete := filepath.Join(home, ".claude/skills/pier-onboard/obsolete.md")
+	if err := os.WriteFile(obsolete, []byte("removed from a later bundle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	customSkill := filepath.Join(home, ".claude/skills/custom/SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(customSkill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(customSkill, []byte("user managed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if notes := install(); len(notes) != 1 || !strings.Contains(notes[0], "installed") {
+		t.Fatalf("obsolete bundled file should be removed, got %q", notes)
+	}
+	if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
+		t.Fatalf("obsolete bundled file remains: %v", err)
+	}
+	if b, err := os.ReadFile(customSkill); err != nil || string(b) != "user managed" {
+		t.Fatalf("sibling user skill changed: %q, %v", b, err)
+	}
+
 	if err := os.Mkdir(filepath.Join(home, ".codex"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if notes := InstallSkills(home, AgentDirs(home)); len(notes) != 2 {
+	if notes := install(); len(notes) != 2 {
 		t.Fatalf("want claude+codex notes, got %q", notes)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex/skills/pier-onboard/SKILL.md")); err != nil {
 		t.Fatalf("codex skill missing: %v", err)
+	}
+}
+
+func TestInstallSkillsReturnsErrorsBeforeManifestSave(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude/skills"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	notes, err := InstallSkills(home, []string{".claude"})
+	if err == nil {
+		t.Fatal("install into an invalid skills path succeeded")
+	}
+	if len(notes) != 0 {
+		t.Fatalf("failed install returned success notes: %q", notes)
+	}
+
+	cfg := config.Default()
+	cfg.Secrets.Manifest = []string{".claude/settings.json"}
+	err = offerSkills(bufio.NewReader(strings.NewReader("y\n")), &cfg, home)
+	if err == nil {
+		t.Fatal("wizard ignored skill installation failure")
+	}
+	if slices.Contains(cfg.Secrets.Manifest, ".claude/skills") {
+		t.Fatalf("failed skill destination entered manifest: %q", cfg.Secrets.Manifest)
 	}
 }
 
