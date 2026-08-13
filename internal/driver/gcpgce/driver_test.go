@@ -91,3 +91,29 @@ func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
 		t.Errorf("attach must fall back when the VM lacks the client's terminfo entry, got %q", remote)
 	}
 }
+
+func TestMachinesCatalog(t *testing.T) {
+	amd64Catalog := Machines("e2-medium")
+	if len(amd64Catalog) == 0 {
+		t.Fatal("expected non-empty amd64 catalog")
+	}
+	for _, m := range amd64Catalog {
+		if archOf(m.Type) != "amd64" {
+			t.Errorf("expected amd64 architecture for type %s, got %s", m.Type, archOf(m.Type))
+		}
+	}
+
+	arm64Catalog := Machines("t2a-standard-2")
+	if len(arm64Catalog) == 0 {
+		t.Fatal("expected non-empty arm64 catalog")
+	}
+	for _, m := range arm64Catalog {
+		if archOf(m.Type) != "arm64" {
+			t.Errorf("expected arm64 architecture for type %s, got %s", m.Type, archOf(m.Type))
+		}
+	}
+
+	if amd64Catalog[0].Type == arm64Catalog[0].Type {
+		t.Fatalf("catalogs for amd64 and arm64 should be separate")
+	}
+}
