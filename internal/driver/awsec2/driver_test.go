@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +22,15 @@ func TestLoginExpired(t *testing.T) {
 		if LoginExpired(err) {
 			t.Errorf("LoginExpired(%v) = true; only `aws login` expiry is supported", err)
 		}
+	}
+}
+
+func TestLoginCommand(t *testing.T) {
+	if got := LoginCommand("").Args; strings.Join(got, " ") != "aws login" {
+		t.Fatalf("LoginCommand(\"\").Args = %q", got)
+	}
+	if got := LoginCommand("pier").Args; strings.Join(got, " ") != "aws login --profile pier" {
+		t.Fatalf("LoginCommand(\"pier\").Args = %q", got)
 	}
 }
 

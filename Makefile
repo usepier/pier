@@ -1,25 +1,42 @@
-# pier is a single binary that embeds the in-VM supervisor (both linux
-# arches), so build the supervisors first.
-ASSETS := cmd/pier/assets
+.DEFAULT_GOAL := help
 
-# git describe in a checkout; release tarballs have no .git, so the brew
-# formula passes VERSION explicitly.
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+BIN ?= pier
 
-build: supervisors
-	go build -ldflags "-X main.version=$(VERSION)" -o pier ./cmd/pier
+CLI_TARGETS := build supervisors install test clean
+APP_TARGETS := generate ios ios-core ghostty-core macos ios-build macos-build \
+	ios-testflight macos-signed-archive macos-release notary-setup
+PREFIXED_APP_TARGETS := app-test app-clean
 
-supervisors:
-	GOOS=linux GOARCH=arm64 go build -o $(ASSETS)/pier-supervisor-linux-arm64 ./cmd/pier-supervisor
-	GOOS=linux GOARCH=amd64 go build -o $(ASSETS)/pier-supervisor-linux-amd64 ./cmd/pier-supervisor
+.PHONY: help $(CLI_TARGETS) $(APP_TARGETS) $(PREFIXED_APP_TARGETS)
 
-# install(1), not cp: it unlinks the target first (new inode), so replacing
-# the binary is safe even while a pier process is running (attached ssh).
-install: build
-	install -m 0755 pier $$(go env GOPATH)/bin/pier
+$(CLI_TARGETS):
+	@$(MAKE) --no-print-directory -C cmd $@ BIN="$(abspath $(BIN))"
 
-test:
-	go vet ./... && go test ./...
+$(APP_TARGETS):
+	@$(MAKE) --no-print-directory -C app $@
 
-clean:
-	rm -f pier $(ASSETS)/pier-supervisor-linux-*
+$(PREFIXED_APP_TARGETS):
+	@$(MAKE) --no-print-directory -C app $(patsubst app-%,%,$@)
+
+help:
+	@echo "CLI commands:"
+	@echo "  make build                 Build the CLI and embedded supervisors"
+	@echo "  make supervisors           Build the embedded Linux supervisors"
+	@echo "  make install               Install the CLI into GOPATH/bin"
+	@echo "  make test                  Vet and test the Go code"
+	@echo "  make clean                 Remove CLI build artifacts"
+	@echo ""
+	@echo "App commands:"
+	@echo "  make generate              Generate the Xcode project"
+	@echo "  make ios                   Build and run in the iOS Simulator"
+	@echo "  make macos                 Build and run on this Mac"
+	@echo "  make ios-core              Build the embedded Go XCFramework"
+	@echo "  make ghostty-core          Build the libghostty XCFramework"
+	@echo "  make ios-build             Build unsigned for an iOS device"
+	@echo "  make macos-build           Build unsigned for macOS"
+	@echo "  make ios-testflight        Export an App Store Connect IPA"
+	@echo "  make macos-signed-archive  Create a Developer ID archive"
+	@echo "  make macos-release         Sign, notarize, staple, and zip"
+	@echo "  make notary-setup          Save notarization credentials"
+	@echo "  make app-test              Run the native app tests"
+	@echo "  make app-clean             Remove native app build artifacts"
