@@ -21,6 +21,8 @@ jobs:
           fi
       - name: vet and test
         run: make test
+      - name: race detector
+        run: go test -race ./...
       # make, not go build: session creation fails at runtime if the
       # cross-compiled supervisors don't embed
       - name: build
