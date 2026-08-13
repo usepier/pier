@@ -98,17 +98,8 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 		progress(n)
 	}
 	for _, p := range pl.Pushes {
-		if err := d.scpTo(ctx, id, p.Local, p.Remote); err != nil {
-			if ctx.Err() != nil {
-				return nil, err
-			}
-			// One retry: the SSM tunnel can drop right as the instance
-			// settles ("lost connection" seconds after waitSSH passed).
-			progress("push interrupted — retrying")
-			time.Sleep(2 * time.Second)
-			if err := d.scpTo(ctx, id, p.Local, p.Remote); err != nil {
-				return nil, err
-			}
+		if err := d.push(ctx, id, p.Local, p.Remote, progress); err != nil {
+			return nil, err
 		}
 	}
 
@@ -135,6 +126,60 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 		InstanceType: d.InstanceType,
 		CostNote:     costNote(driver.StateRunning, d.InstanceType),
 	}, nil
+}
+
+// pushBackoff is the first pause between push attempts, doubling after each.
+// A var so tests can exercise the retry policy without sleeping through it.
+var pushBackoff = 2 * time.Second
+
+// push copies one payload file, retrying a connection that breaks under it.
+//
+// The window this covers is the worst one in a create: the instance exists
+// and is billing, but nothing on it is ours yet, so any failure here rolls
+// the whole thing back. Two things go wrong at this moment for reasons that
+// have nothing to do with the VM — the SSM tunnel drops as the instance
+// settles (seconds after waitSSH passed), and the laptop's own network
+// flaps, which the direct path feels as a dead route mid-transfer. Both heal
+// on their own in seconds. Neither deserves a destroyed instance, so a
+// transport failure demotes this instance to the tunnel and tries again
+// rather than handing the same broken path back to the retry.
+func (d *Driver) push(ctx context.Context, id, local, remote string, progress func(string)) error {
+	const attempts = 3
+	cp := func(ctx context.Context, id, local, remote string) error {
+		return d.scpTo(ctx, id, local, remote)
+	}
+	if d.scpFn != nil {
+		cp = d.scpFn
+	}
+	if progress == nil {
+		progress = func(string) {}
+	}
+	backoff := pushBackoff
+	var err error
+	for i := range attempts {
+		if err = cp(ctx, id, local, remote); err == nil {
+			return nil
+		}
+		// A cancelled create is the user's decision, not a flaky link.
+		if ctx.Err() != nil {
+			return err
+		}
+		if !transportBroken(err) {
+			return err // the remote refused it; retrying changes nothing
+		}
+		if i == attempts-1 {
+			break
+		}
+		d.demoteDirect(id)
+		progress("push interrupted — retrying over the tunnel")
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return err
 }
 
 // launch retries on IAM instance-profile propagation lag (the spike showed

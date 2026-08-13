@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -98,16 +99,56 @@ func Load() (Config, error) {
 	return c, nil
 }
 
+// Save writes the whole config, replacing whatever is on disk. It takes the
+// lock so a write can't interleave with another process's, but it does NOT
+// re-read first — so it reverts anything saved since this Config was loaded.
+// Use Update for anything that changes part of the config; Save is for the
+// setup wizard, which has just asked the user about all of it.
 func (c Config) Save() error {
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(Path(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	unlock, err := lockConfig()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(c)
+	defer unlock()
+	return c.write()
+}
+
+// write is Save without the lock, for callers already holding it.
+//
+// The file holds things no UI can put back: the baked-image map, the secrets
+// manifest, the Claude token. Truncate-then-encode meant a write that died
+// halfway left a short file that still parsed, and the previous contents were
+// gone either way. So: encode to memory first, keep the outgoing version as
+// .bak, and swap the new one in with a rename — a reader always sees one
+// whole version or the other, and the last one stays recoverable.
+func (c Config) write() error {
+	if err := os.MkdirAll(Dir(), 0o755); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+		return err
+	}
+	if old, err := os.ReadFile(Path()); err == nil && !bytes.Equal(old, buf.Bytes()) {
+		// Best-effort: a config that can't be backed up still saves.
+		_ = os.WriteFile(Path()+".bak", old, 0o600)
+	}
+	tmp, err := os.CreateTemp(Dir(), ".config-*.toml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op once the rename succeeds
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), Path())
 }
 
 // gcp reports whether the active driver is gcp-gce (anything else falls to

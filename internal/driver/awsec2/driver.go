@@ -61,6 +61,10 @@ type Driver struct {
 
 	callerARN string // cached
 
+	// scpFn overrides the file transfer push uses; nil means real scp. Tests
+	// set it to exercise the retry policy without a VM to copy to.
+	scpFn func(ctx context.Context, id, local, remote string) error
+
 	// direct-connect probe state (direct.go)
 	dmu       sync.Mutex
 	dprobe    map[string]directProbe

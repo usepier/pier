@@ -27,6 +27,11 @@ const (
 	StateParked   State = "parked"   // instance stopped, disk persists
 	StateDeleting State = "deleting" // destroy issued; the cloud is still removing it
 	StateDead     State = "dead"     // terminated/crashed outside our control
+	// StateFailed is a local tombstone, not a machine: the create died before
+	// the session existed and took its half-made instance with it. The row
+	// survives so a failed create leaves a trace instead of a silent gap in
+	// the list; `pier rm` (d in the TUI) dismisses it.
+	StateFailed State = "failed"
 )
 
 // Session is one instance + its persistent disk.
@@ -43,6 +48,12 @@ type Session struct {
 	InstanceType string    // provider machine type; feeds the TUI resize picker
 	Created      time.Time // session creation, not last boot — AGE must never go backward
 	CostNote     string    // honest money: "~$3-4/mo" parked, the type's hourly rate otherwise
+	// FailReason is why a StateFailed tombstone exists — the create error,
+	// verbatim. Empty for every real session.
+	FailReason string
+	// LogPath points a tombstone at its create log. Empty when the create ran
+	// in the foreground and its output went to the terminal instead.
+	LogPath string
 }
 
 // Machine is one row in the TUI's resize picker: a curated instance type
