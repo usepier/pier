@@ -160,7 +160,7 @@ func gitBundle(repo, sha, dst, ref string, thin bool) error {
 // adds, deletions, binary-safe — as one patch the bootstrap applies right
 // after checkout, so the session's working tree starts exactly as the
 // laptop's (staged edits arrive unstaged). Untracked files are
-// .pier-include's business. A clean tree writes nothing.
+// .pier/include's business. A clean tree writes nothing.
 func dirtyPatch(repoRoot, dst string) (bool, error) {
 	out, err := exec.Command("git", "-C", repoRoot, "diff", "--binary", "HEAD").Output()
 	if err != nil {

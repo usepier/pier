@@ -36,8 +36,8 @@ open decisions — TODOs in code point there. The short version:
   every install step is guarded so it no-ops when the image already has it.
   Guards must test something the stock image *lacks*.
 - **Images are toolchains, sessions are state.** `pier bake` and
-  `.pier-bake.sh` install tools; repo state (deps, migrations, env) belongs
-  in `.pier-setup.sh` at session boot. pier does not chase language
+  `.pier/bake.sh` install tools; repo state (deps, migrations, env) belongs
+  in `.pier/setup.sh` at session boot. pier does not chase language
   ecosystems in its default image.
 - **Failures are loud.** Setup outcomes, bake failures, unreachable
   sessions — every failure names itself and says where to look next.

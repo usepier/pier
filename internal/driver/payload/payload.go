@@ -1,9 +1,10 @@
 // Package payload assembles everything a new session VM receives: the
 // repo-transfer decision (github fetch, thin bundle, or full bundle), the
-// dirty-tracked patch, the files tar (secrets manifest + .pier-include extras
-// + session env), the cloud-init user-data, and the bootstrap script that
-// puts it all in place. Cloud-agnostic by construction — drivers launch,
-// push, and run; nothing here knows which cloud is on the other end.
+// dirty-tracked patch, the files tar (secrets manifest + .pier/include extras
+// + the selected .pier/setup.sh + session env), the cloud-init user-data, and
+// the bootstrap script that puts it all in place. Cloud-agnostic by
+// construction — drivers launch, push, and run; nothing here knows which
+// cloud is on the other end.
 package payload
 
 import (
@@ -105,7 +106,7 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 		if len(miss) > 1 {
 			name += fmt.Sprintf(" +%d more", len(miss)-1)
 		}
-		progress("not carrying " + name + " — env files travel only when .pier-include lists them")
+		progress("not carrying " + name + " — env files travel only when .pier/include lists them")
 	}
 	supPath := filepath.Join(dir, "pier-supervisor")
 	if err := os.WriteFile(supPath, supervisor, 0o755); err != nil {
