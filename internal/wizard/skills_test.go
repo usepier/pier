@@ -13,7 +13,8 @@ import (
 
 // TestInstallSkills covers the lifecycle: no agents → nothing to do,
 // claude only → claude gets the skill, re-run → no rewrite, stale copy →
-// refreshed, obsolete bundled file → removed, codex appears → codex gets it too.
+// refreshed, obsolete owned file → removed, user file → preserved, codex
+// appears → codex gets it too.
 func TestInstallSkills(t *testing.T) {
 	home := t.TempDir()
 	install := func() []string {
@@ -73,6 +74,19 @@ func TestInstallSkills(t *testing.T) {
 	if err := os.WriteFile(obsolete, []byte("removed from a later bundle"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	indexPath := filepath.Join(home, ".claude/skills", bundledSkillsIndex)
+	index, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index = append(index, "pier-onboard/obsolete.md\n"...)
+	if err := os.WriteFile(indexPath, index, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	customReference := filepath.Join(home, ".claude/skills/pier-onboard/custom.md")
+	if err := os.WriteFile(customReference, []byte("user managed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	customSkill := filepath.Join(home, ".claude/skills/custom/SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(customSkill), 0o755); err != nil {
 		t.Fatal(err)
@@ -85,6 +99,9 @@ func TestInstallSkills(t *testing.T) {
 	}
 	if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
 		t.Fatalf("obsolete bundled file remains: %v", err)
+	}
+	if b, err := os.ReadFile(customReference); err != nil || string(b) != "user managed" {
+		t.Fatalf("user reference inside bundled skill changed: %q, %v", b, err)
 	}
 	if b, err := os.ReadFile(customSkill); err != nil || string(b) != "user managed" {
 		t.Fatalf("sibling user skill changed: %q, %v", b, err)
@@ -126,6 +143,39 @@ func TestInstallSkillsReturnsErrorsBeforeManifestSave(t *testing.T) {
 	}
 	if slices.Contains(cfg.Secrets.Manifest, ".claude/skills") {
 		t.Fatalf("failed skill destination entered manifest: %q", cfg.Secrets.Manifest)
+	}
+}
+
+func TestOfferSkillsPersistsSuccessBeforeLaterFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, agent := range []string{".claude", ".codex"} {
+		if err := os.Mkdir(filepath.Join(home, agent), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex/skills"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Secrets.Manifest = []string{".claude/settings.json"}
+	err := offerSkills(bufio.NewReader(strings.NewReader("y\ny\n")), &cfg, home)
+	if err == nil {
+		t.Fatal("wizard ignored second skill installation failure")
+	}
+	if !slices.Contains(cfg.Secrets.Manifest, ".claude/skills") {
+		t.Fatalf("successful first install missing from manifest: %q", cfg.Secrets.Manifest)
+	}
+	if slices.Contains(cfg.Secrets.Manifest, ".codex/skills") {
+		t.Fatalf("failed second install entered manifest: %q", cfg.Secrets.Manifest)
+	}
+	saved, loadErr := config.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !slices.Contains(saved.Secrets.Manifest, ".claude/skills") {
+		t.Fatalf("successful first install was not saved: %q", saved.Secrets.Manifest)
 	}
 }
 
