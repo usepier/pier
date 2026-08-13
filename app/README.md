@@ -66,8 +66,9 @@ make ios-testflight APP_VERSION=0.2.0 BUILD_NUMBER=42
 ```
 
 The macOS GitHub artifact uses Developer ID, Hardened Runtime, Apple
-notarization, and stapling. Store notarization credentials once; the command
-prompts securely for an app-specific password and saves it in Keychain:
+notarization, stapling, and Sparkle signing. Store notarization credentials
+once; the command prompts securely for an app-specific password and saves it
+in Keychain:
 
 ```sh
 make notary-setup APPLE_ID=developer@example.com
@@ -77,6 +78,26 @@ make macos-release
 Use `NOTARY_PROFILE=name` or `TEAM_ID=XXXXXXXXXX` to override their inferred
 defaults. `make macos-signed-archive` performs the local Developer ID archive
 and signature verification without submitting anything to Apple.
+
+Sparkle checks `https://pier.kak.dev/appcast.xml`. Its private Ed25519 key is
+stored in the login Keychain under the `usepier` account and its public key is
+embedded in `Config/PierMacOS-Info.plist`. Do not create a replacement key for
+an existing release channel. Resolve the tools, then export the current key and
+import it on another Mac with:
+
+```sh
+make resolve-packages
+./.swift-packages/artifacts/sparkle/Sparkle/bin/generate_keys --account usepier -x /secure/path/pier-sparkle-key
+./.swift-packages/artifacts/sparkle/Sparkle/bin/generate_keys --account usepier -f /secure/path/pier-sparkle-key
+```
+
+`make macos-release` writes the notarized ZIP and a neighboring `.zip.sparkle`
+file under `dist/macos/`. The sidecar contains the `sparkle:edSignature` and
+`length` attributes the website must put on the appcast enclosure. The appcast
+must use the ZIP's monotonically increasing build number as `sparkle:version`
+and the marketing version as `sparkle:shortVersionString`. For CI, pass an
+exported key with `SPARKLE_PRIVATE_KEY_FILE=/secure/path` instead of using the
+Keychain; never commit that file.
 
 The run commands remain attached while the app is open and mirror logs to a
 timestamped file under the git-ignored `logs/` directory. Press Control-C to

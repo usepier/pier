@@ -2,5 +2,6 @@
 /pier-supervisor
 /bin/
 /dist/
+/app/.swift-packages/
 .DS_Store
 cmd/pier/assets/pier-supervisor-*

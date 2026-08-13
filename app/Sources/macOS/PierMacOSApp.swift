@@ -1,8 +1,14 @@
+import Sparkle
 import SwiftUI
 
 @main
 struct PierMacOSApp: App {
     @State private var model = PierAppModel(service: PierServiceFactory.make())
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
 
     var body: some Scene {
         Window("Pier", id: "main") {
@@ -15,6 +21,9 @@ struct PierMacOSApp: App {
         .defaultSize(width: 1120, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) {
+                PierCheckForUpdatesView(updater: updaterController.updater)
+            }
         }
 
         Settings {

@@ -21,6 +21,11 @@ settings:
     CLANG_ENABLE_MODULES: YES
     OTHER_LDFLAGS: $(inherited) -lc++
 
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.5
+
 targets:
   PierIOS:
     type: application
@@ -76,6 +81,7 @@ targets:
     dependencies:
       - framework: Frameworks/GhosttyKit.xcframework
         embed: false
+      - package: Sparkle
       - sdk: Metal.framework
       - sdk: QuartzCore.framework
       - sdk: CoreText.framework
@@ -88,10 +94,8 @@ targets:
         PRODUCT_NAME: Pier
         PRODUCT_BUNDLE_IDENTIFIER: com.pier.client
         PRODUCT_MODULE_NAME: PierMacOS
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Pier
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
-        INFOPLIST_KEY_LSMinimumSystemVersion: "15.0"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Config/PierMacOS-Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: Anchor
         CODE_SIGN_ENTITLEMENTS: Config/PierMacOS.entitlements
         ENABLE_HARDENED_RUNTIME: YES

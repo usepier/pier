@@ -3,7 +3,7 @@
 BIN ?= pier
 
 CLI_TARGETS := build supervisors install test clean
-APP_TARGETS := generate ios ios-core ghostty-core macos ios-build macos-build \
+APP_TARGETS := generate resolve-packages ios ios-core ghostty-core macos ios-build macos-build \
 	ios-testflight macos-signed-archive macos-release notary-setup
 PREFIXED_APP_TARGETS := app-test app-clean
 
@@ -28,6 +28,7 @@ help:
 	@echo ""
 	@echo "App commands:"
 	@echo "  make generate              Generate the Xcode project"
+	@echo "  make resolve-packages      Resolve Swift packages and Sparkle tools"
 	@echo "  make ios                   Build and run in the iOS Simulator"
 	@echo "  make macos                 Build and run on this Mac"
 	@echo "  make ios-core              Build the embedded Go XCFramework"
