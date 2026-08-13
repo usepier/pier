@@ -297,6 +297,15 @@ func (d *Driver) Resize(ctx context.Context, id, machineType string) error {
 	}
 	if _, err := d.gcloud(ctx, "compute", "instances", "set-machine-type", id,
 		"--zone", d.Zone, "--machine-type", machineType); err != nil {
+		// The type may not exist in this zone (arm families especially are
+		// region-sparse). Don't strand a running session stopped: restart it
+		// on its original type, best-effort.
+		if wasRunning {
+			if rerr := d.Resume(ctx, id); rerr != nil {
+				return fmt.Errorf("%w (restarting on the original type also failed: %v — run `pier resume`)", err, rerr)
+			}
+			return fmt.Errorf("resize failed; the session is back up on its original type: %w", err)
+		}
 		return err
 	}
 	if wasRunning {
