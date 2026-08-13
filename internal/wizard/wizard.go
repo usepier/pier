@@ -199,7 +199,21 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		fmt.Println(ui.Dim.Render("  = found " + e))
 	}
 
-	if err := cfg.Save(); err != nil {
+	// Write only what the wizard actually asked about. The prompts above can
+	// take minutes, and cfg was read before them — saving it wholesale would
+	// revert anything written meanwhile, including a `pier bake` finishing in
+	// another terminal. Untouched settings (disk size, connection mode, the
+	// baked-image maps) come from disk, not from this stale copy.
+	if _, err := config.Update(func(c *config.Config) error {
+		c.Driver = cfg.Driver
+		c.IdleTimeout = cfg.IdleTimeout
+		c.Secrets = cfg.Secrets
+		c.AWS.Profile, c.AWS.Region = cfg.AWS.Profile, cfg.AWS.Region
+		c.AWS.InstanceType, c.AWS.Subnet = cfg.AWS.InstanceType, cfg.AWS.Subnet
+		c.GCP.Project, c.GCP.Zone = cfg.GCP.Project, cfg.GCP.Zone
+		c.GCP.MachineType = cfg.GCP.MachineType
+		return nil
+	}); err != nil {
 		return err
 	}
 	fmt.Println(ui.Dim.Render("  wrote " + config.Path()))
@@ -240,8 +254,11 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		if err != nil {
 			return err
 		}
-		cfg.RecordBake(name, img)
-		if err := cfg.Save(); err != nil {
+		// Update, not Save: the bake just took minutes, and cfg predates it.
+		if _, err := config.Update(func(c *config.Config) error {
+			c.RecordBake(name, img)
+			return nil
+		}); err != nil {
 			return err
 		}
 		fmt.Println("  "+ui.Mark(true), "baked", img, "for", name)
