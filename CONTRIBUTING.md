@@ -67,11 +67,15 @@ are no prebuilt artifacts to manage.
 1. Make sure CI is green on main.
 2. Tag and push:
    `git tag -a vX.Y.Z -m "pier vX.Y.Z" && git push origin vX.Y.Z`.
-   The release workflow re-runs the checks and publishes the GitHub release.
-3. Bump the Homebrew formula in
-   [usepier/homebrew-tap](https://github.com/usepier/homebrew-tap):
-   point `url` at the new tag and update `sha256`
-   (`curl -sL <tarball-url> | shasum -a 256`).
+   The release workflow re-runs the checks, publishes the GitHub release,
+   and bumps the Homebrew formula in
+   [usepier/homebrew-tap](https://github.com/usepier/homebrew-tap) to the
+   new tag's tarball url and sha256.
+
+The tap push authenticates with the `HOMEBREW_TAP_TOKEN` repository secret,
+a fine-grained PAT with contents read/write on usepier/homebrew-tap (the
+default `GITHUB_TOKEN` cannot push across repositories). If it expires,
+mint a new one and update the secret.
 
 Versioning is semver. While pier is 0.x, breaking changes bump the minor
 version.

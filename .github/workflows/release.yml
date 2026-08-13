@@ -25,3 +25,33 @@ jobs:
         run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: usepier/homebrew-tap
+          # fine-grained PAT with contents read/write on the tap repo; the
+          # default GITHUB_TOKEN cannot push across repositories
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: bump formula to the released tag
+        run: |
+          url="https://github.com/usepier/pier/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          sed -i \
+            -e "s|^  url .*|  url \"${url}\"|" \
+            -e "s|^  sha256 .*|  sha256 \"${sha}\"|" \
+            homebrew-tap/Formula/pier.rb
+          # a formula reformat that dodges the sed patterns must fail here,
+          # not push a stale formula silently
+          grep -q "$sha" homebrew-tap/Formula/pier.rb
+      - name: push the tap bump
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "formula already at ${GITHUB_REF_NAME}, nothing to push"
+          else
+            git commit -am "pier ${GITHUB_REF_NAME#v}"
+            git push
+          fi
