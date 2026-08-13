@@ -14,7 +14,7 @@ import (
 )
 
 // Bake launches a throwaway instance with the exact session user-data, lets
-// cloud-init finish the harness install, runs the repo's .pier-bake.sh (if
+// cloud-init finish the harness install, runs the repo's .pier/bake.sh (if
 // any), and images the boot disk. Because every install step in the user-data
 // is guarded, sessions launched from the baked image skip straight past it —
 // cold create drops to boot + push time. Images are repo-specific: the hook
@@ -71,12 +71,12 @@ exit 1`
 		return "", fmt.Errorf("harness install did not complete: %w", err)
 	}
 	if spec.HookPath != "" {
-		fmt.Println(ui.Step("running .pier-bake.sh (output follows)"))
+		fmt.Println(ui.Step("running .pier/bake.sh (output follows)"))
 		if err := d.scpTo(ctx, id, spec.HookPath, "/tmp/pier-bake.sh", "-q"); err != nil {
 			return "", err
 		}
 		if err := d.sshStream(ctx, id, "bash /tmp/pier-bake.sh && rm -f /tmp/pier-bake.sh"); err != nil {
-			return "", fmt.Errorf(".pier-bake.sh failed — nothing baked: %w", err)
+			return "", fmt.Errorf(".pier/bake.sh failed — nothing baked: %w", err)
 		}
 	}
 	// Per-instance state must not leak into the image.

@@ -36,7 +36,7 @@ type AWS struct {
 	// used as a fallback, deregistered and cleared by the next `pier bake`.
 	BakedAMI string `toml:"baked_ami,omitempty"`
 	// BakedAMIs: repo basename -> image, written by `pier bake` (run from the
-	// repo). Each repo bakes its own image so .pier-bake.sh toolchains don't
+	// repo). Each repo bakes its own image so .pier/bake.sh toolchains don't
 	// bleed across projects.
 	BakedAMIs map[string]string `toml:"baked_amis,omitempty"`
 }
@@ -47,14 +47,14 @@ type GCP struct {
 	MachineType string `toml:"machine_type"`
 	DiskGiB     int    `toml:"disk_gib"`
 	// BakedImages: repo basename -> image, written by `pier bake` (run from
-	// the repo). Each repo bakes its own image so .pier-bake.sh toolchains
+	// the repo). Each repo bakes its own image so .pier/bake.sh toolchains
 	// don't bleed across projects.
 	BakedImages map[string]string `toml:"baked_images,omitempty"`
 }
 
 type Secrets struct {
 	// Manifest: files/dirs under $HOME copied one-way into each session's
-	// home at create. Repo files listed in a repo-root .pier-include travel
+	// home at create. Repo files listed in .pier/include travel
 	// additionally (uncommitted tracked edits ride separately, as a patch).
 	Manifest []string `toml:"manifest"`
 	// ClaudeOAuthToken: from `claude setup-token` (macOS Keychain escape

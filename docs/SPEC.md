@@ -19,9 +19,9 @@ pier                    # TUI: sessions + states; pick one to reattach (~30-60s 
 ```
 
 A session comes prepacked with: the repo on a fresh branch, the dev
-environment (repo's `.pier-setup.sh`, run automatically), the user's secrets
-(one-way copy from the laptop), and both agent harnesses installed. Everything
-else is bloat.
+environment (repo's `.pier/setup.sh`, run automatically), the user's
+secrets (one-way copy from the laptop), and both agent harnesses installed.
+Everything else is bloat.
 
 **Hard requirements:** runs on AWS *and* GCP easily; scale-to-(near)zero with
 pick-back-up; one-command TUI; one-time wizard setup; teams share an account
@@ -185,7 +185,7 @@ A session either exists fully set up or not at all — no half-states:
 
 - The create's **last act** is a `pier:ready` tag on the instance (written
   after the VM-side bootstrap touches `~/.pier-bootstrapped`; the marker
-  stays as the raw-ssh backstop, before the async `.pier-setup.sh`
+  stays as the raw-ssh backstop, before the async `.pier/setup.sh`
   finishes). EC2 reports `running` well before the session is usable — SSM
   registration alone lags ~30s — so ls/TUI read running-without-the-tag as
   `creating`: truthful state from the first second, no probe, no SSM
@@ -258,6 +258,12 @@ Targets: **create → attached 60–90s; resume → attached ~30s** (measured
 numbers in §14; GCP runs about a minute behind AWS on each — GCE stop/start
 and the IAP tunnel are simply slower).
 
+Repo-specific Pier config is committed under `.pier/`; the directory must not
+be ignored. Create reads `.pier/include` on the laptop, `.pier/setup.sh`
+arrives with the git checkout, and bake reads `.pier/bake.sh` directly. Loose
+local files named by `.pier/include` stay protected by the repository's
+`.gitignore`.
+
 1. **`pier bake`** — prebaked **per-repo** image: agent user, tmux, git, gh,
    docker (with compose + buildx — docker.io alone is the bare engine; the
    daemon runs userns-remapped to agent, so container-root writes on bind
@@ -266,9 +272,9 @@ and the IAP tunnel are simply slower).
    files), make,
    claude + codex, headless chromium (playwright build + system
    deps, for browser MCPs/skills), supervisor preinstalled — plus whatever
-   the repo's `.pier-bake.sh` installs on top (run on the bake instance as
+   the repo's `.pier/bake.sh` installs on top (run on the bake instance as
    agent with passwordless sudo, no repo checkout present: toolchains like
-   pnpm/python belong here, repo state in `.pier-setup.sh`; a failed hook
+   pnpm/python belong here, repo state in `.pier/setup.sh`; a failed hook
    aborts the bake). Pier deliberately doesn't chase language ecosystems in
    the default image — the hook is the user's channel. Images are keyed by
    repo basename in config (`[aws.baked_amis]` / `[gcp.baked_images]`),
@@ -279,9 +285,9 @@ and the IAP tunnel are simply slower).
    a repo; `pier bake` refreshes it.
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
-   `.pier-setup.sh` runs asynchronously in a background tmux window while you
+   `.pier/setup.sh` runs asynchronously in a background tmux window while you
    type to the agent — it starts only after the checkout, dirty patch, and
-   `.pier-include` extras are all in place. `PIER_SETUP_SCRIPT`
+   `.pier/include` extras are all in place. `PIER_SETUP_SCRIPT`
    points it at a different script — relative to the repo root or `~` —
    which travels in the tar and takes precedence over the repo's own.
    The outcome is never silent: the window writes `~/.pier-setup.status`
@@ -313,7 +319,7 @@ and the IAP tunnel are simply slower).
    session's working tree starts exactly as the laptop's, staged edits
    arriving unstaged. (Only when the session's base is the laptop's HEAD; a
    session created off another commit carries no dirty state.) Untracked and
-   ignored files travel **only** when a repo-root **`.pier-include`** names
+   ignored files travel **only** when **`.pier/include`** names
    them: one path or glob per line, matched against the disk with no
    git-status distinction — listed = travels, extracted after checkout +
    patch so listed content wins. Directly matched file symlinks are
@@ -330,7 +336,7 @@ quota polling.
 One-way copy from the laptop at create; never stored anywhere else, never
 written back. Sources (wizard-detected, confirmed into the manifest):
 
-- repo files named by a repo-root `.pier-include` (path or glob per line) —
+- repo files named by `.pier/include` (path or glob per line) —
   the **only** loose-file channel: nothing untracked or ignored ships without
   a line here (env files included; the create warns about ones left behind).
   Directly matched file symlinks carry their target contents under the link's

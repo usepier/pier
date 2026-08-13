@@ -867,7 +867,7 @@ func cmdBake() {
 	fmt.Printf("%s %s\n", ui.Bold.Render("baking "+name),
 		ui.Dim.Render("(one temporary instance ~5 min, then an image — ~$1-2/mo storage)"))
 	if hook != "" {
-		fmt.Println(ui.Step(".pier-bake.sh found — its toolchains bake in"))
+		fmt.Println(ui.Step(".pier/bake.sh found — its toolchains bake in"))
 	}
 	// This bake supersedes the repo's previous image (and on aws-ec2, once
 	// per config, the legacy shared one).

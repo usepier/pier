@@ -161,8 +161,8 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// shell variables must survive rendering escaped — they belong to the
 		// tmux window's bash, not to the bootstrap shell.
 		`echo running > ~/.pier-setup.status`,
-		// Runs on presence via bash: a committed 0644 .pier-setup.sh (git
-		// only carries +x when the author set it) must not skip silently.
+		// Runs on presence via bash: a 0644 .pier/setup.sh must not skip
+		// silently.
 		`if [ -f "$setup" ]; then`,
 		`bash $setup 2>&1`,
 		// The cloud-init wait must guard on binaries the stock image LACKS
@@ -178,8 +178,9 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// The tmux server must start through sudo, which re-runs initgroups:
 		// the bootstrap's own login predates cloud-init's usermod -aG docker
 		// on stock images, and every window inherits groups from the server
-		// (docker.sock denied in .pier-setup.sh otherwise).
+		// (docker.sock denied in .pier/setup.sh otherwise).
 		`sudo -u agent tmux new-session -d -s main`,
+		`setup=./.pier/setup.sh`,
 	} {
 		if !strings.Contains(origin, want) {
 			t.Errorf("origin-mode bootstrap missing %q", want)
@@ -245,7 +246,7 @@ func TestRenderUserDataGuards(t *testing.T) {
 // Nothing loose ships by default — but the create warns about env files it
 // is NOT carrying (untracked or ignored, any depth), minus wholly-ignored
 // dirs (node_modules fixtures), tracked ones (they arrive with the fetch),
-// and whatever .pier-include already carries.
+// and whatever .pier/include already carries.
 func TestEnvFilesNotCarried(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
@@ -276,7 +277,7 @@ func TestEnvFilesNotCarried(t *testing.T) {
 	git("add", ".gitignore", "apps/api/.env.example")
 
 	if files := pierIncludeFiles(root); files != nil {
-		t.Errorf("no .pier-include must mean nothing loose ships, got %v", files)
+		t.Errorf("no .pier/include must mean nothing loose ships, got %v", files)
 	}
 	got := envFilesNotCarried(root, nil)
 	want := []string{".env", "apps/api/.env", "apps/api/.env.local"}
@@ -291,7 +292,7 @@ func TestEnvFilesNotCarried(t *testing.T) {
 }
 
 // Uncommitted work on tracked files — edits and staged adds — travels as one
-// patch; untracked files don't (that's .pier-include's channel). A clean
+// patch; untracked files don't (that's .pier/include's channel). A clean
 // tree writes no patch at all.
 func TestDirtyPatch(t *testing.T) {
 	root := t.TempDir()
@@ -339,7 +340,7 @@ func TestDirtyPatch(t *testing.T) {
 	}
 }
 
-// .pier-include is the only loose-file channel: lines are paths or globs,
+// .pier/include is the only loose-file channel: lines are paths or globs,
 // matched against the disk with no git-status distinction (the fixture isn't
 // even a git repo). Directory lines carry their whole subtree; escapes and
 // comments are dropped.
@@ -355,7 +356,10 @@ func TestPierInclude(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, ".pier-include"),
+	if err := os.MkdirAll(filepath.Join(root, ".pier"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".pier", "include"),
 		[]byte("# what travels\napps/*/.env*\nuploads/\nsecrets.txt\n../escape\n/etc/passwd\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +375,7 @@ func TestPierInclude(t *testing.T) {
 	want := []string{"apps/api/.env", "apps/api/.env.local", "apps/web/.env",
 		"secrets.txt", "uploads/fixtures/a.bin"}
 	if !slices.Equal(got, want) {
-		t.Errorf("with .pier-include = %v, want %v", got, want)
+		t.Errorf("with .pier/include = %v, want %v", got, want)
 	}
 }
 
@@ -398,7 +402,10 @@ func TestPierIncludeDereferencesDirectFileSymlinks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, ".pier-include"),
+	if err := os.MkdirAll(filepath.Join(root, ".pier"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".pier", "include"),
 		[]byte("apps/*/.env\nbroken\nsource-dir\nuploads/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +454,10 @@ func TestPierIncludeDereferencesDirectFileSymlinks(t *testing.T) {
 // Docker Desktop bind-mounts unreadable to every container on the VM.
 func TestFilesTarWidensCarriedModes(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".pier-include"), []byte(".env\nrun.sh\n"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".pier"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".pier", "include"), []byte(".env\nrun.sh\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("K=v\n"), 0o600); err != nil {

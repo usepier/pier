@@ -120,8 +120,8 @@ func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage 
 	return out
 }
 
-// pierIncludeFiles lists the repo files (repo-relative) named by a repo-root
-// .pier-include — the ONLY loose-file channel: nothing untracked or ignored
+// pierIncludeFiles lists the repo files (repo-relative) named by .pier/include
+// — the ONLY loose-file channel: nothing untracked or ignored
 // ships without a line here (tracked content arrives via the fetch, dirty
 // edits to it via the patch). One path or glob per line (relative to the
 // root; * ? [] per segment, no **), # comments, a directory line carries its
@@ -132,7 +132,7 @@ func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage 
 // distinction, and the tar extracts after checkout + patch, so listed content
 // wins. No file, or an empty one, means nothing extra travels.
 func pierIncludeFiles(repoRoot string) []string {
-	b, err := os.ReadFile(filepath.Join(repoRoot, ".pier-include"))
+	b, err := os.ReadFile(filepath.Join(repoRoot, ".pier", "include"))
 	if err != nil {
 		return nil
 	}
@@ -214,11 +214,10 @@ func envFilesNotCarried(repoRoot string, carried []string) []string {
 	return miss
 }
 
-// setupScriptOverride resolves PIER_SETUP_SCRIPT: the named
-// script travels in the tar and the bootstrap runs it instead of the repo's
-// ./.pier-setup.sh. Relative paths resolve against the repo root, ~ against
-// home. A set-but-missing path returns a warning, not an error — a typo'd
-// env var shouldn't brick creates, but it must not be silent either.
+// setupScriptOverride resolves PIER_SETUP_SCRIPT. Relative overrides resolve
+// against the repo root, ~ against home. A set-but-missing override warns and
+// falls back to the repo's .pier/setup.sh — a typo shouldn't brick creates,
+// but it must not be silent.
 func setupScriptOverride(repoRoot string) (path, warn string) {
 	v := os.Getenv("PIER_SETUP_SCRIPT")
 	if v == "" {
@@ -231,16 +230,16 @@ func setupScriptOverride(repoRoot string) (path, warn string) {
 		v = filepath.Join(repoRoot, v)
 	}
 	if fi, err := os.Stat(v); err != nil || !fi.Mode().IsRegular() {
-		return "", "PIER_SETUP_SCRIPT: " + v + " not found — running the repo's .pier-setup.sh (if any) instead"
+		return "", "PIER_SETUP_SCRIPT: " + v + " not found — running the repo's .pier/setup.sh (if any) instead"
 	}
 	return v, ""
 }
 
 // buildFilesTar packs, into one tar: manifest files/dirs under $HOME (prefix
-// home/), the repo files named by .pier-include (relative paths kept, prefix
-// repo/), the PIER_SETUP_SCRIPT override (as home/.config/pier/setup.sh),
-// and a generated home/.config/pier/env with the session tokens. The
-// bootstrap extracts the two prefixes to the right places.
+// home/), the repo files named by .pier/include (relative paths kept, prefix
+// repo/), a PIER_SETUP_SCRIPT override (as home/.config/pier/setup.sh), and a
+// generated home/.config/pier/env with the session tokens. The bootstrap
+// extracts the two prefixes to the right places.
 func buildFilesTar(dst string, manifest []string, repoRoot string, env map[string]string, setupSrc string) error {
 	f, err := os.Create(dst)
 	if err != nil {
@@ -324,7 +323,8 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 	}
 
 	if setupSrc != "" {
-		// 0755 regardless of the source's mode: the bootstrap gates on -x.
+		// Normalize the override mode even though the bootstrap deliberately
+		// invokes it with bash and only gates on presence.
 		if err := addFile(setupSrc, "home/.config/pier/setup.sh", 0o755); err != nil {
 			return err
 		}

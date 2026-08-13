@@ -241,16 +241,19 @@ resuming checkout-flow (~20-60s)...
 
 ## Making your repo pier-ready
 
-Three optional files at the repo root, all committed:
+Pier uses one committed `.pier/` directory with three optional files:
 
 | File | Runs / read | Contains |
 |---|---|---|
-| `.pier-setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
-| `.pier-include` | At create | Untracked/ignored files to carry (env files, local certs) |
-| `.pier-bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
+| `.pier/setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
+| `.pier/include` | At create | Untracked/ignored files to carry (env files, local certs) |
+| `.pier/bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
+
+Do not ignore `.pier/`: it is shared project configuration. Loose local files
+listed in `.pier/include`, such as `.env`, should remain in `.gitignore`.
 
 ```bash
-# .pier-setup.sh (cwd is the repo root, logs to ~/.pier-setup.log)
+# .pier/setup.sh (cwd is the repo root, logs to ~/.pier-setup.log)
 set -euo pipefail
 pnpm install
 docker compose up -d
@@ -262,7 +265,7 @@ fully detach with `setsid cmd </dev/null >log 2>&1 &` or it dies when the
 setup window closes.
 
 ```
-# .pier-include: one path or glob per line (no **), a directory carries its subtree
+# .pier/include: one path or glob per line (no **), a directory carries its subtree
 .env
 apps/*/.env.local
 ```
@@ -272,7 +275,7 @@ contents arrive as a regular file at the symlink's repository path. Directory
 symlinks are never followed.
 
 ```bash
-# .pier-bake.sh (agent user, passwordless sudo, NO repo checkout yet)
+# .pier/bake.sh (agent user, passwordless sudo, NO repo checkout yet)
 set -euo pipefail
 sudo corepack enable
 echo COREPACK_ENABLE_DOWNLOAD_PROMPT=0 | sudo tee -a /etc/environment >/dev/null
@@ -283,8 +286,8 @@ COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack install -g pnpm@10.6.5
 
 Don't write those files by hand. This repo ships
 [`skills/pier-onboard`](skills/pier-onboard/SKILL.md), a skill that teaches
-a coding agent to inspect your repo and write all three files with the right
-boundaries.
+a coding agent to inspect your repo, write all three files with the right
+boundaries, and keep loose local files protected by `.gitignore`.
 
 ```
 cp -r pier/skills/pier-onboard ~/.claude/skills/    # or your repo's .claude/skills/
@@ -317,7 +320,7 @@ when you do).
 Secrets travel once, at create, as an explicit manifest:
 
 - `~/.claude`, `~/.codex`, tokens (`gh auth token`, `claude setup-token`)
-- the repo files your `.pier-include` lists
+- the repo files your `.pier/include` lists
 
 Nothing loose ships by default. The create prints which env files it is
 *not* carrying. The VM never holds cloud credentials. On AWS its instance
@@ -365,7 +368,7 @@ A stock create installs the harnesses under cloud-init, which takes minutes.
 Baking pays that cost once:
 
 ```
-pier bake    # one throwaway instance + your .pier-bake.sh, snapshotted as an image
+pier bake    # one throwaway instance + your .pier/bake.sh, snapshotted as an image
 ```
 
 Creates from a baked image drop to a minute or two. Images are keyed to
@@ -374,8 +377,8 @@ supersedes the old image, and `pier teardown` sweeps them all by tag.
 
 ### Setup that can't fail silently
 
-`.pier-setup.sh` runs async in its own tmux window on first boot, after the
-checkout, dirty patch, and `.pier-include` files are in place. The outcome
+`.pier/setup.sh` runs async in its own tmux window on first boot, after the
+checkout, dirty patch, and `.pier/include` files are in place. The outcome
 always surfaces:
 
 - `pier ls` and the TUI show `(setup running)` or `(setup failed)`
@@ -435,7 +438,7 @@ The cloud says "running" long before a session is usable, so pier doesn't:
 - **GCP wakes slower than AWS.** Resume to attached is about a minute
   against EC2's ~20s, and a running resize takes about two minutes. GCE
   stop/start simply takes longer.
-- **Bake hooks live only in baked images.** A repo with a `.pier-bake.sh`
+- **Bake hooks live only in baked images.** A repo with a `.pier/bake.sh`
   that was never baked runs stock. Setup then fails loudly, not silently.
 - **Resize stays within the CPU arch** (t4g to t4g). Providers only allow
   type changes on stopped instances.
@@ -502,7 +505,7 @@ The choices contributors should know before proposing changes
   install step is a no-op when the image already has it. Baking is an
   optimization, never a requirement.
 - **Images are toolchains, sessions are state.** `pier bake` installs
-  tools. Deps, migrations, and env belong to `.pier-setup.sh` at boot.
+  tools. Deps, migrations, and env belong to `.pier/setup.sh` at boot.
 - **Dirty state travels as a git patch,** not rsync. Binary-safe,
   reviewable, applied atomically after checkout.
 - **Truth over optimism in states.** The ready tag, the setup status file,
