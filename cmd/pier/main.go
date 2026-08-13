@@ -94,6 +94,7 @@ var helpSections = []helpSection{
 		items: []helpItem{
 			{"pier setup", "run the first-time cloud setup"},
 			{"pier setup --print-admin", "print setup commands for a cloud admin"},
+			{"pier skills", "install or refresh the bundled agent skills"},
 			{"pier doctor", "check the environment and cloud account"},
 			{"pier bake", "prebake this repo's session image"},
 			{"pier teardown", "remove all pier groundwork from the account"},
