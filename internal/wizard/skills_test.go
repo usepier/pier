@@ -71,16 +71,26 @@ func TestInstallSkills(t *testing.T) {
 	}
 
 	obsolete := filepath.Join(home, ".claude/skills/pier-onboard/obsolete.md")
-	if err := os.WriteFile(obsolete, []byte("removed from a later bundle"), 0o644); err != nil {
+	obsoleteContent := []byte("removed from a later bundle")
+	if err := os.WriteFile(obsolete, obsoleteContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	indexPath := filepath.Join(home, ".claude/skills", bundledSkillsIndex)
-	index, err := os.ReadFile(indexPath)
+	index, err := readBundledSkillsIndex(filepath.Dir(indexPath))
 	if err != nil {
 		t.Fatal(err)
 	}
-	index = append(index, "pier-onboard/obsolete.md\n"...)
-	if err := os.WriteFile(indexPath, index, 0o644); err != nil {
+	index["pier-onboard/obsolete.md"] = bundledSkillHash(obsoleteContent)
+	replacement := filepath.Join(home, ".claude/skills/pier-onboard/replaced.md")
+	index["pier-onboard/replaced.md"] = bundledSkillHash([]byte("old bundled content"))
+	if err := os.WriteFile(replacement, []byte("user replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	encodedIndex, err := marshalBundledSkillsIndex(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(indexPath, encodedIndex, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	customReference := filepath.Join(home, ".claude/skills/pier-onboard/custom.md")
@@ -99,6 +109,9 @@ func TestInstallSkills(t *testing.T) {
 	}
 	if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
 		t.Fatalf("obsolete bundled file remains: %v", err)
+	}
+	if b, err := os.ReadFile(replacement); err != nil || string(b) != "user replacement" {
+		t.Fatalf("user replacement of obsolete file changed: %q, %v", b, err)
 	}
 	if b, err := os.ReadFile(customReference); err != nil || string(b) != "user managed" {
 		t.Fatalf("user reference inside bundled skill changed: %q, %v", b, err)
@@ -208,6 +221,41 @@ func TestOfferSkillsPersistsSuccessBeforeLaterFailure(t *testing.T) {
 	}
 	if !slices.Contains(saved.Secrets.Manifest, ".claude/skills") {
 		t.Fatalf("successful first install was not saved: %q", saved.Secrets.Manifest)
+	}
+}
+
+func TestOfferSkillsPersistsCurrentSkillWhenIndexFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.Mkdir(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallSkills(home, []string{".claude"}); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := filepath.Join(home, ".claude/skills", bundledSkillsIndex)
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(indexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Secrets.Manifest = []string{".claude/settings.json"}
+	err := offerSkills(bufio.NewReader(strings.NewReader("y\n")), &cfg, home)
+	if err == nil {
+		t.Fatal("wizard ignored ownership index failure")
+	}
+	if !slices.Contains(cfg.Secrets.Manifest, ".claude/skills") {
+		t.Fatalf("current skill missing from manifest after index failure: %q", cfg.Secrets.Manifest)
+	}
+	saved, loadErr := config.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !slices.Contains(saved.Secrets.Manifest, ".claude/skills") {
+		t.Fatalf("current skill was not saved after index failure: %q", saved.Secrets.Manifest)
 	}
 }
 
