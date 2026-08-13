@@ -49,35 +49,64 @@ func supervisorBin(arch string) ([]byte, error) {
 	return b, nil
 }
 
-const usage = `usage:
-  pier                      interactive session list
-  pier <branch> [base]      new session off base (default HEAD), attach
-      -d, --detach            create without attaching
-      --idle <dur|never>      idle self-park timeout (default from config)
-      --cap <dur|never>       unattended runaway cap
-      --no-park               shorthand for --idle never
-  pier ls                   list sessions
-  pier attach <session>     attach (auto-resumes if parked)
-  pier logs <session>       show the setup script log (-f follows)
-  pier mcp login <session>  authenticate every MCP server that still needs it
-                            (one browser approval each; add a server name to redo one)
-  pier proxy                every running session as <session>.pier — open ports
-                            mirrored live on the name and on localhost, dev
-                            servers accelerated (macOS; one sudo)
-  pier port <session> <port> [port...]  forward ports by hand until ctrl-c
-                            (3000 = same both sides, 8080:3000 = local:session)
-  pier rm <session> [-f]    destroy session and its disk
-  pier keep <session>       pin: disable idle self-park
-  pier resize <session> <type>  grow/shrink the VM (running: ~1-2 min park+resume; same arch only)
-  pier setup                first-run wizard (creates cloud groundwork)
-      --print-admin           print the admin-runnable setup commands instead
-  pier skills               install/refresh the bundled agent skills
-                            (~/.claude/skills + ~/.codex/skills)
-  pier doctor               environment + account checks
-  pier bake                 prebake this repo's session image (~1-2 min creates)
-  pier teardown             remove all pier groundwork from the account
-  pier version              print the pier version
-`
+type helpItem struct {
+	command     string
+	description string
+}
+
+type helpSection struct {
+	title string
+	items []helpItem
+}
+
+var helpSections = []helpSection{
+	{
+		title: "Create session",
+		items: []helpItem{
+			{"pier <branch> [base]", "create from base (default HEAD), then attach"},
+			{"-d, --detach", "create without attaching"},
+			{"--idle <dur|never>", "set the idle self-park timeout (default from config)"},
+			{"--cap <dur|never>", "set the unattended runaway cap"},
+			{"--no-park", "disable idle self-parking"},
+		},
+	},
+	{
+		title: "Manage sessions",
+		items: []helpItem{
+			{"pier ls", "list sessions"},
+			{"pier attach <session>", "attach, resuming first if parked"},
+			{"pier logs <session> [-f]", "show or follow the setup log"},
+			{"pier keep <session>", "disable idle self-parking"},
+			{"pier resize <session> <type>", "change VM size (same architecture only)"},
+			{"pier rm <session> [-f]", "destroy a session and its disk"},
+		},
+	},
+	{
+		title: "Forwarding & access",
+		items: []helpItem{
+			{"pier proxy", "map sessions to <session>.pier and localhost (macOS)"},
+			{"pier port <session> <port...>", "forward ports manually (for example 8080:3000)"},
+			{"pier mcp login <session> [server]", "authenticate pending MCP servers in the browser"},
+		},
+	},
+	{
+		title: "Setup & maintenance",
+		items: []helpItem{
+			{"pier setup", "run the first-time cloud setup"},
+			{"pier setup --print-admin", "print setup commands for a cloud admin"},
+			{"pier doctor", "check the environment and cloud account"},
+			{"pier bake", "prebake this repo's session image"},
+			{"pier teardown", "remove all pier groundwork from the account"},
+		},
+	},
+	{
+		title: "General",
+		items: []helpItem{
+			{"pier version", "print the pier version"},
+			{"pier help", "show this help"},
+		},
+	},
+}
 
 func main() {
 	args := os.Args[1:]
@@ -126,7 +155,16 @@ func main() {
 func printUsage() {
 	fmt.Println("\n " + ui.Title.Render("\u2693 pier") +
 		ui.Dim.Render(" \u2014 coding agent sessions as park-when-idle micro-VMs on your own cloud") + "\n")
-	fmt.Print(usage)
+	command := fmt.Sprintf("%-35s", "pier")
+	fmt.Printf("   %s  %s\n", ui.Accent.Render(command), "open the interactive session list")
+	for _, section := range helpSections {
+		fmt.Println()
+		fmt.Println(" " + ui.Bold.Render(section.title))
+		for _, item := range section.items {
+			command = fmt.Sprintf("%-35s", item.command)
+			fmt.Printf("   %s  %s\n", ui.Accent.Render(command), item.description)
+		}
+	}
 }
 
 func fatal(err error) {
