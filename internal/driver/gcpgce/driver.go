@@ -328,7 +328,7 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 	_ = os.Remove(d.keyPath(id) + ".pub")
 	// Drop the host key: a same-named recreate (same session name, same
 	// principal) would otherwise trip a known_hosts mismatch.
-	hk := exec.Command("ssh-keygen", "-R", id, "-f", d.StateDir+"/known_hosts")
+	hk := execCommand("ssh-keygen", "-R", id, "-f", d.StateDir+"/known_hosts")
 	hk.Stdout, hk.Stderr = nil, nil
 	_ = hk.Run()
 	return nil
@@ -353,7 +353,7 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
 exec tmux new-session -A -s main`
 	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
 }
@@ -372,7 +372,7 @@ func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port in
 		server, port)
 	args := append(d.sshOpts(id),
 		"-t", "-L", fmt.Sprintf("%d:localhost:%d", port, port), "agent@"+id, remote)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
 }
@@ -386,7 +386,7 @@ func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]i
 		args = append(args, "-L", fmt.Sprintf("%d:localhost:%d", p[0], p[1]))
 	}
 	args = append(args, "-N", "agent@"+id)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
 }
