@@ -149,6 +149,11 @@ func transportBroken(err error) bool {
 		"no route to host",
 		"connection reset",
 		"connection closed",
+		// Refused mid-create means sshd bounced, not that the port is shut:
+		// waitSSH has already seen it answer. probeDirect treats a refusal
+		// the same way (retry almost immediately), so failing the push on one
+		// would destroy an instance over a service restart.
+		"connection refused",
 		"connection timed out",
 		"operation timed out",
 		"broken pipe",

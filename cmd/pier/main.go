@@ -1102,9 +1102,10 @@ func cmdTUI() {
 // createLogPath is where a detached create's output lands. spawnCreate writes
 // it and the create itself reads it back to point its tombstone at the log —
 // so the formula lives here once rather than being re-derived on both sides.
+// It shares the graveyard's escaping, so feat/login and feat-login get their
+// own logs instead of overwriting each other's.
 func createLogPath(branch string) string {
-	return filepath.Join(config.Dir(), "logs",
-		"create-"+strings.ReplaceAll(branch, "/", "-")+".log")
+	return filepath.Join(config.Dir(), "logs", "create-"+tombstone.FileStem(branch)+".log")
 }
 
 // listSessions is the one list every surface shows: the driver's real
