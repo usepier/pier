@@ -1,9 +1,10 @@
 // Package payload assembles everything a new session VM receives: the
 // repo-transfer decision (github fetch, thin bundle, or full bundle), the
-// dirty-tracked patch, the files tar (secrets manifest + .pier/include extras
-// + session env), the cloud-init user-data, and the bootstrap script that
-// puts it all in place. Cloud-agnostic by construction — drivers launch,
-// push, and run; nothing here knows which cloud is on the other end.
+// dirty-tracked patch, the files tar (secrets manifest + untracked repo files
+// + .pier/include extras + session env), the cloud-init user-data, and the
+// bootstrap script that puts it all in place. Cloud-agnostic by construction
+// — drivers launch, push, and run; nothing here knows which cloud is on the
+// other end.
 package payload
 
 import (
@@ -79,10 +80,12 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 			return nil, fmt.Errorf("bundling %s: %w", spec.Repo, err)
 		}
 	}
-	// Dirty tracked state travels only when the session's base IS the
-	// laptop's HEAD — branching a session off another commit and grafting
-	// today's edits onto it would be a lie about what that base contained.
+	// Local dirty state travels only when the session's base IS the laptop's
+	// HEAD — branching a session off another commit and grafting today's
+	// tracked edits or untracked files onto it would be a lie about what that
+	// base contained.
 	patch := ""
+	var untracked []string
 	if head, _ := gitOut(spec.Repo, "rev-parse", "HEAD"); head == sha {
 		p := filepath.Join(dir, "pier-dirty.patch")
 		switch ok, err := dirtyPatch(spec.Repo, p); {
@@ -91,21 +94,26 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 		case ok:
 			patch = p
 		}
+		untracked, err = untrackedFiles(spec.Repo)
+		if err != nil {
+			return nil, err
+		}
 	}
 	setupSrc, warn := setupScriptOverride(spec.Repo)
 	if warn != "" {
 		progress(warn)
 	}
+	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(spec.Repo))
 	filesTar := filepath.Join(dir, "pier-files.tar")
-	if err := buildFilesTar(filesTar, manifest, spec.Repo, env, setupSrc); err != nil {
+	if err := buildFilesTar(filesTar, manifest, spec.Repo, repoFiles, env, setupSrc); err != nil {
 		return nil, err
 	}
-	if miss := envFilesNotCarried(spec.Repo, pierIncludeFiles(spec.Repo)); len(miss) > 0 {
+	if miss := envFilesNotCarried(spec.Repo, repoFiles); len(miss) > 0 {
 		name := miss[0]
 		if len(miss) > 1 {
 			name += fmt.Sprintf(" +%d more", len(miss)-1)
 		}
-		progress("not carrying " + name + " — env files travel only when .pier/include lists them")
+		progress("not carrying " + name + " — ignored env files travel only when .pier/include lists them")
 	}
 	supPath := filepath.Join(dir, "pier-supervisor")
 	if err := os.WriteFile(supPath, supervisor, 0o755); err != nil {
@@ -135,6 +143,13 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 	if patch != "" {
 		p.Notes = append(p.Notes, "carrying your uncommitted edits to tracked files")
 		p.Pushes = append(p.Pushes, Push{patch, "/tmp/pier-dirty.patch"})
+	}
+	if len(untracked) > 0 {
+		label := "files"
+		if len(untracked) == 1 {
+			label = "file"
+		}
+		p.Notes = append(p.Notes, fmt.Sprintf("carrying %d untracked %s", len(untracked), label))
 	}
 	home, _ := os.UserHomeDir()
 	if names := OAuthRemotes(home, spec.Repo); len(names) > 0 {

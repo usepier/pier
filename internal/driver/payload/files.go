@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -120,17 +121,16 @@ func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage 
 	return out
 }
 
-// pierIncludeFiles lists the repo files (repo-relative) named by .pier/include
-// — the ONLY loose-file channel: nothing untracked or ignored
-// ships without a line here (tracked content arrives via the fetch, dirty
-// edits to it via the patch). One path or glob per line (relative to the
-// root; * ? [] per segment, no **), # comments, a directory line carries its
-// whole subtree. A file symlink directly matched by a line or glob is
-// dereferenced and carried as a regular file at the symlink's repo-relative
-// path; directory symlinks and nested symlinks discovered while walking a
-// directory are not followed. A listed path travels with no git-status
-// distinction, and the tar extracts after checkout + patch, so listed content
-// wins. No file, or an empty one, means nothing extra travels.
+// pierIncludeFiles lists the repo files (repo-relative) named by .pier/include.
+// It is the opt-in channel for ignored files; non-ignored untracked files
+// travel automatically. One path or glob per line (relative to the root;
+// * ? [] per segment, no **), # comments, a directory line carries its whole
+// subtree. A file symlink directly matched by a line or glob is dereferenced
+// and carried as a regular file at the symlink's repo-relative path; directory
+// symlinks and nested symlinks discovered while walking a directory are not
+// followed. A listed path travels with no git-status distinction, and the tar
+// extracts after checkout + patch, so listed content wins. No file, or an
+// empty one, means no explicit extras travel.
 func pierIncludeFiles(repoRoot string) []string {
 	b, err := os.ReadFile(filepath.Join(repoRoot, ".pier", "include"))
 	if err != nil {
@@ -182,32 +182,63 @@ func pierIncludeFiles(repoRoot string) []string {
 	return out
 }
 
-// envFilesNotCarried is the fail-loud affordance for "no default env
-// transfer": env files the tree has (untracked or ignored, any depth) that
-// the tar is NOT carrying. A session whose app dies on a missing env file
-// should have said so at create. Wholly-ignored dirs collapse (--directory)
-// so node_modules fixtures don't count; tracked ones arrive with the fetch.
+// untrackedFiles returns every non-ignored file Git sees as untracked. These
+// are local work just like edits to tracked files, so sessions created from
+// HEAD carry them automatically. --exclude-standard honors repository,
+// .git/info/exclude, and global ignore rules; ignored files remain available
+// only through the explicit .pier/include channel.
+func untrackedFiles(repoRoot string) ([]string, error) {
+	out, err := exec.Command("git", "-C", repoRoot, "ls-files", "-z", "--others", "--exclude-standard", "--").Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing untracked files: %w", err)
+	}
+	var files []string
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel == "" || strings.HasSuffix(rel, "/") || !filepath.IsLocal(rel) {
+			continue
+		}
+		files = append(files, rel)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func mergeRepoFiles(groups ...[]string) []string {
+	seen := map[string]bool{}
+	for _, group := range groups {
+		for _, rel := range group {
+			seen[rel] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for rel := range seen {
+		out = append(out, rel)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// envFilesNotCarried is the fail-loud affordance for ignored env files the
+// tar is NOT carrying. Non-ignored untracked files travel automatically; a
+// session whose app dies on an ignored, unlisted env file should have said so
+// at create. Wholly-ignored dirs collapse (--directory) so node_modules
+// fixtures don't count; tracked ones arrive with the fetch.
 func envFilesNotCarried(repoRoot string, carried []string) []string {
 	have := map[string]bool{}
 	for _, p := range carried {
 		have[p] = true
 	}
+	listing, err := gitOut(repoRoot, "ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory")
+	if err != nil {
+		return nil
+	}
 	var miss []string
-	for _, args := range [][]string{
-		{"ls-files", "-z", "-o", "--exclude-standard"},
-		{"ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory"},
-	} {
-		listing, err := gitOut(repoRoot, args...)
-		if err != nil {
-			return nil
+	for _, p := range strings.Split(listing, "\x00") {
+		if p == "" || strings.HasSuffix(p, "/") {
+			continue
 		}
-		for _, p := range strings.Split(listing, "\x00") {
-			if p == "" || strings.HasSuffix(p, "/") {
-				continue
-			}
-			if ok, _ := filepath.Match(".env*", filepath.Base(p)); ok && !have[p] {
-				miss = append(miss, p)
-			}
+		if ok, _ := filepath.Match(".env*", filepath.Base(p)); ok && !have[p] {
+			miss = append(miss, p)
 		}
 	}
 	sort.Strings(miss)
@@ -236,11 +267,11 @@ func setupScriptOverride(repoRoot string) (path, warn string) {
 }
 
 // buildFilesTar packs, into one tar: manifest files/dirs under $HOME (prefix
-// home/), the repo files named by .pier/include (relative paths kept, prefix
-// repo/), a PIER_SETUP_SCRIPT override (as home/.config/pier/setup.sh), and a
-// generated home/.config/pier/env with the session tokens. The bootstrap
-// extracts the two prefixes to the right places.
-func buildFilesTar(dst string, manifest []string, repoRoot string, env map[string]string, setupSrc string) error {
+// home/), selected repo files (non-ignored untracked files plus .pier/include
+// extras, relative paths kept under repo/), a PIER_SETUP_SCRIPT override (as
+// home/.config/pier/setup.sh), and a generated home/.config/pier/env with the
+// session tokens. The bootstrap extracts the two prefixes to the right places.
+func buildFilesTar(dst string, manifest []string, repoRoot string, repoFiles []string, env map[string]string, setupSrc string) error {
 	f, err := os.Create(dst)
 	if err != nil {
 		return err
@@ -304,7 +335,7 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 		}
 	}
 
-	for _, rel := range pierIncludeFiles(repoRoot) {
+	for _, rel := range repoFiles {
 		p := filepath.Join(repoRoot, rel)
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
 			// Widen owner-only modes: the VM's docker daemon is

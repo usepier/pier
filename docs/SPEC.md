@@ -260,9 +260,9 @@ and the IAP tunnel are simply slower).
 
 Repo-specific Pier config is committed under `.pier/`; the directory must not
 be ignored. Create reads `.pier/include` on the laptop, `.pier/setup.sh`
-arrives with the git checkout, and bake reads `.pier/bake.sh` directly. Loose
-local files named by `.pier/include` stay protected by the repository's
-`.gitignore`.
+arrives with the git checkout or the untracked-file payload, and bake reads
+`.pier/bake.sh` directly. Ignored local files named by `.pier/include` stay
+protected by the repository's `.gitignore`.
 
 1. **`pier bake`** — prebaked **per-repo** image: agent user, tmux, git, gh,
    docker (with compose + buildx — docker.io alone is the bare engine; the
@@ -286,8 +286,9 @@ local files named by `.pier/include` stay protected by the repository's
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
    `.pier/setup.sh` runs asynchronously in a background tmux window while you
-   type to the agent — it starts only after the checkout, dirty patch, and
-   `.pier/include` extras are all in place. `PIER_SETUP_SCRIPT`
+   type to the agent — it starts only after the checkout, dirty patch,
+   non-ignored untracked files, and `.pier/include` extras are all in place.
+   `PIER_SETUP_SCRIPT`
    points it at a different script — relative to the repo root or `~` —
    which travels in the tar and takes precedence over the repo's own.
    The outcome is never silent: the window writes `~/.pier-setup.status`
@@ -317,16 +318,16 @@ local files named by `.pier/include` stay protected by the repository's
    mode, **uncommitted edits to tracked files** ride along too, as one
    binary-safe patch (`git diff HEAD`) applied right after the checkout — the
    session's working tree starts exactly as the laptop's, staged edits
-   arriving unstaged. (Only when the session's base is the laptop's HEAD; a
-   session created off another commit carries no dirty state.) Untracked and
-   ignored files travel **only** when **`.pier/include`** names
+   arriving unstaged. Non-ignored untracked files ride in the files tar and
+   are extracted after checkout + patch. (Both happen only when the session's
+   base is the laptop's HEAD; a session created off another commit carries no
+   dirty state.) Ignored files travel **only** when **`.pier/include`** names
    them: one path or glob per line, matched against the disk with no
-   git-status distinction — listed = travels, extracted after checkout +
-   patch so listed content wins. Directly matched file symlinks are
-   dereferenced into regular files at their repo-relative paths; directory
-   symlinks are not followed. Nothing loose ships by default — no env
-   auto-transfer; the create prints which env files it is *not* carrying so
-   a missing one fails loud at create, not deep in `make dev`.
+   git-status distinction — listed = travels. Directly matched file symlinks
+   are dereferenced into regular files at their repo-relative paths;
+   directory symlinks are not followed. The create prints which ignored env
+   files it is *not* carrying so a missing one fails loud at create, not deep
+   in `make dev`.
 
 Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
 quota polling.
@@ -334,14 +335,13 @@ quota polling.
 ## 8. Secrets
 
 One-way copy from the laptop at create; never stored anywhere else, never
-written back. Sources (wizard-detected, confirmed into the manifest):
+written back. Sources:
 
-- repo files named by `.pier/include` (path or glob per line) —
-  the **only** loose-file channel: nothing untracked or ignored ships without
-  a line here (env files included; the create warns about ones left behind).
-  Directly matched file symlinks carry their target contents under the link's
-  repo-relative path. Tracked content arrives with the fetch, dirty edits to
-  it via the patch.
+- non-ignored untracked repo files, automatically, plus ignored files named by
+  `.pier/include` (path or glob per line). The create warns about ignored env
+  files left behind. Directly matched file symlinks carry their target
+  contents under the link's repo-relative path. Tracked content arrives with
+  the fetch, dirty edits to it via the patch.
 - `~/.codex/` (auth.json, config.toml, skills)
 - `~/.claude/` settings, `CLAUDE.md`, agents, skills
 - a GitHub credential for git push/PRs and private-repo fetch: `gh auth
