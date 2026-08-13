@@ -35,6 +35,11 @@ const (
 	// early boot drops packets instead of refusing them, and writing that
 	// off as a blocked network would lock the connection onto the tunnel.
 	directBootWindow = 3 * time.Minute
+	// How long a transfer that died mid-flight pins its instance to the
+	// tunnel. Long enough to outlast a VPN reconnect or a wifi handover
+	// (the usual causes), short enough that a session doesn't spend the rest
+	// of its life on the slow path for one blip.
+	directDemotion = 2 * time.Minute
 )
 
 type directProbe struct {
@@ -109,6 +114,52 @@ func (d *Driver) dropProbe(id string) {
 	d.dmu.Lock()
 	delete(d.dprobe, id)
 	d.dmu.Unlock()
+}
+
+// demoteDirect pins one instance to the SSM tunnel for a while.
+//
+// The pre-flight probe only proves the path was up a moment ago: it dials
+// once, caches the address for a full TTL, and every later connection trusts
+// that. So a connection that dies mid-transfer would otherwise be retried
+// over the exact same address that just failed — the cache hands it straight
+// back — and the tunnel this file advertises as the automatic fallback never
+// gets a turn. That is how a two-second flap on the laptop's network could
+// fail a create outright. Demotion is what makes the fallback real: the path
+// that just broke is taken out of service, and the retry rides the tunnel.
+func (d *Driver) demoteDirect(id string) {
+	d.dmu.Lock()
+	if d.dprobe == nil {
+		d.dprobe = map[string]directProbe{}
+	}
+	d.dprobe[id] = directProbe{ip: "", until: time.Now().Add(directDemotion)}
+	d.dmu.Unlock()
+}
+
+// transportBroken reports whether err is the connection itself failing rather
+// than the remote command exiting nonzero. Only the former says anything
+// about which path to use next; a remote command that fails would fail
+// identically over the tunnel.
+func transportBroken(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, m := range []string{
+		"network is unreachable", // the local route vanished (VPN flap)
+		"no route to host",
+		"connection reset",
+		"connection closed",
+		"connection timed out",
+		"operation timed out",
+		"broken pipe",
+		"host is down",
+		"host is unreachable",
+	} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
 }
 
 const directRuleDesc = "pier direct"
