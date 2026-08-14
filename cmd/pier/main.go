@@ -1200,7 +1200,7 @@ func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []to
 		}
 		sessions = append(sessions, driver.Session{
 			Name: r.Name, Repo: r.Repo, Branch: r.Branch, Driver: r.Driver,
-			User:  r.User,
+			User:  or(r.User, "unknown"),
 			State: driver.StateFailed, Created: r.When,
 			FailReason: r.Reason, LogPath: r.LogPath,
 			CostNote: "—", // nothing is running; nothing is being charged
