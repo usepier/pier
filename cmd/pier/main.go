@@ -1219,7 +1219,11 @@ func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []to
 func buryCreate(cfg config.Config, drv driver.Driver, branch, repo string, cause error) {
 	me, err := drv.Identity(context.Background())
 	if err != nil {
-		return
+		if or(cfg.Driver, "aws-ec2") == "gcp-gce" {
+			me = cfg.GCP.Project
+		} else {
+			me = or(cfg.AWS.Profile, "default")
+		}
 	}
 	rec := tombstone.Record{
 		Name: branch, Repo: filepath.Base(repo), Branch: branch,
