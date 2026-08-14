@@ -327,7 +327,7 @@ func cmdNew(args []string) {
 		// The instance is already gone (Create destroys its own wreckage), so
 		// leave a tombstone: without one this create vanishes without trace,
 		// and a detached create has no terminal to have shown the error in.
-		buryCreate(cfg, branch, repo, err)
+		buryCreate(cfg, drv, branch, repo, err)
 		fatal(err)
 	}
 	stop() // create done — ctrl-c back to its default for the prompt + attach
@@ -1177,12 +1177,7 @@ func listSessions(drv driver.Driver, all bool) ([]driver.Session, error) {
 			return nil, err
 		}
 	}
-	me, err := drv.Identity(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	merged, revived := mergeTombstones(sessions, mine, tombstone.List(config.Dir()), me)
+	merged, revived := mergeTombstones(sessions, mine, tombstone.List(config.Dir()))
 	for _, name := range revived {
 		tombstone.Dismiss(config.Dir(), name)
 	}
@@ -1193,7 +1188,7 @@ func listSessions(drv driver.Driver, all bool) ([]driver.Session, error) {
 // cloud has since answered for. A name that is live again means the create
 // was retried and worked, so its gravestone is stale — the user shouldn't
 // have to clear a row that the obvious next action already resolved.
-func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []tombstone.Record, me string) (merged []driver.Session, revived []string) {
+func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []tombstone.Record) (merged []driver.Session, revived []string) {
 	live := make(map[string]bool, len(mine))
 	for _, s := range mine {
 		live[s.Name] = true
@@ -1205,7 +1200,7 @@ func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []to
 		}
 		sessions = append(sessions, driver.Session{
 			Name: r.Name, Repo: r.Repo, Branch: r.Branch, Driver: r.Driver,
-			User:  me,
+			User:  r.User,
 			State: driver.StateFailed, Created: r.When,
 			FailReason: r.Reason, LogPath: r.LogPath,
 			CostNote: "—", // nothing is running; nothing is being charged
@@ -1217,10 +1212,14 @@ func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []to
 // buryCreate records a failed create so it leaves a trace in the list instead
 // of a silent gap. Best-effort: the create already failed and its own error is
 // what the user acts on — a graveyard write that fails must not mask it.
-func buryCreate(cfg config.Config, branch, repo string, cause error) {
+func buryCreate(cfg config.Config, drv driver.Driver, branch, repo string, cause error) {
+	me, err := drv.Identity(context.Background())
+	if err != nil {
+		me = "unknown"
+	}
 	rec := tombstone.Record{
 		Name: branch, Repo: filepath.Base(repo), Branch: branch,
-		Driver: or(cfg.Driver, "aws-ec2"), Reason: cause.Error(), When: time.Now(),
+		Driver: or(cfg.Driver, "aws-ec2"), User: me, Reason: cause.Error(), When: time.Now(),
 	}
 	if p := createLogPath(branch); fileExists(p) {
 		rec.LogPath = p
