@@ -271,7 +271,7 @@ func TestList(t *testing.T) {
 		"compute instances list": {Stdout: listJSON},
 	})
 
-	sessions, err := d.List(context.Background())
+	sessions, err := d.List(context.Background(), driver.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

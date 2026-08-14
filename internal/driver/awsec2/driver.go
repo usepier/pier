@@ -108,16 +108,22 @@ type ec2Instance struct {
 	} `json:"tags"`
 }
 
-func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
+func (d *Driver) List(ctx context.Context, opts driver.ListOptions) ([]driver.Session, error) {
 	me, err := d.user(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out, err := d.aws(ctx, "ec2", "describe-instances",
-		"--filters", "Name=tag:"+TagManaged+",Values=1", "Name=tag:"+TagUser+",Values="+me,
-		"Name=instance-state-name,Values=pending,running,stopping,stopped",
-		"--query", "Reservations[].Instances[].{id:InstanceId,state:State.Name,launch:LaunchTime,itype:InstanceType,tags:Tags}",
-		"--output", "json")
+	filters := []string{"Name=tag:" + TagManaged + ",Values=1"}
+	if !opts.All {
+		filters = append(filters, "Name=tag:"+TagUser+",Values="+me)
+	}
+	filters = append(filters, "Name=instance-state-name,Values=pending,running,stopping,stopped")
+
+	args := []string{"ec2", "describe-instances", "--filters"}
+	args = append(args, filters...)
+	args = append(args, "--query", "Reservations[].Instances[].{id:InstanceId,state:State.Name,launch:LaunchTime,itype:InstanceType,tags:Tags}", "--output", "json")
+
+	out, err := d.aws(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,9 +134,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	var sessions []driver.Session
 	for _, in := range raw {
 		s := driver.Session{ID: in.ID, User: me, Driver: d.Name(), InstanceType: in.IType}
+		owner := ""
 		ready := false
 		for _, t := range in.Tags {
 			switch t.Key {
+			case TagUser:
+				owner = t.Value
 			case TagSession:
 				s.Name = t.Value
 			case TagRepo:
@@ -144,6 +153,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 					s.Created = ts
 				}
 			}
+		}
+		if owner != "" {
+			s.User = owner
+		}
+		if !opts.All && owner != me {
+			continue
 		}
 		switch in.State {
 		case "pending":

@@ -118,7 +118,7 @@ func main() {
 	}
 	switch args[0] {
 	case "ls":
-		cmdLS()
+		cmdLS(args[1:])
 	case "attach":
 		cmdAttach(args[1:])
 	case "logs":
@@ -426,9 +426,13 @@ func waitReachable(drv driver.Driver, id string, timeout time.Duration) error {
 
 // --- ls / attach / rm / keep -----------------------------------------------------
 
-func cmdLS() {
+func cmdLS(args []string) {
+	fs := flag.NewFlagSet("ls", flag.ExitOnError)
+	all := fs.Bool("all", false, "")
+	fs.BoolVar(all, "a", false, "")
+	fs.Parse(args)
 	_, drv := loadDriver()
-	sessions, err := listSessions(drv)
+	sessions, err := listSessions(drv, *all)
 	if err != nil {
 		fatal(err)
 	}
@@ -437,10 +441,18 @@ func cmdLS() {
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
+	if *all {
+		fmt.Fprintln(w, "NAME\tREPO\tOWNER\tSTATE\tAGE\tCOST")
+	} else {
+		fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
+	}
 	anyStrained, anySetupFailed, anyFailedCreate := false, false, false
 	for _, s := range sessions {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.Created), s.CostNote)
+		if *all {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, s.User, stateLabel(s), age(s.Created), s.CostNote)
+		} else {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.Created), s.CostNote)
+		}
 		anyStrained = anyStrained || s.Strained
 		anySetupFailed = anySetupFailed || s.Setup == "failed"
 		anyFailedCreate = anyFailedCreate || s.State == driver.StateFailed
@@ -554,7 +566,7 @@ func age(t time.Time) string {
 }
 
 func match(drv driver.Driver, query string) driver.Session {
-	sessions, err := listSessions(drv)
+	sessions, err := listSessions(drv, false)
 	if err != nil {
 		fatal(err)
 	}
@@ -1067,7 +1079,7 @@ func cmdTUI() {
 			}
 			return q.Detail
 		},
-		Fetch:       func() ([]driver.Session, error) { return listSessions(drv) },
+		Fetch:       func() ([]driver.Session, error) { return listSessions(drv, false) },
 		AuthExpired: awsec2.LoginExpired,
 		Reauthenticate: func() *exec.Cmd {
 			args := []string{"login"}
@@ -1151,8 +1163,8 @@ func createLogPath(branch string) string {
 // sessions plus local tombstones for creates that died before becoming one.
 // A tombstone whose name came back as a live session (the retry worked) is
 // dropped here, so a successful re-create silently clears its own gravestone.
-func listSessions(drv driver.Driver) ([]driver.Session, error) {
-	sessions, err := drv.List(context.Background())
+func listSessions(drv driver.Driver, all bool) ([]driver.Session, error) {
+	sessions, err := drv.List(context.Background(), driver.ListOptions{All: all})
 	if err != nil {
 		return nil, err
 	}
