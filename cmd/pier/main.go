@@ -1198,7 +1198,7 @@ func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []to
 		live[s.Name] = true
 	}
 	for _, r := range recs {
-		if live[r.Name] && r.User == me {
+		if live[r.Name] && (r.User == me || r.User == "unknown" || r.User == "") {
 			revived = append(revived, r.Name)
 			continue
 		}
