@@ -108,6 +108,11 @@ type ec2Instance struct {
 	} `json:"tags"`
 }
 
+// Identity returns the caller's cloud identity.
+func (d *Driver) Identity(ctx context.Context) (string, error) {
+	return d.user(ctx)
+}
+
 func (d *Driver) List(ctx context.Context, opts driver.ListOptions) ([]driver.Session, error) {
 	me, err := d.user(ctx)
 	if err != nil {

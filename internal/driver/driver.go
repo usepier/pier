@@ -145,6 +145,9 @@ type Driver interface {
 	// List returns the caller's sessions (identity-filtered tags/labels), or all if opts.All is true.
 	List(ctx context.Context, opts ListOptions) ([]Session, error)
 
+	// Identity returns the provider-specific string identifying the caller.
+	Identity(ctx context.Context) (string, error)
+
 	// Machines is the curated resize-picker catalog: same-architecture types
 	// compatible with currentType, with shape and rough cost. nil means no
 	// catalog — `pier resize <session> <type>` still takes any type.

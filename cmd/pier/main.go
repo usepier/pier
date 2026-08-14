@@ -1171,14 +1171,15 @@ func listSessions(drv driver.Driver, all bool) ([]driver.Session, error) {
 	enrich(drv, sessions)
 	mine := sessions
 	if all {
+		// Fetch caller's strictly-owned sessions for safe tombstone reconciliation.
 		mine, err = drv.List(context.Background(), driver.ListOptions{All: false})
 		if err != nil {
 			return nil, err
 		}
 	}
-	var me string
-	if len(mine) > 0 {
-		me = mine[0].User
+	me, err := drv.Identity(context.Background())
+	if err != nil {
+		return nil, err
 	}
 
 	merged, revived := mergeTombstones(sessions, mine, tombstone.List(config.Dir()), me)
