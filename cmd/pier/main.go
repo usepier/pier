@@ -1177,7 +1177,11 @@ func listSessions(drv driver.Driver, all bool) ([]driver.Session, error) {
 			return nil, err
 		}
 	}
-	merged, revived := mergeTombstones(sessions, mine, tombstone.List(config.Dir()))
+	me, err := drv.Identity(context.Background())
+	if err != nil {
+		me = "unknown"
+	}
+	merged, revived := mergeTombstones(sessions, mine, tombstone.List(config.Dir()), me)
 	for _, name := range revived {
 		tombstone.Dismiss(config.Dir(), name)
 	}
@@ -1188,13 +1192,13 @@ func listSessions(drv driver.Driver, all bool) ([]driver.Session, error) {
 // cloud has since answered for. A name that is live again means the create
 // was retried and worked, so its gravestone is stale — the user shouldn't
 // have to clear a row that the obvious next action already resolved.
-func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []tombstone.Record) (merged []driver.Session, revived []string) {
+func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []tombstone.Record, me string) (merged []driver.Session, revived []string) {
 	live := make(map[string]bool, len(mine))
 	for _, s := range mine {
 		live[s.Name] = true
 	}
 	for _, r := range recs {
-		if live[r.Name] {
+		if live[r.Name] && r.User == me {
 			revived = append(revived, r.Name)
 			continue
 		}

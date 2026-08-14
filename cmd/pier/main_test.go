@@ -18,10 +18,10 @@ func TestMergeTombstones(t *testing.T) {
 	live := []driver.Session{{Name: "kur-3814", State: driver.StateIdle}}
 	recs := []tombstone.Record{
 		{Name: "kur-3817", Repo: "flb", Reason: "scp: Connection closed", LogPath: "/tmp/c.log"},
-		{Name: "kur-3814", Reason: "an earlier attempt that has since worked"},
+		{Name: "kur-3814", User: "alice", Reason: "an earlier attempt that has since worked"},
 	}
 
-	merged, revived := mergeTombstones(live, live, recs)
+	merged, revived := mergeTombstones(live, live, recs, "alice")
 	if len(merged) != 2 {
 		t.Fatalf("want the live session plus one tombstone, got %+v", merged)
 	}
