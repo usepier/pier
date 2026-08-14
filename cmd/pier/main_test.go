@@ -21,7 +21,7 @@ func TestMergeTombstones(t *testing.T) {
 		{Name: "kur-3814", Reason: "an earlier attempt that has since worked"},
 	}
 
-	merged, revived := mergeTombstones(live, recs)
+	merged, revived := mergeTombstones(live, live, recs, "alice")
 	if len(merged) != 2 {
 		t.Fatalf("want the live session plus one tombstone, got %+v", merged)
 	}
