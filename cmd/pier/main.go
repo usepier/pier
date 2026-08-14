@@ -281,7 +281,7 @@ func cmdNew(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	sessions, err := drv.List(ctx)
+	sessions, err := drv.List(ctx, driver.ListOptions{All: false})
 	if err != nil {
 		fatal(err)
 	}
