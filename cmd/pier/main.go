@@ -1198,7 +1198,7 @@ func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []to
 		live[s.Name] = true
 	}
 	for _, r := range recs {
-		if live[r.Name] && (r.User == me || r.User == "unknown" || r.User == "") {
+		if live[r.Name] && r.User == me {
 			revived = append(revived, r.Name)
 			continue
 		}
@@ -1219,7 +1219,7 @@ func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []to
 func buryCreate(cfg config.Config, drv driver.Driver, branch, repo string, cause error) {
 	me, err := drv.Identity(context.Background())
 	if err != nil {
-		me = "unknown"
+		return
 	}
 	rec := tombstone.Record{
 		Name: branch, Repo: filepath.Base(repo), Branch: branch,
