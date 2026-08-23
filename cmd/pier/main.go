@@ -74,7 +74,7 @@ var helpSections = []helpSection{
 	{
 		title: "Manage sessions",
 		items: []helpItem{
-			{"pier ls", "list sessions"},
+			{"pier ls [--json]", "list sessions (stable JSON with --json)"},
 			{"pier attach <session>", "attach, resuming first if parked"},
 			{"pier logs <session> [-f]", "show or follow the setup log"},
 			{"pier keep <session>", "disable idle self-parking"},
@@ -426,15 +426,72 @@ func waitReachable(drv driver.Driver, id string, timeout time.Duration) error {
 
 // --- ls / attach / rm / keep -----------------------------------------------------
 
-func cmdLS(args []string) {
-	fs := flag.NewFlagSet("ls", flag.ExitOnError)
+type sessionJSON struct {
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Repository  string       `json:"repository"`
+	Branch      string       `json:"branch"`
+	Owner       string       `json:"owner"`
+	Provider    string       `json:"provider"`
+	State       driver.State `json:"state"`
+	SetupState  string       `json:"setup_state"`
+	Strained    bool         `json:"strained"`
+	CreatedAt   *time.Time   `json:"created_at"`
+	MachineType string       `json:"machine_type"`
+	CostNote    string       `json:"cost_note"`
+}
+
+func parseLSArgs(args []string) (bool, bool, error) {
+	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	
+	// Flags from both branches combined
+	jsonOutput := fs.Bool("json", false, "")
 	all := fs.Bool("all", false, "")
 	fs.BoolVar(all, "a", false, "")
-	fs.Parse(args)
+	
+	if err := fs.Parse(args); err != nil {
+		return false, false, err
+	}
+	if fs.NArg() != 0 {
+		return false, false, fmt.Errorf("usage: pier ls [--json] [--all|-a]")
+	}
+	return *jsonOutput, *all, nil
+}
+
+func writeSessionsJSON(w io.Writer, sessions []driver.Session) error {
+	items := make([]sessionJSON, 0, len(sessions))
+	for _, s := range sessions {
+		var createdAt *time.Time
+		if !s.Created.IsZero() {
+			created := s.Created.UTC()
+			createdAt = &created
+		}
+		items = append(items, sessionJSON{
+			ID: s.ID, Name: s.Name, Repository: s.Repo, Branch: s.Branch,
+			Owner: s.User, Provider: s.Driver, State: s.State,
+			SetupState: s.Setup, Strained: s.Strained, CreatedAt: createdAt,
+			MachineType: s.InstanceType, CostNote: s.CostNote,
+		})
+	}
+	return json.NewEncoder(w).Encode(items)
+}
+
+func cmdLS(args []string) {
+	jsonOutput, all, err := parseLSArgs(args)
+	if err != nil {
+		fatal(err)
+	}
 	_, drv := loadDriver()
 	sessions, err := listSessions(drv, *all)
 	if err != nil {
 		fatal(err)
+	}
+	if jsonOutput {
+		if err := writeSessionsJSON(os.Stdout, sessions); err != nil {
+			fatal(err)
+		}
+		return
 	}
 	if len(sessions) == 0 {
 		fmt.Println(ui.Dim.Render("no sessions — start one with `pier <branch>`"))

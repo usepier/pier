@@ -197,7 +197,7 @@ pier <branch> [base]      new session off base (default HEAD), then attach
     --idle <dur|never>    idle self-park timeout (default 30m)
     --cap <dur|never>     unattended runaway cap (default 8h)
     --no-park             shorthand for --idle never
-pier ls                   plain list (pipeable)
+pier ls [--json]          plain list, or stable JSON for automation
 pier attach <session>     attach (parked sessions auto-resume, ~20-60s)
 pier logs <session>       show the setup script log (-f follows)
 pier rm <session> [-f]    destroy the session and its disk
@@ -210,6 +210,13 @@ pier port <session> <p>   manual port forward (8080:3000 = local:session)
 pier doctor               environment + account checks
 pier teardown             remove all pier groundwork from the account
 ```
+
+For automation, `pier ls --json` writes a JSON array with stable fields:
+`id`, `name`, `repository`, `branch`, `owner`, `provider`, `state`,
+`setup_state`, `strained`, `created_at`, `machine_type`, and `cost_note`.
+`created_at` is an RFC 3339 UTC timestamp, or `null` when unavailable;
+`setup_state` is empty when no running or failed setup is reported. The JSON
+mode writes no ANSI styling or explanatory prose to stdout.
 
 A day with pier:
 
