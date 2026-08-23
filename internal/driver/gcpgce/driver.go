@@ -147,14 +147,23 @@ type gceInstance struct {
 	} `json:"metadata"`
 }
 
-func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
+// Identity returns the caller's cloud identity.
+func (d *Driver) Identity(ctx context.Context) (string, error) {
+	return d.user(ctx)
+}
+
+func (d *Driver) List(ctx context.Context, opts driver.ListOptions) ([]driver.Session, error) {
 	me, err := d.user(ctx)
 	if err != nil {
 		return nil, err
 	}
+	filter := "labels." + LabelManaged + "=1"
+	if !opts.All {
+		filter += " AND labels." + LabelUser + "=" + labelValue(me)
+	}
 	out, err := d.gcloud(ctx, "compute", "instances", "list",
 		"--zones", d.Zone,
-		"--filter", "labels."+LabelManaged+"=1 AND labels."+LabelUser+"="+labelValue(me),
+		"--filter", filter,
 		"--format", "json(name,status,creationTimestamp,machineType,labels,metadata)")
 	if err != nil {
 		return nil, err
@@ -180,9 +189,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				owner = m.Value
 			}
 		}
+		if owner != "" {
+			s.User = owner
+		}
 		// The label filter is lossy (folded charset); the metadata principal
 		// is exact. A fold collision must not leak someone else's session.
-		if owner != me {
+		if !opts.All && owner != me {
 			continue
 		}
 		if in.Labels[LabelDeleting] == "1" {

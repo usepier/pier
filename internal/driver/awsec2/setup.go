@@ -90,7 +90,7 @@ func (d *Driver) SetupOnce(ctx context.Context) (driver.SetupReport, error) {
 
 // Teardown removes the groundwork. Refuses while sessions exist.
 func (d *Driver) Teardown(ctx context.Context) error {
-	sessions, err := d.List(ctx)
+	sessions, err := d.List(ctx, driver.ListOptions{})
 	if err != nil {
 		return err
 	}

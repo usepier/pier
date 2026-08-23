@@ -135,7 +135,7 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 			}
 		}
 
-		sessions, err := drv.List(ctx)
+		sessions, err := drv.List(ctx, driver.ListOptions{})
 		switch {
 		case err != nil && ctx.Err() != nil:
 		case err != nil:

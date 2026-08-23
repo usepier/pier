@@ -281,7 +281,7 @@ func cmdNew(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	sessions, err := drv.List(ctx)
+	sessions, err := drv.List(ctx, driver.ListOptions{All: false})
 	if err != nil {
 		fatal(err)
 	}
@@ -327,7 +327,7 @@ func cmdNew(args []string) {
 		// The instance is already gone (Create destroys its own wreckage), so
 		// leave a tombstone: without one this create vanishes without trace,
 		// and a detached create has no terminal to have shown the error in.
-		buryCreate(cfg, branch, repo, err)
+		buryCreate(cfg, drv, branch, repo, err)
 		fatal(err)
 	}
 	stop() // create done — ctrl-c back to its default for the prompt + attach
@@ -441,17 +441,22 @@ type sessionJSON struct {
 	CostNote    string       `json:"cost_note"`
 }
 
-func parseLSArgs(args []string) (bool, error) {
+func parseLSArgs(args []string) (bool, bool, error) {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	
+	// Flags from both branches combined
 	jsonOutput := fs.Bool("json", false, "")
+	all := fs.Bool("all", false, "")
+	fs.BoolVar(all, "a", false, "")
+	
 	if err := fs.Parse(args); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if fs.NArg() != 0 {
-		return false, fmt.Errorf("usage: pier ls [--json]")
+		return false, false, fmt.Errorf("usage: pier ls [--json] [--all|-a]")
 	}
-	return *jsonOutput, nil
+	return *jsonOutput, *all, nil
 }
 
 func writeSessionsJSON(w io.Writer, sessions []driver.Session) error {
@@ -473,12 +478,12 @@ func writeSessionsJSON(w io.Writer, sessions []driver.Session) error {
 }
 
 func cmdLS(args []string) {
-	jsonOutput, err := parseLSArgs(args)
+	jsonOutput, all, err := parseLSArgs(args)
 	if err != nil {
 		fatal(err)
 	}
 	_, drv := loadDriver()
-	sessions, err := listSessions(drv)
+	sessions, err := listSessions(drv, *all)
 	if err != nil {
 		fatal(err)
 	}
@@ -493,10 +498,18 @@ func cmdLS(args []string) {
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
+	if *all {
+		fmt.Fprintln(w, "NAME\tREPO\tOWNER\tSTATE\tAGE\tCOST")
+	} else {
+		fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
+	}
 	anyStrained, anySetupFailed, anyFailedCreate := false, false, false
 	for _, s := range sessions {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.Created), s.CostNote)
+		if *all {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, s.User, stateLabel(s), age(s.Created), s.CostNote)
+		} else {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.Created), s.CostNote)
+		}
 		anyStrained = anyStrained || s.Strained
 		anySetupFailed = anySetupFailed || s.Setup == "failed"
 		anyFailedCreate = anyFailedCreate || s.State == driver.StateFailed
@@ -610,7 +623,7 @@ func age(t time.Time) string {
 }
 
 func match(drv driver.Driver, query string) driver.Session {
-	sessions, err := listSessions(drv)
+	sessions, err := listSessions(drv, false)
 	if err != nil {
 		fatal(err)
 	}
@@ -1123,7 +1136,7 @@ func cmdTUI() {
 			}
 			return q.Detail
 		},
-		Fetch:       func() ([]driver.Session, error) { return listSessions(drv) },
+		Fetch:       func() ([]driver.Session, error) { return listSessions(drv, false) },
 		AuthExpired: awsec2.LoginExpired,
 		Reauthenticate: func() *exec.Cmd {
 			args := []string{"login"}
@@ -1207,13 +1220,25 @@ func createLogPath(branch string) string {
 // sessions plus local tombstones for creates that died before becoming one.
 // A tombstone whose name came back as a live session (the retry worked) is
 // dropped here, so a successful re-create silently clears its own gravestone.
-func listSessions(drv driver.Driver) ([]driver.Session, error) {
-	sessions, err := drv.List(context.Background())
+func listSessions(drv driver.Driver, all bool) ([]driver.Session, error) {
+	sessions, err := drv.List(context.Background(), driver.ListOptions{All: all})
 	if err != nil {
 		return nil, err
 	}
 	enrich(drv, sessions)
-	merged, revived := mergeTombstones(sessions, tombstone.List(config.Dir()))
+	mine := sessions
+	if all {
+		// Fetch caller's strictly-owned sessions for safe tombstone reconciliation.
+		mine, err = drv.List(context.Background(), driver.ListOptions{All: false})
+		if err != nil {
+			return nil, err
+		}
+	}
+	me, err := drv.Identity(context.Background())
+	if err != nil {
+		me = "unknown"
+	}
+	merged, revived := mergeTombstones(sessions, mine, tombstone.List(config.Dir()), me)
 	for _, name := range revived {
 		tombstone.Dismiss(config.Dir(), name)
 	}
@@ -1224,18 +1249,19 @@ func listSessions(drv driver.Driver) ([]driver.Session, error) {
 // cloud has since answered for. A name that is live again means the create
 // was retried and worked, so its gravestone is stale — the user shouldn't
 // have to clear a row that the obvious next action already resolved.
-func mergeTombstones(sessions []driver.Session, recs []tombstone.Record) (merged []driver.Session, revived []string) {
-	live := make(map[string]bool, len(sessions))
-	for _, s := range sessions {
+func mergeTombstones(sessions []driver.Session, mine []driver.Session, recs []tombstone.Record, me string) (merged []driver.Session, revived []string) {
+	live := make(map[string]bool, len(mine))
+	for _, s := range mine {
 		live[s.Name] = true
 	}
 	for _, r := range recs {
-		if live[r.Name] {
+		if live[r.Name] && r.User == me {
 			revived = append(revived, r.Name)
 			continue
 		}
 		sessions = append(sessions, driver.Session{
 			Name: r.Name, Repo: r.Repo, Branch: r.Branch, Driver: r.Driver,
+			User:  or(r.User, "unknown"),
 			State: driver.StateFailed, Created: r.When,
 			FailReason: r.Reason, LogPath: r.LogPath,
 			CostNote: "—", // nothing is running; nothing is being charged
@@ -1247,10 +1273,18 @@ func mergeTombstones(sessions []driver.Session, recs []tombstone.Record) (merged
 // buryCreate records a failed create so it leaves a trace in the list instead
 // of a silent gap. Best-effort: the create already failed and its own error is
 // what the user acts on — a graveyard write that fails must not mask it.
-func buryCreate(cfg config.Config, branch, repo string, cause error) {
+func buryCreate(cfg config.Config, drv driver.Driver, branch, repo string, cause error) {
+	me, err := drv.Identity(context.Background())
+	if err != nil {
+		if or(cfg.Driver, "aws-ec2") == "gcp-gce" {
+			me = cfg.GCP.Project
+		} else {
+			me = or(cfg.AWS.Profile, "default")
+		}
+	}
 	rec := tombstone.Record{
 		Name: branch, Repo: filepath.Base(repo), Branch: branch,
-		Driver: or(cfg.Driver, "aws-ec2"), Reason: cause.Error(), When: time.Now(),
+		Driver: or(cfg.Driver, "aws-ec2"), User: me, Reason: cause.Error(), When: time.Now(),
 	}
 	if p := createLogPath(branch); fileExists(p) {
 		rec.LogPath = p

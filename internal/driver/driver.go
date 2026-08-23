@@ -116,6 +116,10 @@ type Quota struct {
 	Detail string
 }
 
+type ListOptions struct {
+	All bool
+}
+
 // Driver is implemented by awsec2 and gcpgce (later: k8s, fly, docker).
 type Driver interface {
 	Name() string
@@ -138,8 +142,11 @@ type Driver interface {
 	// stays parked. Same CPU architecture only: the disk's binaries live on.
 	Resize(ctx context.Context, id, instanceType string) error
 
-	// List returns only the caller's sessions (identity-filtered tags/labels).
-	List(ctx context.Context) ([]Session, error)
+	// List returns the caller's sessions (identity-filtered tags/labels), or all if opts.All is true.
+	List(ctx context.Context, opts ListOptions) ([]Session, error)
+
+	// Identity returns the provider-specific string identifying the caller.
+	Identity(ctx context.Context) (string, error)
 
 	// Machines is the curated resize-picker catalog: same-architecture types
 	// compatible with currentType, with shape and rough cost. nil means no

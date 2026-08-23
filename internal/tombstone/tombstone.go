@@ -36,6 +36,7 @@ type Record struct {
 	Repo    string    `json:"repo"`
 	Branch  string    `json:"branch"`
 	Driver  string    `json:"driver"`
+	User    string    `json:"user"`     // the creator's identity at failure time
 	Reason  string    `json:"reason"`   // the create error, verbatim
 	LogPath string    `json:"log_path"` // create log, when the create wrote one
 	When    time.Time `json:"when"`
