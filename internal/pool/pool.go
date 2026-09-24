@@ -1,5 +1,5 @@
 // Package pool implements repo-scoped warm session pools: pre-provisioned,
-// parked instances whose repo checkout and .pier-setup.sh already ran, so a
+// parked instances whose repo checkout and .pier/setup.sh already ran, so a
 // new session is a resume + freshen instead of a full create. Strictly
 // opt-in (a pool exists only when the user sets a size) and driver-agnostic:
 // everything here goes through the driver interface — members are ordinary
@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 )
 
 const (
@@ -35,7 +35,7 @@ const (
 	// claim burns real money. Exported so doctor and the TUI census can flag
 	// the same corpses reconcile would collect.
 	FillGrace = 2 * time.Hour
-	// setupWait bounds fill's wait for .pier-setup.sh. A setup this slow is
+	// setupWait bounds fill's wait for .pier/setup.sh. A setup this slow is
 	// broken, not warm.
 	setupWait = 45 * time.Minute
 )
@@ -80,12 +80,12 @@ func Generation(driverName, image, instanceType string, diskGiB int, setupScript
 
 // SetupScript returns the bytes of the setup script a session of this repo
 // would run: the PIER_SETUP_SCRIPT override when set, else the repo's
-// .pier-setup.sh, else nil. Feeds the generation fingerprint, and tells fill
+// .pier/setup.sh, else nil. Feeds the generation fingerprint, and tells fill
 // whether a setup status is expected at all.
 func SetupScript(repoRoot string) []byte {
 	p := os.Getenv("PIER_SETUP_SCRIPT")
 	if p == "" {
-		p = filepath.Join(repoRoot, ".pier-setup.sh")
+		p = filepath.Join(repoRoot, ".pier", "setup.sh")
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {

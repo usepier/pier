@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/kerem-kaynak/pier/internal/ui"
+	"github.com/usepier/pier/internal/ui"
 )
 
 // ensureNet puts the two macOS prerequisites in place, with one sudo prompt

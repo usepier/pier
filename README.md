@@ -2,7 +2,7 @@
 
 # ⚓ pier
 
-[![CI](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml)
+[![CI](https://github.com/usepier/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/usepier/pier/actions/workflows/ci.yml)
 
 **Give every agent session its own VM. One command up, zero burn when idle.**
 
@@ -103,14 +103,14 @@ are a free state store.
 ## Installation
 
 ```
-brew install kerem-kaynak/tap/pier
+brew install usepier/tap/pier
 ```
 
 Or build from source with `make`, not `go build` (the in-VM supervisor must
 be embedded):
 
 ```
-git clone https://github.com/kerem-kaynak/pier
+git clone https://github.com/usepier/pier
 cd pier
 make install
 ```
@@ -199,7 +199,7 @@ pier <branch> [base]      new session off base (default HEAD), then attach
     --cap <dur|never>     unattended runaway cap (default 8h)
     --no-park             shorthand for --idle never
     --no-pool             skip this repo's warm pool for this create
-pier ls                   plain list (pipeable)
+pier ls [--json]          plain list, or stable JSON for automation
 pier attach <session>     attach (parked sessions auto-resume, ~20-60s)
 pier logs <session>       show the setup script log (-f follows)
 pier rm <session> [-f]    destroy the session and its disk
@@ -216,6 +216,13 @@ pier port <session> <p>   manual port forward (8080:3000 = local:session)
 pier doctor               environment + account checks
 pier teardown             remove all pier groundwork from the account
 ```
+
+For automation, `pier ls --json` writes a JSON array with stable fields:
+`id`, `name`, `repository`, `branch`, `owner`, `provider`, `state`,
+`setup_state`, `strained`, `created_at`, `machine_type`, and `cost_note`.
+`created_at` is an RFC 3339 UTC timestamp, or `null` when unavailable;
+`setup_state` is empty when no running or failed setup is reported. The JSON
+mode writes no ANSI styling or explanatory prose to stdout.
 
 A day with pier:
 
@@ -247,16 +254,19 @@ resuming checkout-flow (~20-60s)...
 
 ## Making your repo pier-ready
 
-Three optional files at the repo root, all committed:
+Pier uses one committed `.pier/` directory with three optional files:
 
 | File | Runs / read | Contains |
 |---|---|---|
-| `.pier-setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
-| `.pier-include` | At create | Untracked/ignored files to carry (env files, local certs) |
-| `.pier-bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
+| `.pier/setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
+| `.pier/include` | At create | Ignored files to carry (env files, local certs) |
+| `.pier/bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
+
+Do not ignore `.pier/`: it is shared project configuration. Loose local files
+listed in `.pier/include`, such as `.env`, should remain in `.gitignore`.
 
 ```bash
-# .pier-setup.sh (cwd is the repo root, logs to ~/.pier-setup.log)
+# .pier/setup.sh (cwd is the repo root, logs to ~/.pier-setup.log)
 set -euo pipefail
 pnpm install
 docker compose up -d
@@ -268,13 +278,17 @@ fully detach with `setsid cmd </dev/null >log 2>&1 &` or it dies when the
 setup window closes.
 
 ```
-# .pier-include: one path or glob per line (no **), a directory carries its subtree
+# .pier/include: one path or glob per line (no **), a directory carries its subtree
 .env
 apps/*/.env.local
 ```
 
+A file symlink matched directly by a line or glob is dereferenced: its target
+contents arrive as a regular file at the symlink's repository path. Directory
+symlinks are never followed.
+
 ```bash
-# .pier-bake.sh (agent user, passwordless sudo, NO repo checkout yet)
+# .pier/bake.sh (agent user, passwordless sudo, NO repo checkout yet)
 set -euo pipefail
 sudo corepack enable
 echo COREPACK_ENABLE_DOWNLOAD_PROMPT=0 | sudo tee -a /etc/environment >/dev/null
@@ -283,14 +297,16 @@ COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack install -g pnpm@10.6.5
 
 ## The pier-onboard skill
 
-Don't write those files by hand. This repo ships
+Don't write those files by hand. pier ships
 [`skills/pier-onboard`](skills/pier-onboard/SKILL.md), a skill that teaches
-a coding agent to inspect your repo and write all three files with the right
-boundaries.
+a coding agent to inspect your repo, write all three files with the right
+boundaries, and keep loose local files protected by `.gitignore`.
 
-```
-cp -r pier/skills/pier-onboard ~/.claude/skills/    # or your repo's .claude/skills/
-```
+`pier setup` offers it at the end, one confirm per agent on the machine —
+Claude Code (`~/.claude/skills`) and Codex (`~/.codex/skills`) read the
+same skill format — and `pier skills` runs the same install without
+questions, e.g. to refresh after a pier upgrade. To pin it to one repo
+instead, copy it into that repo's `.claude/skills/`.
 
 Then ask your agent to "set this repo up for pier".
 
@@ -316,15 +332,16 @@ when you do).
 
 ### Secrets, deliberately boring
 
-Secrets travel once, at create, as an explicit manifest:
+Local files and secrets travel once, at create, in the files payload:
 
 - `~/.claude`, `~/.codex`, tokens (`gh auth token`, `claude setup-token`)
-- the repo files your `.pier-include` lists
+- non-ignored untracked repo files, plus ignored files your `.pier/include` lists
 
-Nothing loose ships by default. The create prints which env files it is
-*not* carrying. The VM never holds cloud credentials. On AWS its instance
-role carries SSM and nothing else. On GCP it runs with no service account
-at all.
+Untracked files that Git does not ignore ship by default. Ignored files ship
+only when `.pier/include` lists them; create prints which ignored env files it
+is *not* carrying. The VM never holds cloud credentials. On AWS its instance
+role carries SSM and nothing else. On GCP it runs with no service account at
+all.
 
 ### MCP servers, agents, skills
 
@@ -367,7 +384,7 @@ A stock create installs the harnesses under cloud-init, which takes minutes.
 Baking pays that cost once:
 
 ```
-pier bake    # one throwaway instance + your .pier-bake.sh, snapshotted as an image
+pier bake    # one throwaway instance + your .pier/bake.sh, snapshotted as an image
 ```
 
 Creates from a baked image drop to a minute or two. Images are keyed to
@@ -399,9 +416,9 @@ repo's members, and the header counts what's warm. Strictly opt-in;
 
 ### Setup that can't fail silently
 
-`.pier-setup.sh` runs async in its own tmux window on first boot, after the
-checkout, dirty patch, and `.pier-include` files are in place. The outcome
-always surfaces:
+`.pier/setup.sh` runs async in its own tmux window on first boot, after the
+checkout, dirty patch, untracked files, and `.pier/include` extras are in
+place. The outcome always surfaces:
 
 - `pier ls` and the TUI show `(setup running)` or `(setup failed)`
 - `pier logs <session>` prints the log from anywhere, no attach needed
@@ -460,7 +477,7 @@ The cloud says "running" long before a session is usable, so pier doesn't:
 - **GCP wakes slower than AWS.** Resume to attached is about a minute
   against EC2's ~20s, and a running resize takes about two minutes. GCE
   stop/start simply takes longer.
-- **Bake hooks live only in baked images.** A repo with a `.pier-bake.sh`
+- **Bake hooks live only in baked images.** A repo with a `.pier/bake.sh`
   that was never baked runs stock. Setup then fails loudly, not silently.
 - **Resize stays within the CPU arch** (t4g to t4g). Providers only allow
   type changes on stopped instances.
@@ -468,10 +485,11 @@ The cloud says "running" long before a session is usable, so pier doesn't:
 ## How it works
 
 A session is one VM plus its persistent disk, tagged and namespaced by your
-caller identity (your STS ARN on AWS, your authed principal on GCP), so a
-team shares one account with zero collisions. All state lives in those tags
-and on the disk. `pier ls` is one filtered describe call, and there is
-nothing else to operate, back up, or pay for.
+caller identity (your complete STS ARN on AWS, including the Identity Center
+user segment of an assumed-role ARN), so a team can share one role without
+sharing instances. All state lives in those tags and on the disk. `pier ls`
+is one filtered describe call, and there is nothing else to operate, back up,
+or pay for.
 
 ```
 laptop                              AWS account (yours)
@@ -526,7 +544,7 @@ The choices contributors should know before proposing changes
   install step is a no-op when the image already has it. Baking is an
   optimization, never a requirement.
 - **Images are toolchains, sessions are state.** `pier bake` installs
-  tools. Deps, migrations, and env belong to `.pier-setup.sh` at boot.
+  tools. Deps, migrations, and env belong to `.pier/setup.sh` at boot.
 - **Dirty state travels as a git patch,** not rsync. Binary-safe,
   reviewable, applied atomically after checkout.
 - **Truth over optimism in states.** The ready tag, the setup status file,

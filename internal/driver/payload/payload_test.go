@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver"
 )
 
 func TestSanitize(t *testing.T) {
@@ -161,8 +161,8 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// shell variables must survive rendering escaped — they belong to the
 		// tmux window's bash, not to the bootstrap shell.
 		`echo running > ~/.pier-setup.status`,
-		// Runs on presence via bash: a committed 0644 .pier-setup.sh (git
-		// only carries +x when the author set it) must not skip silently.
+		// Runs on presence via bash: a 0644 .pier/setup.sh must not skip
+		// silently.
 		`if [ -f "$setup" ]; then`,
 		`bash $setup 2>&1`,
 		// The cloud-init wait must guard on binaries the stock image LACKS
@@ -178,8 +178,9 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// The tmux server must start through sudo, which re-runs initgroups:
 		// the bootstrap's own login predates cloud-init's usermod -aG docker
 		// on stock images, and every window inherits groups from the server
-		// (docker.sock denied in .pier-setup.sh otherwise).
+		// (docker.sock denied in .pier/setup.sh otherwise).
 		`sudo -u agent tmux new-session -d -s main`,
+		`setup=./.pier/setup.sh`,
 	} {
 		if !strings.Contains(origin, want) {
 			t.Errorf("origin-mode bootstrap missing %q", want)
@@ -242,10 +243,10 @@ func TestRenderUserDataGuards(t *testing.T) {
 	}
 }
 
-// Nothing loose ships by default — but the create warns about env files it
-// is NOT carrying (untracked or ignored, any depth), minus wholly-ignored
-// dirs (node_modules fixtures), tracked ones (they arrive with the fetch),
-// and whatever .pier-include already carries.
+// Non-ignored untracked files travel automatically. The create warns about
+// ignored env files it is NOT carrying, minus wholly-ignored dirs
+// (node_modules fixtures), tracked ones (they arrive with the fetch), and
+// whatever .pier/include already carries.
 func TestEnvFilesNotCarried(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
@@ -276,7 +277,14 @@ func TestEnvFilesNotCarried(t *testing.T) {
 	git("add", ".gitignore", "apps/api/.env.example")
 
 	if files := pierIncludeFiles(root); files != nil {
-		t.Errorf("no .pier-include must mean nothing loose ships, got %v", files)
+		t.Errorf("no .pier/include must mean no explicit extras, got %v", files)
+	}
+	untracked, err := untrackedFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"apps/api/main.go"}; !slices.Equal(untracked, want) {
+		t.Errorf("untrackedFiles = %v, want %v", untracked, want)
 	}
 	got := envFilesNotCarried(root, nil)
 	want := []string{".env", "apps/api/.env", "apps/api/.env.local"}
@@ -291,8 +299,8 @@ func TestEnvFilesNotCarried(t *testing.T) {
 }
 
 // Uncommitted work on tracked files — edits and staged adds — travels as one
-// patch; untracked files don't (that's .pier-include's channel). A clean
-// tree writes no patch at all.
+// patch; untracked files use the files tar instead. A clean tree writes no
+// patch at all.
 func TestDirtyPatch(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
@@ -335,11 +343,90 @@ func TestDirtyPatch(t *testing.T) {
 		}
 	}
 	if strings.Contains(string(b), "c.txt") {
-		t.Error("untracked file leaked into the dirty patch")
+		t.Error("untracked file leaked into the tracked-files patch")
 	}
 }
 
-// .pier-include is the only loose-file channel: lines are paths or globs,
+// Every non-ignored untracked file travels automatically; standard Git
+// ignores are the boundary. .pier/include can explicitly opt an ignored file
+// back in, and an untracked .pier/setup.sh itself needs no special case.
+func TestUntrackedFilesTravelAndIgnoredFilesRequireInclude(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	write(".gitignore", ".env\nignored/\n")
+	write("tracked.txt", "base\n")
+	git("add", ".gitignore", "tracked.txt")
+	git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "init")
+
+	write(".pier/setup.sh", "#!/bin/sh\nmake build\n")
+	write("notes.txt", "local\n")
+	write(".env", "SECRET=1\n")
+	write("ignored/cache.txt", "large\n")
+
+	untracked, err := untrackedFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{".pier/setup.sh", "notes.txt"}; !slices.Equal(untracked, want) {
+		t.Fatalf("untrackedFiles = %v, want %v", untracked, want)
+	}
+
+	write(".pier/include", ".env\n")
+	untracked, err = untrackedFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(root))
+	wantFiles := []string{".env", ".pier/include", ".pier/setup.sh", "notes.txt"}
+	if !slices.Equal(repoFiles, wantFiles) {
+		t.Fatalf("repo files = %v, want %v", repoFiles, wantFiles)
+	}
+
+	dst := filepath.Join(t.TempDir(), "files.tar")
+	if err := buildFilesTar(dst, nil, root, repoFiles, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	got := []string{}
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(h.Name, "repo/") {
+			got = append(got, strings.TrimPrefix(h.Name, "repo/"))
+		}
+	}
+	if !slices.Equal(got, wantFiles) {
+		t.Errorf("files tar = %v, want %v", got, wantFiles)
+	}
+}
+
+// .pier/include is the ignored-file escape hatch: lines are paths or globs,
 // matched against the disk with no git-status distinction (the fixture isn't
 // even a git repo). Directory lines carry their whole subtree; escapes and
 // comments are dropped.
@@ -355,7 +442,10 @@ func TestPierInclude(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, ".pier-include"),
+	if err := os.MkdirAll(filepath.Join(root, ".pier"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".pier", "include"),
 		[]byte("# what travels\napps/*/.env*\nuploads/\nsecrets.txt\n../escape\n/etc/passwd\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +461,77 @@ func TestPierInclude(t *testing.T) {
 	want := []string{"apps/api/.env", "apps/api/.env.local", "apps/web/.env",
 		"secrets.txt", "uploads/fixtures/a.bin"}
 	if !slices.Equal(got, want) {
-		t.Errorf("with .pier-include = %v, want %v", got, want)
+		t.Errorf("with .pier/include = %v, want %v", got, want)
+	}
+}
+
+func TestPierIncludeDereferencesDirectFileSymlinks(t *testing.T) {
+	root := t.TempDir()
+	sources := t.TempDir()
+	target := filepath.Join(sources, "api.env")
+	if err := os.WriteFile(target, []byte("API_KEY=local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "apps", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "uploads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for link, destination := range map[string]string{
+		"apps/api/.env": target,
+		"broken":        filepath.Join(sources, "missing"),
+		"source-dir":    sources,
+		"uploads/.env":  target,
+	} {
+		if err := os.Symlink(destination, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".pier"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".pier", "include"),
+		[]byte("apps/*/.env\nbroken\nsource-dir\nuploads/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The glob directly matches apps/api/.env, so its target is carried.
+	// Broken and directory links are ineligible, and the uploads directory
+	// walk must not follow the nested link it encounters.
+	if got, want := pierIncludeFiles(root), []string{"apps/api/.env"}; !slices.Equal(got, want) {
+		t.Fatalf("pierIncludeFiles() = %v, want %v", got, want)
+	}
+
+	dst := filepath.Join(t.TempDir(), "files.tar")
+	if err := buildFilesTar(dst, nil, root, pierIncludeFiles(root), nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			t.Fatal("repo/apps/api/.env missing from files tar")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name != "repo/apps/api/.env" {
+			continue
+		}
+		contents, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Typeflag != tar.TypeReg || string(contents) != "API_KEY=local\n" {
+			t.Fatalf("carried symlink = type %d, contents %q", header.Typeflag, contents)
+		}
+		break
 	}
 }
 
@@ -380,7 +540,10 @@ func TestPierInclude(t *testing.T) {
 // Docker Desktop bind-mounts unreadable to every container on the VM.
 func TestFilesTarWidensCarriedModes(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".pier-include"), []byte(".env\nrun.sh\n"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".pier"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".pier", "include"), []byte(".env\nrun.sh\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("K=v\n"), 0o600); err != nil {
@@ -391,7 +554,7 @@ func TestFilesTarWidensCarriedModes(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "files.tar")
-	if err := buildFilesTar(dst, nil, root, nil, ""); err != nil {
+	if err := buildFilesTar(dst, nil, root, pierIncludeFiles(root), nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(dst)

@@ -7,14 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver"
 )
 
 // Fill reconciles one repo's pool to Params.Size: stale members recycle,
 // missing ones get created, set up, and parked — one at a time; a fill is
 // background work, and serial keeps quota pressure and progress readable.
 // A member is created exactly like a session (same Create, same payload,
-// same async .pier-setup.sh) under a placeholder name, except its supervisor
+// same async .pier/setup.sh) under a placeholder name, except its supervisor
 // runs on FillLeash — if this process dies, the member still self-parks
 // shortly after setup finishes instead of idling at full price.
 func Fill(ctx context.Context, p Params) error {
@@ -77,7 +77,7 @@ func fillOne(ctx context.Context, p Params, hasSetup bool) error {
 		return err
 	}
 	if hasSetup {
-		p.progress()("waiting for .pier-setup.sh — a member is only warm once setup finished")
+		p.progress()("waiting for .pier/setup.sh — a member is only warm once setup finished")
 		if err := waitSetup(ctx, p, sess.ID); err != nil {
 			// An unfinished setup is exactly what the pool exists to avoid:
 			// destroy rather than park a member that would claim cold.
@@ -108,7 +108,7 @@ func waitSetup(ctx context.Context, p Params, id string) error {
 			case "none", "running":
 			default:
 				tail, _ := p.Driver.Exec(ctx, id, "tail -n 15 ~/.pier-setup.log 2>/dev/null")
-				return fmt.Errorf(".pier-setup.sh failed (exit %s) on the pool member:\n%s", status, tail)
+				return fmt.Errorf(".pier/setup.sh failed (exit %s) on the pool member:\n%s", status, tail)
 			}
 		}
 		if time.Now().After(deadline) {

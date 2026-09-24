@@ -1,4 +1,4 @@
-module github.com/kerem-kaynak/pier
+module github.com/usepier/pier
 
 go 1.24.0
 

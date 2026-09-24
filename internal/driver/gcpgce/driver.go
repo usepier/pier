@@ -36,8 +36,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 )
 
 const (
@@ -319,6 +319,15 @@ func (d *Driver) Resize(ctx context.Context, id, machineType string) error {
 	}
 	if _, err := d.gcloud(ctx, "compute", "instances", "set-machine-type", id,
 		"--zone", d.Zone, "--machine-type", machineType); err != nil {
+		// The type may not exist in this zone (arm families especially are
+		// region-sparse). Don't strand a running session stopped: restart it
+		// on its original type, best-effort.
+		if wasRunning {
+			if rerr := d.Resume(ctx, id); rerr != nil {
+				return fmt.Errorf("%w (restarting on the original type also failed: %v — run `pier resume`)", err, rerr)
+			}
+			return fmt.Errorf("resize failed; the session is back up on its original type: %w", err)
+		}
 		return err
 	}
 	if wasRunning {
@@ -341,7 +350,7 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 	_ = os.Remove(d.keyPath(id) + ".pub")
 	// Drop the host key: a same-named recreate (same session name, same
 	// principal) would otherwise trip a known_hosts mismatch.
-	hk := exec.Command("ssh-keygen", "-R", id, "-f", d.StateDir+"/known_hosts")
+	hk := execCommand("ssh-keygen", "-R", id, "-f", d.StateDir+"/known_hosts")
 	hk.Stdout, hk.Stderr = nil, nil
 	_ = hk.Run()
 	return nil
@@ -366,7 +375,7 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
 exec tmux new-session -A -s main`
 	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
 }
@@ -385,7 +394,7 @@ func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port in
 		server, port)
 	args := append(d.sshOpts(id),
 		"-t", "-L", fmt.Sprintf("%d:localhost:%d", port, port), "agent@"+id, remote)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
 }
@@ -399,7 +408,7 @@ func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]i
 		args = append(args, "-L", fmt.Sprintf("%d:localhost:%d", p[0], p[1]))
 	}
 	args = append(args, "-N", "agent@"+id)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
 }

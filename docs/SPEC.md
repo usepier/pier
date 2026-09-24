@@ -19,9 +19,9 @@ pier                    # TUI: sessions + states; pick one to reattach (~30-60s 
 ```
 
 A session comes prepacked with: the repo on a fresh branch, the dev
-environment (repo's `.pier-setup.sh`, run automatically), the user's secrets
-(one-way copy from the laptop), and both agent harnesses installed. Everything
-else is bloat.
+environment (repo's `.pier/setup.sh`, run automatically), the user's
+secrets (one-way copy from the laptop), and both agent harnesses installed.
+Everything else is bloat.
 
 **Hard requirements:** runs on AWS *and* GCP easily; scale-to-(near)zero with
 pick-back-up; one-command TUI; one-time wizard setup; teams share an account
@@ -130,11 +130,21 @@ for every connection. Teardown deletes the SG, rules included.
 
 ## 5. Identity & teams
 
-The caller's cloud identity (STS `GetCallerIdentity` ARN; GCP authed
-principal) is written to `pier:user` at create and filtered on at list. Many
-devs share one account with zero coordination: no name collisions, no shared
-state, nothing to configure. `pier ls --all` can show teammates' sessions
-(read-only visibility); everything else operates only on your own.
+The caller's cloud identity (the complete STS `GetCallerIdentity` ARN; GCP
+authed principal) is written to `pier:user` at create and filtered on at list.
+For an AWS assumed role, the final role-session segment is retained because it
+identifies the Identity Center user. Many devs can therefore choose the same
+permission-set role without sharing session state or creating name collisions.
+
+AWS instances created by Pier versions that stripped the role-session segment
+have a legacy role-wide `pier:user` tag. The original user cannot be recovered
+from that tag; each owner must retag their existing instances once with their
+complete current `sts get-caller-identity` ARN after identifying their instance:
+
+```sh
+aws ec2 create-tags --resources i-0123456789abcdef0 --tags \
+  Key=pier:user,Value="$(aws sts get-caller-identity --query Arn --output text)"
+```
 
 ## 6. Parking policy (supervisor)
 
@@ -175,7 +185,7 @@ A session either exists fully set up or not at all — no half-states:
 
 - The create's **last act** is a `pier:ready` tag on the instance (written
   after the VM-side bootstrap touches `~/.pier-bootstrapped`; the marker
-  stays as the raw-ssh backstop, before the async `.pier-setup.sh`
+  stays as the raw-ssh backstop, before the async `.pier/setup.sh`
   finishes). EC2 reports `running` well before the session is usable — SSM
   registration alone lags ~30s — so ls/TUI read running-without-the-tag as
   `creating`: truthful state from the first second, no probe, no SSM
@@ -248,6 +258,12 @@ Targets: **create → attached 60–90s; resume → attached ~30s** (measured
 numbers in §14; GCP runs about a minute behind AWS on each — GCE stop/start
 and the IAP tunnel are simply slower).
 
+Repo-specific Pier config is committed under `.pier/`; the directory must not
+be ignored. Create reads `.pier/include` on the laptop, `.pier/setup.sh`
+arrives with the git checkout or the untracked-file payload, and bake reads
+`.pier/bake.sh` directly. Ignored local files named by `.pier/include` stay
+protected by the repository's `.gitignore`.
+
 1. **`pier bake`** — prebaked **per-repo** image: agent user, tmux, git, gh,
    docker (with compose + buildx — docker.io alone is the bare engine; the
    daemon runs userns-remapped to agent, so container-root writes on bind
@@ -256,9 +272,9 @@ and the IAP tunnel are simply slower).
    files), make,
    claude + codex, headless chromium (playwright build + system
    deps, for browser MCPs/skills), supervisor preinstalled — plus whatever
-   the repo's `.pier-bake.sh` installs on top (run on the bake instance as
+   the repo's `.pier/bake.sh` installs on top (run on the bake instance as
    agent with passwordless sudo, no repo checkout present: toolchains like
-   pnpm/python belong here, repo state in `.pier-setup.sh`; a failed hook
+   pnpm/python belong here, repo state in `.pier/setup.sh`; a failed hook
    aborts the bake). Pier deliberately doesn't chase language ecosystems in
    the default image — the hook is the user's channel. Images are keyed by
    repo basename in config (`[aws.baked_amis]` / `[gcp.baked_images]`),
@@ -269,9 +285,10 @@ and the IAP tunnel are simply slower).
    a repo; `pier bake` refreshes it.
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
-   `.pier-setup.sh` runs asynchronously in a background tmux window while you
-   type to the agent — it starts only after the checkout, dirty patch, and
-   `.pier-include` extras are all in place. `PIER_SETUP_SCRIPT`
+   `.pier/setup.sh` runs asynchronously in a background tmux window while you
+   type to the agent — it starts only after the checkout, dirty patch,
+   non-ignored untracked files, and `.pier/include` extras are all in place.
+   `PIER_SETUP_SCRIPT`
    points it at a different script — relative to the repo root or `~` —
    which travels in the tar and takes precedence over the repo's own.
    The outcome is never silent: the window writes `~/.pier-setup.status`
@@ -301,14 +318,16 @@ and the IAP tunnel are simply slower).
    mode, **uncommitted edits to tracked files** ride along too, as one
    binary-safe patch (`git diff HEAD`) applied right after the checkout — the
    session's working tree starts exactly as the laptop's, staged edits
-   arriving unstaged. (Only when the session's base is the laptop's HEAD; a
-   session created off another commit carries no dirty state.) Untracked and
-   ignored files travel **only** when a repo-root **`.pier-include`** names
+   arriving unstaged. Non-ignored untracked files ride in the files tar and
+   are extracted after checkout + patch. (Both happen only when the session's
+   base is the laptop's HEAD; a session created off another commit carries no
+   dirty state.) Ignored files travel **only** when **`.pier/include`** names
    them: one path or glob per line, matched against the disk with no
-   git-status distinction — listed = travels, extracted after checkout +
-   patch so listed content wins. Nothing loose ships by default — no env
-   auto-transfer; the create prints which env files it is *not* carrying so
-   a missing one fails loud at create, not deep in `make dev`.
+   git-status distinction — listed = travels. Directly matched file symlinks
+   are dereferenced into regular files at their repo-relative paths;
+   directory symlinks are not followed. The create prints which ignored env
+   files it is *not* carrying so a missing one fails loud at create, not deep
+   in `make dev`.
 
 4. **Warm pools (opt-in, per repo)** — `pier pool set <size>` (or the TUI's
    w page) keeps N parked, **setup-complete** members ready; `pier <branch>`
@@ -339,14 +358,15 @@ polling.
 ## 8. Secrets
 
 One-way copy from the laptop at create; never stored anywhere else, never
-written back. Sources (wizard-detected, confirmed into the manifest):
+written back. Sources:
 
-- repo files named by a repo-root `.pier-include` (path or glob per line) —
-  the **only** loose-file channel: nothing untracked or ignored ships without
-  a line here (env files included; the create warns about ones left behind).
-  Tracked content arrives with the fetch, dirty edits to it via the patch.
-- `~/.codex/` (auth.json, config.toml)
-- `~/.claude/` settings, `CLAUDE.md`, agents
+- non-ignored untracked repo files, automatically, plus ignored files named by
+  `.pier/include` (path or glob per line). The create warns about ignored env
+  files left behind. Directly matched file symlinks carry their target
+  contents under the link's repo-relative path. Tracked content arrives with
+  the fetch, dirty edits to it via the patch.
+- `~/.codex/` (auth.json, config.toml, skills)
+- `~/.claude/` settings, `CLAUDE.md`, agents, skills
 - a GitHub credential for git push/PRs and private-repo fetch: `gh auth
   token` if gh is logged in, else the laptop's https git credential
   (`git credential fill`), else the ssh agent relayed via forwarding (fetch
@@ -378,7 +398,7 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 
 ## 9. Setup wizard
 
-`pier setup` — plain stdin prompts (no TUI form), four phases, under 3
+`pier setup` — plain stdin prompts (no TUI form), five phases, under 3
 minutes:
 
 1. **Detect** — CLIs, profiles/projects, plugin, gh, harness configs; all
@@ -394,6 +414,13 @@ minutes:
    IAM rights. `pier teardown` reverses it.
 4. **Doctor** — quota headroom, connectivity, plugin; writes
    `~/.config/pier/config.toml`; prints `cd <repo> && pier <branch>`.
+5. **Skills** — one confirm per detected agent (claude, codex — same
+   SKILL.md format), then the bundled pier-onboard skill (embedded in the
+   binary) is installed/refreshed under `~/.<agent>/skills`. A dir
+   confirmed here postdates manifest detection, so it's appended to the
+   session manifest — only when the manifest was accepted at all. Runs
+   before the bake offer so no question hides behind the build.
+   `pier skills` is the same install standalone, no questions.
 
 Second dev on a prepared account: detect finds groundwork (`Existed`),
 creates nothing, done in ~90s.
@@ -427,6 +454,7 @@ pier pool set <size>    keep <size> warm sessions ready for the cwd repo (0 = of
 pier pool fill [--detach]  top the cwd repo's pool up to size now
 pier pool drain [repo]  destroy a repo's warm members
 pier setup              wizard (--print-admin for the no-IAM-rights path)
+pier skills             install/refresh the bundled agent skills standalone
 pier bake               build/refresh the prebaked image
 pier doctor             checks
 pier teardown           remove account groundwork
@@ -516,7 +544,7 @@ fresh` and fell back. The laptop-death backstop got an unplanned live trial:
 the laptop's network died mid-refill (even the cleanup terminate couldn't
 reach EC2) — the VM finished setup on its own, the fill leash parked it
 (`parking: idle for 2m0s`), and that member claimed cleanly the next morning.
-Editing `.pier-setup.sh` made the next fill print `recycling stale member …`
+Editing `.pier/setup.sh` made the next fill print `recycling stale member …`
 and replace it. A repo whose setup script fails on stock (pnpm absent) had
 its member destroyed, never parked, and the claim fell back to a fresh
 create. Every failed create terminated its own instance; account swept back

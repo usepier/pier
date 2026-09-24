@@ -28,6 +28,11 @@ const (
 	StateParked   State = "parked"   // instance stopped, disk persists
 	StateDeleting State = "deleting" // destroy issued; the cloud is still removing it
 	StateDead     State = "dead"     // terminated/crashed outside our control
+	// StateFailed is a local tombstone, not a machine: the create died before
+	// the session existed and took its half-made instance with it. The row
+	// survives so a failed create leaves a trace instead of a silent gap in
+	// the list; `pier rm` (d in the TUI) dismisses it.
+	StateFailed State = "failed"
 )
 
 // Session is one instance + its persistent disk.
@@ -45,6 +50,12 @@ type Session struct {
 	Created      time.Time // session creation, not last boot — AGE must never go backward
 	CostNote     string    // honest money: "~$3-4/mo" parked, the type's hourly rate otherwise
 	PoolGen      string    // warm-pool generation fingerprint; non-empty = unclaimed pool member, not a user session
+	// FailReason is why a StateFailed tombstone exists — the create error,
+	// verbatim. Empty for every real session.
+	FailReason string
+	// LogPath points a tombstone at its create log. Empty when the create ran
+	// in the foreground and its output went to the terminal instead.
+	LogPath string
 }
 
 // Machine is one row in the TUI's resize picker: a curated instance type
@@ -57,7 +68,7 @@ type Machine struct {
 }
 
 // CreateSpec describes a new session. Create returns as soon as the instance
-// is attach-ready; code push and .pier-setup.sh continue asynchronously in
+// is attach-ready; code push and .pier/setup.sh continue asynchronously in
 // the session (the async create pipeline) with steps streamed via Progress.
 type CreateSpec struct {
 	Name          string
@@ -90,18 +101,18 @@ type ClaimSpec struct {
 
 // BakeSpec describes one repo's image bake. Images are repo-specific: the
 // default install serves pier and the harnesses; whatever a repo's toolchain
-// needs on top (pnpm, python, ...) comes from its .pier-bake.sh.
+// needs on top (pnpm, python, ...) comes from its .pier/bake.sh.
 type BakeSpec struct {
 	RepoName string   // repo basename; keys the image to its repo
-	HookPath string   // local path to the repo's .pier-bake.sh; "" = none
+	HookPath string   // local path to the repo's .pier/bake.sh; "" = none
 	Replaces []string // images this bake supersedes (previous bake, legacy shared image)
 }
 
-// BakeHook returns the repo's .pier-bake.sh, "" when absent. It runs on the
+// BakeHook returns the repo's .pier/bake.sh, "" when absent. It runs on the
 // bake instance (agent user, passwordless sudo, no repo checkout — bake
-// predates any session): toolchains belong here, repo state in .pier-setup.sh.
+// predates any session): toolchains belong here, repo state in .pier/setup.sh.
 func BakeHook(repoRoot string) string {
-	p := filepath.Join(repoRoot, ".pier-bake.sh")
+	p := filepath.Join(repoRoot, ".pier", "bake.sh")
 	if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
 		return ""
 	}
@@ -186,7 +197,7 @@ type Driver interface {
 	Exec(ctx context.Context, id string, command string) (string, error)
 
 	// Bake builds one repo's prebaked session image (harnesses + the repo's
-	// .pier-bake.sh toolchains), cutting that repo's cold create to ~60-90s.
+	// .pier/bake.sh toolchains), cutting that repo's cold create to ~60-90s.
 	Bake(ctx context.Context, spec BakeSpec) (imageID string, err error)
 
 	// Headroom reports account capacity (vCPU quota) for the create-time

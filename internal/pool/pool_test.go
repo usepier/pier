@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 )
 
 // The generation is the staleness contract: any input that changes what a

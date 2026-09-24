@@ -19,7 +19,7 @@ install: build
 	install -m 0755 pier $$(go env GOPATH)/bin/pier
 
 test:
-	go vet ./... && go test ./...
+	go vet ./... && go test -race ./...
 
 clean:
 	rm -f pier $(ASSETS)/pier-supervisor-linux-*

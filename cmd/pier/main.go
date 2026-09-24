@@ -25,16 +25,17 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/config"
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
-	"github.com/kerem-kaynak/pier/internal/driver/gcpgce"
-	"github.com/kerem-kaynak/pier/internal/driver/payload"
-	"github.com/kerem-kaynak/pier/internal/pool"
-	"github.com/kerem-kaynak/pier/internal/proxy"
-	"github.com/kerem-kaynak/pier/internal/tui"
-	"github.com/kerem-kaynak/pier/internal/ui"
-	"github.com/kerem-kaynak/pier/internal/wizard"
+	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/awsec2"
+	"github.com/usepier/pier/internal/driver/gcpgce"
+	"github.com/usepier/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/pool"
+	"github.com/usepier/pier/internal/proxy"
+	"github.com/usepier/pier/internal/tombstone"
+	"github.com/usepier/pier/internal/tui"
+	"github.com/usepier/pier/internal/ui"
+	"github.com/usepier/pier/internal/wizard"
 )
 
 //go:embed assets
@@ -51,38 +52,75 @@ func supervisorBin(arch string) ([]byte, error) {
 	return b, nil
 }
 
-const usage = `usage:
-  pier                      interactive session list
-  pier <branch> [base]      new session off base (default HEAD), attach
-      -d, --detach            create without attaching
-      --idle <dur|never>      idle self-park timeout (default from config)
-      --cap <dur|never>       unattended runaway cap
-      --no-park               shorthand for --idle never
-      --no-pool               skip this repo's warm pool for this create
-  pier ls                   list sessions
-  pier attach <session>     attach (auto-resumes if parked)
-  pier logs <session>       show the setup script log (-f follows)
-  pier mcp login <session>  authenticate every MCP server that still needs it
-                            (one browser approval each; add a server name to redo one)
-  pier proxy                every running session as <session>.pier — open ports
-                            mirrored live on the name and on localhost, dev
-                            servers accelerated (macOS; one sudo)
-  pier port <session> <port> [port...]  forward ports by hand until ctrl-c
-                            (3000 = same both sides, 8080:3000 = local:session)
-  pier rm <session> [-f]    destroy session and its disk
-  pier keep <session>       pin: disable idle self-park
-  pier resize <session> <type>  grow/shrink the VM (running: ~1-2 min park+resume; same arch only)
-  pier pool                 warm pool status + cost
-  pier pool set <size>      keep <size> warm sessions ready for this repo (0 = off)
-  pier pool fill [--detach] top this repo's pool up to size now
-  pier pool drain [repo]    destroy a repo's warm members
-  pier setup                first-run wizard (creates cloud groundwork)
-      --print-admin           print the admin-runnable setup commands instead
-  pier doctor               environment + account checks
-  pier bake                 prebake this repo's session image (~1-2 min creates)
-  pier teardown             remove all pier groundwork from the account
-  pier version              print the pier version
-`
+type helpItem struct {
+	command     string
+	description string
+}
+
+type helpSection struct {
+	title string
+	items []helpItem
+}
+
+var helpSections = []helpSection{
+	{
+		title: "Create session",
+		items: []helpItem{
+			{"pier <branch> [base]", "create from base (default HEAD), then attach"},
+			{"-d, --detach", "create without attaching"},
+			{"--idle <dur|never>", "set the idle self-park timeout (default from config)"},
+			{"--cap <dur|never>", "set the unattended runaway cap"},
+			{"--no-park", "disable idle self-parking"},
+			{"--no-pool", "skip this repo's warm pool for this create"},
+		},
+	},
+	{
+		title: "Manage sessions",
+		items: []helpItem{
+			{"pier ls [--json]", "list sessions (stable JSON with --json)"},
+			{"pier attach <session>", "attach, resuming first if parked"},
+			{"pier logs <session> [-f]", "show or follow the setup log"},
+			{"pier keep <session>", "disable idle self-parking"},
+			{"pier resize <session> <type>", "change VM size (same architecture only)"},
+			{"pier rm <session> [-f]", "destroy a session and its disk"},
+		},
+	},
+	{
+		title: "Warm pools",
+		items: []helpItem{
+			{"pier pool", "show warm pool status and cost"},
+			{"pier pool set <size>", "keep <size> warm sessions ready for this repo (0 = off)"},
+			{"pier pool fill [--detach]", "top this repo's pool up to size now"},
+			{"pier pool drain [repo]", "destroy a repo's warm members"},
+		},
+	},
+	{
+		title: "Forwarding & access",
+		items: []helpItem{
+			{"pier proxy", "map sessions to <session>.pier and localhost (macOS)"},
+			{"pier port <session> <port...>", "forward ports manually (for example 8080:3000)"},
+			{"pier mcp login <session> [server]", "authenticate pending MCP servers in the browser"},
+		},
+	},
+	{
+		title: "Setup & maintenance",
+		items: []helpItem{
+			{"pier setup", "run the first-time cloud setup"},
+			{"pier setup --print-admin", "print setup commands for a cloud admin"},
+			{"pier skills", "install or refresh the bundled agent skills"},
+			{"pier doctor", "check the environment and cloud account"},
+			{"pier bake", "prebake this repo's session image"},
+			{"pier teardown", "remove all pier groundwork from the account"},
+		},
+	},
+	{
+		title: "General",
+		items: []helpItem{
+			{"pier version", "print the pier version"},
+			{"pier help", "show this help"},
+		},
+	},
+}
 
 func main() {
 	args := os.Args[1:]
@@ -92,7 +130,7 @@ func main() {
 	}
 	switch args[0] {
 	case "ls":
-		cmdLS()
+		cmdLS(args[1:])
 	case "attach":
 		cmdAttach(args[1:])
 	case "logs":
@@ -113,6 +151,8 @@ func main() {
 		cmdPool(args[1:])
 	case "setup":
 		cmdSetup(args[1:])
+	case "skills":
+		cmdSkills()
 	case "doctor":
 		cmdDoctor()
 	case "bake":
@@ -131,7 +171,16 @@ func main() {
 func printUsage() {
 	fmt.Println("\n " + ui.Title.Render("\u2693 pier") +
 		ui.Dim.Render(" \u2014 coding agent sessions as park-when-idle micro-VMs on your own cloud") + "\n")
-	fmt.Print(usage)
+	command := fmt.Sprintf("%-35s", "pier")
+	fmt.Printf("   %s  %s\n", ui.Accent.Render(command), "open the interactive session list")
+	for _, section := range helpSections {
+		fmt.Println()
+		fmt.Println(" " + ui.Bold.Render(section.title))
+		for _, item := range section.items {
+			command = fmt.Sprintf("%-35s", item.command)
+			fmt.Printf("   %s  %s\n", ui.Accent.Render(command), item.description)
+		}
+	}
 }
 
 func fatal(err error) {
@@ -275,6 +324,16 @@ func cmdNew(args []string) {
 	// Images are repo-specific; a repo that never baked launches from stock
 	// (guarded cloud-init installs live).
 	image := cfg.BakedImage(filepath.Base(repo))
+	// A repo with a bake hook has declared that stock isn't enough for it —
+	// its toolchain lives in .pier/bake.sh and nowhere else. Launching stock
+	// anyway is legal but almost never what was wanted: the create succeeds,
+	// then .pier/setup.sh dies minutes later on a missing toolchain, and the
+	// two events look unrelated. Say it here, while it's still one sentence.
+	if image == "" && driver.BakeHook(repo) != "" {
+		fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(" no baked image for "+filepath.Base(repo)+
+			" — launching from stock, so .pier/bake.sh toolchains will be missing and .pier/setup.sh may fail"))
+		fmt.Println(ui.Dim.Render("  fix: `pier bake` in this repo (~5 min once)"))
+	}
 	fmt.Printf("%s %s\n", ui.Bold.Render("creating "+branch),
 		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(repo), base)))
 
@@ -308,6 +367,10 @@ func cmdNew(args []string) {
 			Progress: func(step string) { fmt.Println(ui.Step(step)) },
 		})
 		if err != nil {
+			// The instance is already gone (Create destroys its own wreckage), so
+			// leave a tombstone: without one this create vanishes without trace,
+			// and a detached create has no terminal to have shown the error in.
+			buryCreate(cfg, branch, repo, err)
 			fatal(err)
 		}
 	}
@@ -416,14 +479,64 @@ func waitReachable(drv driver.Driver, id string, timeout time.Duration) error {
 
 // --- ls / attach / rm / keep -----------------------------------------------------
 
-func cmdLS() {
-	_, drv := loadDriver()
-	all, err := drv.List(context.Background())
+type sessionJSON struct {
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Repository  string       `json:"repository"`
+	Branch      string       `json:"branch"`
+	Owner       string       `json:"owner"`
+	Provider    string       `json:"provider"`
+	State       driver.State `json:"state"`
+	SetupState  string       `json:"setup_state"`
+	Strained    bool         `json:"strained"`
+	CreatedAt   *time.Time   `json:"created_at"`
+	MachineType string       `json:"machine_type"`
+	CostNote    string       `json:"cost_note"`
+}
+
+func parseLSArgs(args []string) (bool, error) {
+	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOutput := fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil {
+		return false, err
+	}
+	if fs.NArg() != 0 {
+		return false, fmt.Errorf("usage: pier ls [--json]")
+	}
+	return *jsonOutput, nil
+}
+
+func writeSessionsJSON(w io.Writer, sessions []driver.Session) error {
+	items := make([]sessionJSON, 0, len(sessions))
+	for _, s := range sessions {
+		var createdAt *time.Time
+		if !s.Created.IsZero() {
+			created := s.Created.UTC()
+			createdAt = &created
+		}
+		items = append(items, sessionJSON{
+			ID: s.ID, Name: s.Name, Repository: s.Repo, Branch: s.Branch,
+			Owner: s.User, Provider: s.Driver, State: s.State,
+			SetupState: s.Setup, Strained: s.Strained, CreatedAt: createdAt,
+			MachineType: s.InstanceType, CostNote: s.CostNote,
+		})
+	}
+	return json.NewEncoder(w).Encode(items)
+}
+
+func cmdLS(args []string) {
+	jsonOutput, err := parseLSArgs(args)
 	if err != nil {
 		fatal(err)
 	}
-	// Warm pool members are inventory, not sessions: one dim summary line
-	// below the table instead of rows.
+	_, drv := loadDriver()
+	all, err := listSessions(drv)
+	if err != nil {
+		fatal(err)
+	}
+	// Warm pool members are inventory, not sessions: kept out of the JSON
+	// entirely, and one dim summary line below the table instead of rows.
 	var sessions []driver.Session
 	members := 0
 	for _, s := range all {
@@ -433,10 +546,15 @@ func cmdLS() {
 		}
 		sessions = append(sessions, s)
 	}
-	enrich(drv, sessions)
 	poolLine := ""
 	if members > 0 {
 		poolLine = ui.Dim.Render(fmt.Sprintf("+ %d warm pool member(s) — `pier pool`", members))
+	}
+	if jsonOutput {
+		if err := writeSessionsJSON(os.Stdout, sessions); err != nil {
+			fatal(err)
+		}
+		return
 	}
 	if len(sessions) == 0 {
 		fmt.Println(ui.Dim.Render("no sessions — start one with `pier <branch>`"))
@@ -447,15 +565,25 @@ func cmdLS() {
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
-	anyStrained, anySetupFailed := false, false
+	anyStrained, anySetupFailed, anyFailedCreate := false, false, false
 	for _, s := range sessions {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.Created), s.CostNote)
 		anyStrained = anyStrained || s.Strained
 		anySetupFailed = anySetupFailed || s.Setup == "failed"
+		anyFailedCreate = anyFailedCreate || s.State == driver.StateFailed
 	}
 	w.Flush()
 	if poolLine != "" {
 		fmt.Println(poolLine)
+	}
+	if anyFailedCreate {
+		fmt.Println("\n" + ui.Bad.Render("✗") + ui.Dim.Render(" create failed = the instance was rolled back, nothing is running — `pier rm <session>` clears the row"))
+		for _, s := range sessions {
+			if s.State != driver.StateFailed || s.FailReason == "" {
+				continue
+			}
+			fmt.Println(ui.Dim.Render("  " + s.Name + ": " + tombstone.Summarize(s.FailReason)))
+		}
 	}
 	if anyStrained {
 		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`"))
@@ -467,6 +595,12 @@ func cmdLS() {
 
 // stateLabel renders the state plus the supervisor's strain and setup flags.
 func stateLabel(s driver.Session) string {
+	if s.State == driver.StateFailed {
+		// "create failed", never a bare "failed": the neighbouring rows say
+		// "setup failed" for a live session whose setup script died, and the
+		// two mean very different things — one has a VM, this one does not.
+		return "create failed"
+	}
 	l := string(s.State)
 	if s.Strained {
 		l += " (strained)"
@@ -552,7 +686,7 @@ func age(t time.Time) string {
 }
 
 func match(drv driver.Driver, query string) driver.Session {
-	sessions, err := drv.List(context.Background())
+	sessions, err := listSessions(drv)
 	if err != nil {
 		fatal(err)
 	}
@@ -618,6 +752,22 @@ func cmdLogs(args []string) {
 // interprets the progress-meter escapes natively. The TUI's l key renders a
 // sanitized in-place view instead.
 func showLogs(drv driver.Driver, s driver.Session, follow bool) {
+	// A failed create has no VM and no setup log, but it does have the create
+	// log — which is the log the user is asking for. Serve that instead of
+	// refusing: "what broke" is the same question either way.
+	if s.State == driver.StateFailed {
+		if s.LogPath == "" {
+			fmt.Println(s.FailReason)
+			return
+		}
+		b, err := os.ReadFile(s.LogPath)
+		if err != nil {
+			fmt.Println(s.FailReason)
+			return
+		}
+		os.Stdout.Write(b)
+		return
+	}
 	requireReady(s)
 	if s.State == driver.StateParked {
 		resumeIfParked(drv, s)
@@ -645,6 +795,14 @@ func showLogs(drv driver.Driver, s driver.Session, follow bool) {
 // before any ssh is spawned, so the user never sees a raw transport error
 // from the window between cloud-running and actually-attachable.
 func requireReady(s driver.Session) {
+	if s.State == driver.StateFailed {
+		hint := "`pier " + s.Name + "` retries it"
+		if s.LogPath != "" {
+			hint += ", " + s.LogPath + " has the create log"
+		}
+		fatal(fmt.Errorf("%s never finished creating (%s) — nothing is running; %s",
+			s.Name, tombstone.Summarize(s.FailReason), hint))
+	}
 	if s.State == driver.StateCreating {
 		fatal(fmt.Errorf("%s is still setting up — try again when `pier ls` shows it running", s.Name))
 	}
@@ -845,6 +1003,14 @@ func cmdRM(args []string) {
 	}
 	_, drv := loadDriver()
 	s := match(drv, names[0])
+	// A tombstone has no instance and no disk — rm just forgets the record.
+	if s.State == driver.StateFailed {
+		if err := tombstone.Dismiss(config.Dir(), s.Name); err != nil {
+			fatal(err)
+		}
+		fmt.Println(ui.OK.Render("cleared failed create " + s.Name))
+		return
+	}
 	if !force && !confirm(fmt.Sprintf("destroy session %q and its disk?", s.Name), false) {
 		return
 	}
@@ -1039,8 +1205,10 @@ func poolSet(args []string) {
 // the TUI: saves the config, then drains (0) or starts a detached fill (>0).
 func applyPoolSize(cfg config.Config, drv driver.Driver, repoRoot string, n int, progress func(string)) error {
 	repo := filepath.Base(repoRoot)
-	cfg.SetPoolSize(repo, n)
-	if err := cfg.Save(); err != nil {
+	if _, err := config.Update(func(c *config.Config) error {
+		c.SetPoolSize(repo, n)
+		return nil
+	}); err != nil {
 		return err
 	}
 	if n == 0 {
@@ -1144,11 +1312,34 @@ func spawnPoolFill(repoRoot string) (string, error) {
 	return logPath, nil
 }
 
-// --- setup / doctor / bake / teardown ---------------------------------------------
+// --- setup / skills / doctor / bake / teardown ------------------------------------
 
 func cmdSetup(args []string) {
 	printAdmin := len(args) > 0 && args[0] == "--print-admin"
 	if err := wizard.Run(newDriver, printAdmin); err != nil {
+		fatal(err)
+	}
+}
+
+// cmdSkills is the standalone version of the wizard's skills step, minus
+// the questions — running the command is the confirmation, so it stays
+// scriptable. Refreshes the bundled skills for every agent on the machine,
+// e.g. after a pier upgrade. Idempotent; a no-op prints as such.
+func cmdSkills() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatal(err)
+	}
+	agents := wizard.AgentDirs(home)
+	if len(agents) == 0 {
+		fmt.Println(ui.Dim.Render("  no agent config found (~/.claude or ~/.codex) — nothing to install into"))
+		return
+	}
+	notes, err := wizard.InstallSkills(home, agents)
+	for _, n := range notes {
+		fmt.Println(n)
+	}
+	if err != nil {
 		fatal(err)
 	}
 }
@@ -1223,7 +1414,7 @@ func cmdBake() {
 	fmt.Printf("%s %s\n", ui.Bold.Render("baking "+name),
 		ui.Dim.Render("(one temporary instance ~5 min, then an image — ~$1-2/mo storage)"))
 	if hook != "" {
-		fmt.Println(ui.Step(".pier-bake.sh found — its toolchains bake in"))
+		fmt.Println(ui.Step(".pier/bake.sh found — its toolchains bake in"))
 	}
 	// This bake supersedes the repo's previous image (and on aws-ec2, once
 	// per config, the legacy shared one).
@@ -1239,8 +1430,13 @@ func cmdBake() {
 	if err != nil {
 		fatal(err)
 	}
-	cfg.RecordBake(name, img)
-	if err := cfg.Save(); err != nil {
+	// Update, not Save: a bake takes minutes, and cfg was read before it
+	// started. Saving it wholesale would revert anything written meanwhile —
+	// including another repo's bake.
+	if _, err := config.Update(func(c *config.Config) error {
+		c.RecordBake(name, img)
+		return nil
+	}); err != nil {
 		fatal(err)
 	}
 	fmt.Println(ui.OK.Render("baked "+img) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~1-2 min"))
@@ -1250,7 +1446,7 @@ func cmdBake() {
 }
 
 func cmdTeardown() {
-	cfg, drv := loadDriver()
+	_, drv := loadDriver()
 	if !confirm("remove all pier groundwork and baked images from the account?", false) {
 		return
 	}
@@ -1274,9 +1470,13 @@ func cmdTeardown() {
 	if err := drv.Teardown(context.Background()); err != nil {
 		fatal(err)
 	}
-	cfg.ClearBakes()
-	cfg.Pool.Sizes = nil
-	cfg.Save()
+	if _, err := config.Update(func(c *config.Config) error {
+		c.ClearBakes()
+		c.Pool.Sizes = nil
+		return nil
+	}); err != nil {
+		fatal(err)
+	}
 	fmt.Println(ui.OK.Render("groundwork removed — the account is clean"))
 }
 
@@ -1322,15 +1522,20 @@ func cmdTUI() {
 			}
 			return q.Detail
 		},
-		Fetch: func() ([]driver.Session, error) {
-			sessions, err := drv.List(context.Background())
-			if err != nil {
-				return nil, err
+		Fetch:       func() ([]driver.Session, error) { return listSessions(drv) },
+		AuthExpired: awsec2.LoginExpired,
+		Reauthenticate: func() *exec.Cmd {
+			args := []string{"login"}
+			if cfg.AWS.Profile != "" {
+				args = append(args, "--profile", cfg.AWS.Profile)
 			}
-			enrich(drv, sessions)
-			return sessions, nil
+			return exec.Command("aws", args...)
 		},
 		Destroy: func(s driver.Session) error {
+			// d on a tombstone clears the record; there is no instance to kill.
+			if s.State == driver.StateFailed {
+				return tombstone.Dismiss(config.Dir(), s.Name)
+			}
 			return drv.Destroy(context.Background(), s.ID)
 		},
 		Pin: func(s driver.Session) error {
@@ -1353,6 +1558,15 @@ func cmdTUI() {
 		},
 		CreateDetached: spawnCreate,
 		FetchLog: func(s driver.Session) (string, error) {
+			// A tombstone has no VM to read from — its log is the local create
+			// log, which is the whole point of keeping the row around.
+			if s.State == driver.StateFailed {
+				b, err := os.ReadFile(s.LogPath)
+				if err != nil {
+					return s.FailReason, nil
+				}
+				return string(b), nil
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			// The viewer refetches every few seconds, so the transfer stays
@@ -1415,6 +1629,75 @@ func cmdTUI() {
 	}
 }
 
+// createLogPath is where a detached create's output lands. spawnCreate writes
+// it and the create itself reads it back to point its tombstone at the log —
+// so the formula lives here once rather than being re-derived on both sides.
+// It shares the graveyard's escaping, so feat/login and feat-login get their
+// own logs instead of overwriting each other's.
+func createLogPath(branch string) string {
+	return filepath.Join(config.Dir(), "logs", "create-"+tombstone.FileStem(branch)+".log")
+}
+
+// listSessions is the one list every surface shows: the driver's real
+// sessions plus local tombstones for creates that died before becoming one.
+// A tombstone whose name came back as a live session (the retry worked) is
+// dropped here, so a successful re-create silently clears its own gravestone.
+func listSessions(drv driver.Driver) ([]driver.Session, error) {
+	sessions, err := drv.List(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	enrich(drv, sessions)
+	merged, revived := mergeTombstones(sessions, tombstone.List(config.Dir()))
+	for _, name := range revived {
+		tombstone.Dismiss(config.Dir(), name)
+	}
+	return merged, nil
+}
+
+// mergeTombstones appends a failed row per tombstone and reports the ones the
+// cloud has since answered for. A name that is live again means the create
+// was retried and worked, so its gravestone is stale — the user shouldn't
+// have to clear a row that the obvious next action already resolved.
+func mergeTombstones(sessions []driver.Session, recs []tombstone.Record) (merged []driver.Session, revived []string) {
+	live := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		live[s.Name] = true
+	}
+	for _, r := range recs {
+		if live[r.Name] {
+			revived = append(revived, r.Name)
+			continue
+		}
+		sessions = append(sessions, driver.Session{
+			Name: r.Name, Repo: r.Repo, Branch: r.Branch, Driver: r.Driver,
+			State: driver.StateFailed, Created: r.When,
+			FailReason: r.Reason, LogPath: r.LogPath,
+			CostNote: "—", // nothing is running; nothing is being charged
+		})
+	}
+	return sessions, revived
+}
+
+// buryCreate records a failed create so it leaves a trace in the list instead
+// of a silent gap. Best-effort: the create already failed and its own error is
+// what the user acts on — a graveyard write that fails must not mask it.
+func buryCreate(cfg config.Config, branch, repo string, cause error) {
+	rec := tombstone.Record{
+		Name: branch, Repo: filepath.Base(repo), Branch: branch,
+		Driver: or(cfg.Driver, "aws-ec2"), Reason: cause.Error(), When: time.Now(),
+	}
+	if p := createLogPath(branch); fileExists(p) {
+		rec.LogPath = p
+	}
+	_ = tombstone.Write(config.Dir(), rec)
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
 // spawnCreate re-execs `pier <branch> --detach` as a detached child (own
 // session, output to a log file), so a TUI-initiated create runs in the
 // background and survives the TUI closing. The list shows it as "creating"
@@ -1427,11 +1710,10 @@ func spawnCreate(branch string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	logDir := filepath.Join(config.Dir(), "logs")
-	if err := os.MkdirAll(logDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(config.Dir(), "logs"), 0o700); err != nil {
 		return "", err
 	}
-	logPath := filepath.Join(logDir, "create-"+strings.ReplaceAll(branch, "/", "-")+".log")
+	logPath := createLogPath(branch)
 	f, err := os.Create(logPath)
 	if err != nil {
 		return "", err

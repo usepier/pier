@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver"
 )
 
 const (
@@ -63,6 +63,10 @@ type Driver struct {
 
 	callerARN string // cached
 
+	// scpFn overrides the file transfer push uses; nil means real scp. Tests
+	// set it to exercise the retry policy without a VM to copy to.
+	scpFn func(ctx context.Context, id, local, remote string) error
+
 	// direct-connect probe state (direct.go)
 	dmu       sync.Mutex
 	dprobe    map[string]directProbe
@@ -76,8 +80,10 @@ var _ driver.Driver = (*Driver)(nil)
 
 func (d *Driver) Name() string { return "aws-ec2" }
 
-// user returns the caller identity used for tag namespacing. Assumed-role
-// ARNs get their per-login session name stripped so the value is stable.
+// user returns the complete caller identity used for tag namespacing. The
+// final segment of an assumed-role ARN is the role-session identity (the
+// Identity Center username/email), so it must remain part of the owner. Two
+// people using the same permission-set role must not share Pier sessions.
 func (d *Driver) user(ctx context.Context) (string, error) {
 	if d.callerARN != "" {
 		return d.callerARN, nil
@@ -86,11 +92,8 @@ func (d *Driver) user(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if i := strings.Index(arn, ":assumed-role/"); i >= 0 {
-		parts := strings.Split(arn, "/")
-		if len(parts) == 3 {
-			arn = strings.Join(parts[:2], "/")
-		}
+	if arn == "" {
+		return "", fmt.Errorf("AWS returned an empty caller identity ARN")
 	}
 	d.callerARN = arn
 	return arn, nil

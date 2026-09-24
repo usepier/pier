@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 )
 
 var requiredAPIs = []string{"compute.googleapis.com", "iap.googleapis.com"}
@@ -133,7 +133,7 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	switch {
 	case payload.GitHubToken() != "":
 		gh.Detail = "token found — private-repo fast fetch + push from sessions"
-	case exec.Command("ssh-add", "-l").Run() == nil:
+	case execCommand("ssh-add", "-l").Run() == nil:
 		gh.Detail = "ssh agent only — fast fetch relays it; pushes work while attached (`gh auth login` for detached pushes)"
 	default:
 		gh.OK = false

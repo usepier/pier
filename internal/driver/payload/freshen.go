@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver"
 )
 
 // --- pool claim freshen --------------------------------------------------------
 // A warm pool member already carries everything slow: harnesses, supervisor,
-// the repo's history, a completed .pier-setup.sh. Claiming it means making
+// the repo's history, a completed .pier/setup.sh. Claiming it means making
 // what's cheap-but-stale current again — this script is that step. It runs on
 // the just-resumed member (a boot: the tmux server is always gone, /tmp is
 // clean) after the same cargo pushes as create, minus supervisor + user-data.

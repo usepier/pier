@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver"
 )
 
 // --- user data ---------------------------------------------------------------
@@ -113,15 +113,15 @@ const tmuxEnsure = `# SSH_AUTH_SOCK points at the attach-refreshed symlink (dang
 # login: on a stock image cloud-init's "usermod -aG docker agent" lands after
 # this ssh session began, so a server started directly here would carry a
 # pre-docker group set for its whole life — and every window forks from the
-# server, so .pier-setup.sh and the user's shells all get docker.sock denied.
+# server, so .pier/setup.sh and the user's shells all get docker.sock denied.
 # sudo re-runs initgroups, picking up /etc/group as it stands after the
 # cloud-init wait above.
 tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
 `
 
-const setupWindow = `# Background setup, after checkout + patch + .pier-include extras are all in
-# place: the repo's .pier-setup.sh, unless a PIER_SETUP_SCRIPT override rode
-# the tar (outer double quotes expand $setup now, into the single-quoted
+const setupWindow = `# Background setup, after checkout + patch + .pier/include extras are all in
+# place: the repo's .pier/setup.sh, unless a PIER_SETUP_SCRIPT override rode
+# the tar into ~/.config/pier (outer double quotes expand $setup now, into the single-quoted
 # bash -c; \$ defers the rest to run time). The outcome must be impossible to
 # miss — a failed setup used to vanish with its window: ~/.pier-setup.status
 # holds "running" then the exit code (the supervisor beacons it to ls/TUI),
@@ -129,11 +129,11 @@ const setupWindow = `# Background setup, after checkout + patch + .pier-include 
 # setup-failed and stays open instead of closing. The rename targets its own
 # pane id: with a client attached, a bare rename-window can resolve "current
 # window" to the attached client's window and mislabel the user's shell.
-setup=./.pier-setup.sh
+setup=./.pier/setup.sh
 if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
 # Presence is the signal, not the exec bit: git only carries +x when the
 # author remembered chmod, and gating on -x skipped a committed 0644
-# .pier-setup.sh with no trace — the one silent failure setup promises not
+# .pier/setup.sh with no trace — the one silent failure setup promises not
 # to have. bash runs it either way.
 if [ -f "$setup" ]; then
   tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; bash $setup 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE setup-failed; exec sleep infinity; fi'"
@@ -147,7 +147,7 @@ set -euo pipefail
 # Stock image: harness install still running under cloud-init; wait it out.
 # Guard on binaries the stock image LACKS: Ubuntu ships git and tmux, so
 # guarding on those skipped the wait everywhere (the same trap the
-# user-data idempotency guards document) and .pier-setup.sh raced the
+# user-data idempotency guards document) and .pier/setup.sh raced the
 # node/docker/claude installs it depends on.
 command -v docker >/dev/null && command -v node >/dev/null && command -v claude >/dev/null || sudo cloud-init status --wait >/dev/null || true
 
@@ -211,7 +211,7 @@ fi
 ` + tmuxEnsure + setupWindow + `
 # Attach gates on this marker: nobody lands in a half-set-up session. Written
 # after the repo checkout and tmux session exist; deliberately NOT after
-# .pier-setup.sh, which runs async in its tmux window.
+# .pier/setup.sh, which runs async in its tmux window.
 touch "$HOME/.pier-bootstrapped"
 
 rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-supervisor /tmp/pier-bootstrap.sh

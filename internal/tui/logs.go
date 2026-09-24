@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/kerem-kaynak/pier/internal/ui"
+	"github.com/usepier/pier/internal/ui"
 )
 
 // The l key: the session's setup log as a pager inside the TUI — scroll,

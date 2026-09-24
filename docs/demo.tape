@@ -4,7 +4,7 @@
 #
 # vhs drives a real terminal, so this records against real sessions.
 # Stage before recording: a throwaway repo (e.g. /tmp/pier-demo/shop) whose
-# .pier-setup.sh starts a dev server on :3000, then
+# .pier/setup.sh starts a dev server on :3000, then
 #   pier checkout-flow -d --no-park
 #   pier search-index  -d --no-park
 # Both must be past creating (harness installed, claude authenticated —

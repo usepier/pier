@@ -19,17 +19,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kerem-kaynak/pier/internal/config"
-	"github.com/kerem-kaynak/pier/internal/driver"
-	"github.com/kerem-kaynak/pier/internal/pool"
-	"github.com/kerem-kaynak/pier/internal/ui"
+	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/pool"
+	"github.com/usepier/pier/internal/ui"
 )
 
 type Options struct {
 	FetchQuota func() string // e.g. "12/32 vCPUs in use"; nil/"" hides it
 	Fetch      func() ([]driver.Session, error)
-	Destroy    func(driver.Session) error
-	Pin        func(driver.Session) error
+	// AuthExpired identifies a fetch error that an interactive login can fix;
+	// Reauthenticate builds that foreground login command. Together they make
+	// enter recover the list in place instead of forcing a trip back to shell.
+	AuthExpired    func(error) bool
+	Reauthenticate func() *exec.Cmd
+	Destroy        func(driver.Session) error
+	Pin            func(driver.Session) error
 	// CreateDetached starts a background create and returns its log path;
 	// the TUI stays open and the session appears in the list as "creating".
 	// nil disables creating from the TUI (tests).
@@ -148,9 +153,13 @@ type model struct {
 	statusBad bool   // status is an error (red) vs a notice (accent)
 	loading   bool
 	loaded    bool // first fetch has landed
-	polling   bool // an auto-refresh poll is scheduled (creates in flight)
-	watch     int  // poll rounds left after a spawn (until it's listable)
-	frame     int  // spinner frame
+	// recoverable authentication state; while required, enter runs the
+	// foreground provider login instead of acting on a session row
+	authRequired     bool
+	reauthenticating bool
+	polling          bool // an auto-refresh poll is scheduled (creates in flight)
+	watch            int  // poll rounds left after a spawn (until it's listable)
+	frame            int  // spinner frame
 	// attach-in-flight state; enter is a no-op while attachSess is set
 	attachSess    driver.Session // row being attached; zero Name = none in flight
 	attachStart   time.Time      // last ExecProcess launch; feeds RetryAttach
@@ -267,6 +276,9 @@ type reachableMsg struct {
 	err error
 }
 
+// reauthenticatedMsg arrives after the foreground cloud login exits.
+type reauthenticatedMsg struct{ err error }
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
@@ -294,9 +306,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.loaded = true
 		if msg.err != nil {
+			m.authRequired = m.opts.AuthExpired != nil && m.opts.AuthExpired(msg.err)
 			m.status, m.statusBad = msg.err.Error(), true
 			return m, nil
 		}
+		m.authRequired = false
 		m.sessions, m.members = splitMembers(msg.sessions)
 		if m.cursor >= len(m.sessions) {
 			m.cursor = max(0, len(m.sessions)-1)
@@ -406,6 +420,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.startAttach(msg.s) // second and final attempt; attachRetried stays set
+	case reauthenticatedMsg:
+		m.reauthenticating = false
+		if msg.err != nil {
+			m.status, m.statusBad = "reauthentication failed: "+msg.err.Error(), true
+			return m, nil
+		}
+		m.authRequired = false
+		m.loaded, m.loading = false, true
+		m.status, m.statusBad = "authenticated — refreshing sessions…", false
+		return m, tea.Batch(m.fetch, tickCmd())
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.mode == modeLogs {
@@ -463,6 +487,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Expired auth is a focused recovery state: enter temporarily hands the
+	// terminal to the provider login, then a successful login refetches the
+	// list. Keep the original error visible until that happens.
+	if m.authRequired {
+		switch msg.String() {
+		case "q", "ctrl+c", "esc":
+			return m, tea.Quit
+		case "enter":
+			if m.reauthenticating || m.opts.Reauthenticate == nil {
+				return m, nil
+			}
+			cmd := m.opts.Reauthenticate()
+			if cmd == nil {
+				return m, nil
+			}
+			m.reauthenticating = true
+			m.status, m.statusBad = "reauthenticating…", false
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return reauthenticatedMsg{err} })
+		}
+		return m, nil
+	}
 	m.status = ""
 	switch msg.String() {
 	case "q", "ctrl+c", "esc":
@@ -489,6 +534,9 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case driver.StateDead:
 			m.status, m.statusBad = s.Name+" is dead — no VM to attach to", false
+			return m, nil
+		case driver.StateFailed:
+			m.status, m.statusBad = s.Name+" never finished creating — n starts it again, d clears the row", false
 			return m, nil
 		case driver.StateParked:
 			if m.opts.Resume == nil {
@@ -519,6 +567,14 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case driver.StateDead:
 				m.status, m.statusBad = s.Name+" is dead — no VM to read the log from", false
 				return m, nil
+			case driver.StateFailed:
+				// The create log is local and outlived the instance, so a
+				// tombstone can still explain itself — as long as the create
+				// wrote one (a foreground create printed to the terminal).
+				if s.LogPath == "" {
+					m.status, m.statusBad = s.Name+": "+s.FailReason, true
+					return m, nil
+				}
 			}
 			m.mode = modeLogs
 			m.logSess, m.logText, m.logLines = s, "", nil
@@ -540,6 +596,10 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		if len(m.sessions) > 0 {
 			s := m.sessions[m.cursor]
+			if s.State == driver.StateFailed {
+				m.status, m.statusBad = s.Name+" never finished creating — nothing to pin", false
+				return m, nil
+			}
 			m.loading = true
 			return m, tea.Batch(func() tea.Msg {
 				if err := m.opts.Pin(s); err != nil {
@@ -553,6 +613,10 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s := m.sessions[m.cursor]
 			if s.State == driver.StateCreating {
 				m.status, m.statusBad = s.Name+" is still setting up — resize once it shows running", false
+				return m, nil
+			}
+			if s.State == driver.StateFailed {
+				m.status, m.statusBad = s.Name+" never finished creating — nothing to resize", false
 				return m, nil
 			}
 			if s.State == driver.StateDeleting {
@@ -712,14 +776,23 @@ func (m model) updateSettingPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // fixed; the config on disk is never touched by a bad value.
 func (m model) saveSetting(val string) (tea.Model, tea.Cmd) {
 	f := config.Settings[m.setIdx]
+	// Validate against the page's copy first so a bad value never reaches
+	// disk and the editor can stay open on it.
 	if err := config.Set(m.cfg, f.Key, val); err != nil {
 		m.status, m.statusBad = err.Error(), true
 		return m, nil
 	}
-	if err := m.cfg.Save(); err != nil {
+	// Then write through Update rather than saving the page's copy: the TUI
+	// can sit on this page while a `pier bake` finishes in another terminal,
+	// and saving a stale struct would erase the image it just recorded.
+	saved, err := config.Update(func(c *config.Config) error {
+		return config.Set(c, f.Key, val)
+	})
+	if err != nil {
 		m.status, m.statusBad = err.Error(), true
 		return m, nil
 	}
+	m.cfg = &saved
 	m.editing, m.picking = false, false
 	m.status, m.statusBad = f.Label+" saved — applies to new sessions", false
 	return m, nil
@@ -1163,6 +1236,8 @@ func (m model) View() string {
 	b.WriteString("\n" + head + "\n\n")
 
 	switch {
+	case m.authRequired:
+		b.WriteString(ui.Dim.Render("   session list unavailable — reauthenticate to continue") + "\n")
 	case !m.loaded:
 		b.WriteString(ui.Dim.Render("   fetching sessions…") + "\n")
 	case len(m.sessions) == 0:
@@ -1178,7 +1253,12 @@ func (m model) View() string {
 		b.WriteString(ui.Box.Render(ui.Accent.Render("❯ ")+m.input+ui.Accent.Render("▌")) + "\n")
 		b.WriteString(" " + ui.Keys("enter", "create", "esc", "cancel") + "\n")
 	case modeConfirm:
-		b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("destroy %q and its disk? (y/n)", m.sessions[m.cursor].Name)) + "\n")
+		if s := m.sessions[m.cursor]; s.State == driver.StateFailed {
+			// No disk, no instance — clearing a tombstone destroys nothing.
+			b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("clear the failed create %q? (y/n)", s.Name)) + "\n")
+		} else {
+			b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("destroy %q and its disk? (y/n)", s.Name)) + "\n")
+		}
 	case modeResize:
 		s := m.sessions[m.cursor]
 		b.WriteString(" " + ui.Dim.Render("resize "+s.Name+" — same-arch machines, billed on-demand while running") + "\n")
@@ -1203,12 +1283,16 @@ func (m model) View() string {
 				b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
 			}
 		}
-		keys := []string{"enter", "attach", "n", "new", "d", "delete", "p", "pin", "m", "resize", "l", "logs"}
-		if m.opts.PoolSizes != nil {
-			keys = append(keys, "w", "pools")
+		if m.authRequired {
+			b.WriteString(" " + ui.Keys("enter", "reauthenticate", "q", "quit") + "\n")
+		} else {
+			keys := []string{"enter", "attach", "n", "new", "d", "delete", "p", "pin", "m", "resize", "l", "logs"}
+			if m.opts.PoolSizes != nil {
+				keys = append(keys, "w", "pools")
+			}
+			keys = append(keys, "s", "settings", "r", "refresh", "q", "quit")
+			b.WriteString(" " + ui.Keys(keys...) + "\n")
 		}
-		keys = append(keys, "s", "settings", "r", "refresh", "q", "quit")
-		b.WriteString(" " + ui.Keys(keys...) + "\n")
 	}
 	return b.String()
 }
@@ -1577,10 +1661,16 @@ func stateCell(s driver.Session) string {
 		driver.StateParked:   "◌",
 		driver.StateDeleting: "◌",
 		driver.StateDead:     "✗",
+		driver.StateFailed:   "✗",
 	}
 	dot, ok := dots[s.State]
 	if !ok {
 		dot = "?"
+	}
+	// A tombstone reads "create failed", never a bare "failed" — the row above
+	// it may say "running (setup failed)", and those are not the same thing.
+	if s.State == driver.StateFailed {
+		return dot + " create failed"
 	}
 	cell := dot + " " + string(s.State)
 	if s.Strained {
@@ -1596,7 +1686,7 @@ func stateCell(s driver.Session) string {
 }
 
 func stateStyle(s driver.Session) lipgloss.Style {
-	if s.Setup == "failed" {
+	if s.Setup == "failed" || s.State == driver.StateFailed {
 		return ui.Bad
 	}
 	if s.Strained {

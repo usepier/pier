@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+var (
+	execCommand        = exec.Command
+	execCommandContext = exec.CommandContext
+)
+
 // gcloud runs the gcloud CLI (the tool already requires it for the IAP
 // tunnel, so v1 has no SDK dependency) and returns trimmed stdout. --quiet
 // suppresses every confirmation prompt; the project is always explicit so
@@ -21,7 +26,7 @@ func (d *Driver) gcloud(ctx context.Context, args ...string) (string, error) {
 	if d.Project != "" {
 		full = append(full, "--project", d.Project)
 	}
-	cmd := exec.CommandContext(ctx, "gcloud", full...)
+	cmd := execCommandContext(ctx, "gcloud", full...)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -130,7 +135,7 @@ func (d *Driver) sshRun(ctx context.Context, id, script string) (string, error) 
 // the workspace fetch rides the laptop's ssh agent.
 func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, script string) (string, error) {
 	args := append(append(d.sshOpts(id), extra...), "agent@"+id, script)
-	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	out, err := execCommandContext(ctx, "ssh", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ssh %s: %s", id, strings.TrimSpace(string(out)))
 	}
@@ -142,7 +147,7 @@ func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, scri
 // like a hang.
 func (d *Driver) sshStream(ctx context.Context, id, script string) error {
 	args := append(d.sshOpts(id), "agent@"+id, script)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
 }
@@ -151,7 +156,7 @@ func (d *Driver) sshStream(ctx context.Context, id, script string) error {
 // pushes too small to warrant one.
 func (d *Driver) scpTo(ctx context.Context, id, local, remote string, extra ...string) error {
 	args := append(append(d.sshOpts(id), extra...), local, "agent@"+id+":"+remote)
-	cmd := exec.CommandContext(ctx, "scp", args...)
+	cmd := execCommandContext(ctx, "scp", args...)
 	// scp draws its progress meter only when stdout is a terminal — so big
 	// pushes (the repo bundle) show live progress interactively and stay
 	// silent when piped.
@@ -174,7 +179,7 @@ func (d *Driver) newKeypair(id string) (string, error) {
 	key := d.keyPath(id)
 	_ = os.Remove(key)
 	_ = os.Remove(key + ".pub")
-	out, err := exec.Command("ssh-keygen", "-t", "ed25519", "-N", "", "-C", "pier", "-f", key).CombinedOutput()
+	out, err := execCommand("ssh-keygen", "-t", "ed25519", "-N", "", "-C", "pier", "-f", key).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ssh-keygen: %s", strings.TrimSpace(string(out)))
 	}

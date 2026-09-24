@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver"
 )
 
 // Claim converts a warm pool member into a named session, tags only. EC2 tag
