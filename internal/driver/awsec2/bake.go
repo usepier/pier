@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/usepier/pier/internal/driver"
@@ -131,7 +132,7 @@ exit 1`
 	if err != nil {
 		return "", err
 	}
-	if _, err := d.aws(ctx, "ec2", "wait", "image-available", "--image-ids", img); err != nil {
+	if err := d.waitImage(ctx, img, spec.Step); err != nil {
 		return "", err
 	}
 
@@ -141,4 +142,50 @@ exit 1`
 		}
 	}
 	return img, nil
+}
+
+// imageWait bounds how long a bake waits for its image. A prebuilt image
+// carries the repo's dependencies and container images, and snapshotting that
+// routinely outlasts the CLI waiter's fixed ten minutes — which used to fail a
+// bake whose image was still on its way to being fine.
+var imageWait, imagePoll = 90 * time.Minute, 20 * time.Second
+
+// waitImage polls the image until it's available, reporting the snapshot's
+// progress about once a minute so a long wait doesn't read as a hang.
+func (d *Driver) waitImage(ctx context.Context, img string, step func(string)) error {
+	deadline := time.Now().Add(imageWait)
+	lastNote := time.Now()
+	for {
+		out, err := d.aws(ctx, "ec2", "describe-images", "--image-ids", img,
+			"--query", "Images[0].[State,BlockDeviceMappings[0].Ebs.SnapshotId]", "--output", "text")
+		if err != nil {
+			return err
+		}
+		f := strings.Fields(out)
+		state := ""
+		if len(f) > 0 {
+			state = f[0]
+		}
+		switch state {
+		case "available":
+			return nil
+		case "failed", "invalid", "deregistered", "error":
+			return fmt.Errorf("image %s ended %s", img, state)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("image %s still %s after %s — it may yet finish; check it in the EC2 console", img, state, imageWait)
+		}
+		if len(f) > 1 && f[1] != "None" && time.Since(lastNote) >= time.Minute {
+			if pct, err := d.aws(ctx, "ec2", "describe-snapshots", "--snapshot-ids", f[1],
+				"--query", "Snapshots[0].Progress", "--output", "text"); err == nil {
+				step("snapshot " + pct)
+			}
+			lastNote = time.Now()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(imagePoll):
+		}
+	}
 }

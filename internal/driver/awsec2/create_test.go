@@ -212,3 +212,30 @@ func TestLaunchVolumeInitialization(t *testing.T) {
 		}
 	})
 }
+
+// A prebuilt image's snapshot routinely takes longer than the CLI waiter's
+// fixed ten minutes; the bake must keep waiting (and say how far along it
+// is) instead of failing an image that is on its way to being fine.
+func TestWaitImageOutlastsSlowSnapshots(t *testing.T) {
+	swap(t, &imagePoll, time.Millisecond)
+	bin := t.TempDir()
+	count := filepath.Join(bin, "n")
+	script := "#!/bin/sh\ncase \"$2\" in\n" +
+		"describe-images) n=$(cat " + count + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + count + "\n" +
+		"  if [ $n -ge 3 ]; then echo 'available snap-1'; elif [ \"$FAIL\" = 1 ]; then echo 'failed snap-1'; else echo 'pending snap-1'; fi ;;\n" +
+		"describe-snapshots) echo '42%' ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "aws"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	d := &Driver{}
+	if err := d.waitImage(context.Background(), "ami-1", func(string) {}); err != nil {
+		t.Fatalf("a pending image must be waited out, got %v", err)
+	}
+
+	os.Remove(count)
+	t.Setenv("FAIL", "1")
+	if err := d.waitImage(context.Background(), "ami-1", func(string) {}); err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("a failed image must stop the wait with its state, got %v", err)
+	}
+}
