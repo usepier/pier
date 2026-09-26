@@ -54,7 +54,7 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error)
 	// Destroy also drops the known_hosts entry — the next bake reuses this
 	// deterministic name with a fresh host key.
 	defer d.Destroy(context.WithoutCancel(ctx), id)
-	fmt.Println(ui.Step("bake instance " + id + " launched — installing harnesses (a few minutes)"))
+	spec.Step("bake instance " + id + " launched — installing harnesses (a few minutes)")
 
 	if err := d.waitSSH(ctx, id, 300*time.Second); err != nil {
 		return "", err
@@ -73,7 +73,7 @@ exit 1`
 		return "", fmt.Errorf("harness install did not complete: %w", err)
 	}
 	if spec.HookPath != "" {
-		fmt.Println(ui.Step("running .pier/bake.sh (output follows)"))
+		spec.Step("running .pier/bake.sh (output follows)")
 		if err := d.scpTo(ctx, id, spec.HookPath, "/tmp/pier-bake.sh", "-q"); err != nil {
 			return "", err
 		}
@@ -109,7 +109,7 @@ exit 1`
 		return "", err
 	}
 
-	fmt.Println(ui.Step("imaging — stop, snapshot the boot disk (a few minutes)"))
+	spec.Step("imaging — stop, snapshot the boot disk (a few minutes)")
 	// Synchronous stop: images create wants the disk quiesced.
 	if _, err := d.gcloud(ctx, "compute", "instances", "stop", id, "--zone", d.Zone); err != nil {
 		return "", err

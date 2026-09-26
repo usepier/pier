@@ -36,7 +36,7 @@ func AgentDirs(home string) []string {
 // user skills directory. Claude Code and Codex read the same SKILL.md
 // layout, so one tree serves both. Existing copies are refreshed in place,
 // so a pier upgrade propagates skill fixes. Runs from the wizard's skills
-// step and standalone as `pier skills`; returns print-ready progress lines
+// step and standalone as `pier setup --skills`; returns print-ready progress lines
 // and any installation error.
 func InstallSkills(home string, agents []string) ([]string, error) {
 	var notes []string
@@ -73,9 +73,16 @@ func offerSkills(in *bufio.Reader, cfg *config.Config, home string) error {
 		}
 	}
 	if len(chosen) == 0 {
-		fmt.Println(ui.Dim.Render("  (skipped — `pier skills` installs them anytime)"))
+		fmt.Println(ui.Dim.Render("  (skipped — `pier setup --skills` installs them anytime)"))
 		return nil
 	}
+	return installChosen(cfg, home, chosen)
+}
+
+// installChosen installs the bundled skills for the chosen agents and, when
+// the user copies agent config into sessions at all, adds each installed
+// skills dir to the session manifest so the skill travels too.
+func installChosen(cfg *config.Config, home string, chosen []string) error {
 	saved := false
 	for _, agent := range chosen {
 		notes, installErr := InstallSkills(home, []string{agent})

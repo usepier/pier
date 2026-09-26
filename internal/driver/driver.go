@@ -109,6 +109,14 @@ type BakeSpec struct {
 	RepoRoot string   // local repo root to prebuild from; "" = toolchains only
 	HookPath string   // local path to the repo's .pier/bake.sh; "" = none
 	Replaces []string // images this bake supersedes (previous bake, legacy shared image)
+	Progress func(step string)
+}
+
+// Step reports one bake phase; a nil Progress discards it.
+func (s BakeSpec) Step(msg string) {
+	if s.Progress != nil {
+		s.Progress(msg)
+	}
 }
 
 // BakeHook returns the repo's .pier/bake.sh, "" when absent. It runs on the

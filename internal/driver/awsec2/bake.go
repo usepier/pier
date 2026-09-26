@@ -64,7 +64,7 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error)
 	os.Rename(d.keyPath("bake")+".pub", d.keyPath(id)+".pub")
 	defer os.Remove(d.keyPath(id))
 	defer os.Remove(d.keyPath(id) + ".pub")
-	fmt.Println(ui.Step("bake instance " + id + " launched — installing harnesses (a few minutes)"))
+	spec.Step("bake instance " + id + " launched — installing harnesses (a few minutes)")
 
 	if err := d.waitSSH(ctx, id, 240*time.Second); err != nil {
 		return "", err
@@ -83,7 +83,7 @@ exit 1`
 		return "", fmt.Errorf("harness install did not complete: %w", err)
 	}
 	if spec.HookPath != "" {
-		fmt.Println(ui.Step("running .pier/bake.sh (output follows)"))
+		spec.Step("running .pier/bake.sh (output follows)")
 		if err := d.scpTo(ctx, id, spec.HookPath, "/tmp/pier-bake.sh", "-q"); err != nil {
 			return "", err
 		}
@@ -112,7 +112,7 @@ exit 1`
 		return "", err
 	}
 
-	fmt.Println(ui.Step("imaging — stop, snapshot, register (a few minutes)"))
+	spec.Step("imaging — stop, snapshot, register (a few minutes)")
 	if _, err := d.aws(ctx, "ec2", "stop-instances", "--instance-ids", id); err != nil {
 		return "", err
 	}

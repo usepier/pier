@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -60,6 +61,13 @@ type Driver struct {
 	// SupervisorBin returns the embedded pier-supervisor binary for an arch
 	// ("arm64"/"amd64").
 	SupervisorBin func(arch string) ([]byte, error)
+	// Out receives transfer meters and streamed remote output (the bake
+	// hook). nil discards it: a frontend speaking a protocol on stdout (the
+	// `pier api` server) must never have a driver write there behind it.
+	Out io.Writer
+	// Notify receives one-off transport notices ("using the ssm tunnel").
+	// nil discards them.
+	Notify func(string)
 
 	callerARN string // cached
 

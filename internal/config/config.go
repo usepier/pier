@@ -20,7 +20,39 @@ type Config struct {
 	AWS           AWS     `toml:"aws"`
 	GCP           GCP     `toml:"gcp"`
 	Pool          Pool    `toml:"pool"`
+	Speed         Speed   `toml:"speed"`
 	Secrets       Secrets `toml:"secrets"`
+	// Images records what each repo's session image was baked from — when,
+	// and from which .pier scripts — so pier can remind (never decide) when a
+	// rebake would help. Keyed by repo basename, like the image ids.
+	Images map[string]ImageInfo `toml:"images,omitempty"`
+}
+
+// Speed holds the two settings a speed profile presets, plus how images
+// are built and when pier suggests rebuilding them.
+type Speed struct {
+	// ReadySessions is how many parked, setup-complete sessions pier keeps
+	// ready for each repo that has a session image (a repo's own entry in
+	// pool.sizes overrides it). Parked = disk-only cost while waiting.
+	ReadySessions int `toml:"ready_sessions"`
+	// BakeReminders: suggest `pier bake` when a repo has no image, its image
+	// gets old, or its .pier scripts changed since the bake. Never automatic.
+	BakeReminders bool `toml:"bake_reminders"`
+	// ImageRepo: bakes include the repo checkout with .pier/setup.sh already
+	// run (the fast default). false bakes toolchains only, for teams that keep
+	// repo state out of images.
+	ImageRepo bool `toml:"image_repo"`
+	// ReminderAge is how old an image gets before pier suggests a rebake:
+	// "30d", "72h", or "never".
+	ReminderAge string `toml:"reminder_age"`
+}
+
+// ImageInfo is what one repo's image was baked from.
+type ImageInfo struct {
+	BakedAt      time.Time `toml:"baked_at"`
+	SetupSHA     string    `toml:"setup_sha,omitempty"` // sha256 of .pier/setup.sh at bake; "" = none
+	BakeSHA      string    `toml:"bake_sha,omitempty"`  // sha256 of .pier/bake.sh at bake; "" = none
+	RepoIncluded bool      `toml:"repo_included"`
 }
 
 type AWS struct {
@@ -55,7 +87,7 @@ type GCP struct {
 }
 
 // Pool configures repo-scoped warm session pools. Strictly opt-in: a pool
-// exists only for repos with a size entry. Managed by `pier pool set`, not
+// exists only for repos with a size entry. Managed by `pier ready`, not
 // the TUI settings — like baked images, a pool is a per-repo cost decision.
 type Pool struct {
 	// MaxAge recycles members older than this, bounding how far a warm
@@ -91,6 +123,7 @@ func Default() Config {
 			MachineType: "e2-medium",
 			DiskGiB:     40,
 		},
+		Speed: Speed{ReadySessions: 1, BakeReminders: true, ImageRepo: true, ReminderAge: "30d"},
 	}
 }
 
@@ -216,22 +249,122 @@ func (c *Config) ClearBakes() {
 	}
 	c.AWS.BakedAMI = ""
 	c.AWS.BakedAMIs = nil
+	c.Images = nil
 }
 
-// PoolSize is repo's configured warm-pool size (0 = no pool).
-func (c Config) PoolSize(repo string) int { return c.Pool.Sizes[repo] }
+// PoolSize is how many ready sessions pier keeps for repo: the repo's own
+// entry when it has one, otherwise the speed default — but only for repos
+// with a session image. Without one a ready session would pay the full cold
+// setup on every refill, which is the cost the reminder to bake points at.
+func (c Config) PoolSize(repo string) int {
+	if n, ok := c.Pool.Sizes[repo]; ok {
+		return n
+	}
+	if c.BakedImage(repo) == "" {
+		return 0
+	}
+	return c.Speed.ReadySessions
+}
 
-// SetPoolSize records repo's desired pool size; 0 removes the entry so the
-// config doesn't accumulate dead rows for drained pools.
+// SetPoolSize records repo's ready-session count. A count equal to what the
+// default would give removes the entry, so the repo follows later default
+// changes; anything else (0 included) is pinned for this repo.
 func (c *Config) SetPoolSize(repo string, n int) {
-	if n <= 0 {
-		delete(c.Pool.Sizes, repo)
+	if n < 0 {
+		n = 0
+	}
+	delete(c.Pool.Sizes, repo)
+	if c.PoolSize(repo) == n {
 		return
 	}
 	if c.Pool.Sizes == nil {
 		c.Pool.Sizes = map[string]int{}
 	}
 	c.Pool.Sizes[repo] = n
+}
+
+// PoolRepos lists every repo with a nonzero ready-session target: explicit
+// entries plus baked repos riding the default.
+func (c Config) PoolRepos() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(r string) {
+		if !seen[r] && c.PoolSize(r) > 0 {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	for r := range c.Pool.Sizes {
+		add(r)
+	}
+	for r := range c.bakedRepos() {
+		add(r)
+	}
+	return out
+}
+
+// bakedRepos is the set of repos with an image under the active driver.
+func (c Config) bakedRepos() map[string]bool {
+	m := map[string]string{}
+	if c.gcp() {
+		m = c.GCP.BakedImages
+	} else {
+		m = c.AWS.BakedAMIs
+	}
+	out := map[string]bool{}
+	for r, img := range m {
+		if img != "" {
+			out[r] = true
+		}
+	}
+	return out
+}
+
+// Profile names the speed preset the current settings match: "fast"
+// (reminders + 1 ready session), "lean" (reminders, none ready), "minimal"
+// (neither), or "custom" for anything else.
+func (c Config) Profile() string {
+	switch {
+	case c.Speed.BakeReminders && c.Speed.ReadySessions == 1:
+		return "fast"
+	case c.Speed.BakeReminders && c.Speed.ReadySessions == 0:
+		return "lean"
+	case !c.Speed.BakeReminders && c.Speed.ReadySessions == 0:
+		return "minimal"
+	}
+	return "custom"
+}
+
+// ApplyProfile sets the two settings a speed preset stands for.
+func (c *Config) ApplyProfile(p string) error {
+	switch p {
+	case "fast":
+		c.Speed.BakeReminders, c.Speed.ReadySessions = true, 1
+	case "lean":
+		c.Speed.BakeReminders, c.Speed.ReadySessions = true, 0
+	case "minimal":
+		c.Speed.BakeReminders, c.Speed.ReadySessions = false, 0
+	default:
+		return fmt.Errorf("speed profile: want fast, lean or minimal (got %q)", p)
+	}
+	return nil
+}
+
+// ReminderAge parses speed.reminder_age; 0 = never remind about age.
+func (c Config) ReminderAge() time.Duration {
+	d, err := parseDays(c.Speed.ReminderAge)
+	if err != nil {
+		return 30 * 24 * time.Hour
+	}
+	return d
+}
+
+// RecordImageInfo stores what repo's new image was baked from.
+func (c *Config) RecordImageInfo(repo string, info ImageInfo) {
+	if c.Images == nil {
+		c.Images = map[string]ImageInfo{}
+	}
+	c.Images[repo] = info
 }
 
 // PoolMaxAge parses pool.max_age, defaulting to 14 days. time.ParseDuration
@@ -250,6 +383,25 @@ func (c Config) PoolMaxAge() (time.Duration, error) {
 	d, err := time.ParseDuration(s)
 	if err != nil || d <= 0 {
 		return 0, fmt.Errorf("pool.max_age: want a positive duration like 14d or 72h (got %q)", s)
+	}
+	return d, nil
+}
+
+// parseDays reads "30d", "72h" or "never" ("" and "never" = 0).
+func parseDays(s string) (time.Duration, error) {
+	if s == "" || s == "never" {
+		return 0, nil
+	}
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("want a positive duration like 30d or 72h (got %q)", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("want a positive duration like 30d or 72h (got %q)", s)
 	}
 	return d, nil
 }
@@ -286,7 +438,8 @@ type Option struct {
 // Suffix). Validation always runs through Set, the single write path.
 type Field struct {
 	Key      string
-	Group    string // "session", "aws", "gcp"
+	Group    string // a Groups key
+	Cloud    string // "aws" / "gcp": applies only while that cloud is active; "" = always
 	Label    string // human label shown on the row
 	Hint     string // short one-liner beside the value
 	Detail   string // multi-line (\n-split) footer for the selected field
@@ -328,37 +481,36 @@ var (
 	diskOpts = []Option{{Value: "20", Label: "20 GiB"}, {Value: "40", Label: "40 GiB"}, {Value: "80", Label: "80 GiB"}, {Value: "160", Label: "160 GiB"}}
 )
 
-// Settings lists the settable fields in display order, grouped session → aws →
-// gcp. Secrets and baked images are deliberately absent: those are managed by
-// `pier setup` and `pier bake`, and the TUI shows them read-only.
+// Groups orders the settings page's sections. Every field belongs to one.
+var Groups = []struct{ Key, Title string }{
+	{"cloud", "Cloud"},
+	{"sessions", "New sessions"},
+	{"idle", "Idle & cost"},
+	{"speed", "Speed"},
+}
+
+// Settings lists the settable fields in display order, grouped by what the
+// user is thinking about when they open the page. Fields tagged with a Cloud
+// only apply (and only show) while that cloud is active. Secrets and baked
+// images are absent on purpose: `pier setup` and `pier bake` manage them.
 var Settings = []Field{
 	{
-		Key: "driver", Group: "session", Label: "cloud", Hint: "runs new sessions",
+		Key: "driver", Group: "cloud", Label: "provider", Hint: "where sessions run",
 		Kind: KindChoice, NoCustom: true, Default: "aws-ec2",
 		Options: []Option{
-			{Value: "aws-ec2", Label: "AWS EC2", Desc: "Amazon EC2 · direct ssh or SSM"},
-			{Value: "gcp-gce", Label: "GCP Compute Engine", Desc: "Google Compute Engine · IAP tunnel"},
+			{Value: "aws-ec2", Label: "AWS", Desc: "Amazon EC2 · direct ssh or SSM"},
+			{Value: "gcp-gce", Label: "GCP", Desc: "Google Compute Engine · IAP tunnel"},
 		},
-		Detail: "Which provider runs new sessions.\nExisting sessions stay on the cloud they were built on; the other cloud's settings wait dimmed below until you switch.",
+		Detail: "Which provider runs new sessions.\nExisting sessions stay on the cloud they were built on. Switching shows that cloud's settings here; run `pier doctor` afterwards to check its groundwork.",
 	},
 	{
-		Key: "idle_timeout", Group: "session", Label: "auto-park", Hint: "park when detached & quiet",
-		Kind: KindChoice, Options: idleOpts, Default: "30m",
-		Detail: "A session detached and quiet this long parks itself: the VM stops, the disk stays (~$3-4/mo), and attaching resumes it in ~20-60s.\n`pier keep` exempts one session; --idle overrides one create.\nformat: 30m, 2h, or never",
+		Key: "aws.profile", Group: "cloud", Cloud: "aws", Label: "CLI profile", Hint: "AWS CLI profile pier uses",
+		Kind: KindText, Empty: "(default)",
+		Detail: "The AWS CLI profile every pier command runs under — SSO, MFA and credentials all come from it.\nset one up with `aws configure`.",
 	},
 	{
-		Key: "unattended_cap", Group: "session", Label: "unattended cap", Hint: "park even mid-run",
-		Kind: KindChoice, Options: capOpts, Default: "8h",
-		Detail: "Parks a session even while the agent is still busy, once you've been detached this long — a runaway loop can't burn compute for days.\n--cap overrides one create.\nformat: 8h or never",
-	},
-	{
-		Key: "aws.profile", Group: "aws", Label: "profile", Hint: "AWS CLI profile for every call",
-		Kind:   KindText,
-		Detail: "The AWS CLI profile every pier command runs under — SSO, MFA, and its default region all come from it.\nset one up with `aws configure`.",
-	},
-	{
-		Key: "aws.region", Group: "aws", Label: "region", Hint: "where new VMs launch",
-		Kind: KindChoice, Default: "eu-central-1",
+		Key: "aws.region", Group: "cloud", Cloud: "aws", Label: "region", Hint: "where new VMs launch",
+		Kind: KindChoice, Default: "eu-central-1", Empty: "from the CLI profile",
 		Options: []Option{
 			{Value: "us-east-1", Desc: "N. Virginia"},
 			{Value: "us-east-2", Desc: "Ohio"},
@@ -369,39 +521,15 @@ var Settings = []Field{
 			{Value: "ap-southeast-1", Desc: "Singapore"},
 			{Value: "ap-northeast-1", Desc: "Tokyo"},
 		},
-		Detail: "New session VMs launch here; existing sessions stay where they are.\nafter switching, `pier doctor` checks the groundwork exists in the new region.\nformat: us-east-1, eu-central-1, …",
+		Detail: "New session VMs launch here; existing sessions stay where they are.\nAfter switching, `pier doctor` checks the groundwork exists in the new region. Session images are per region: rebake there.",
 	},
 	{
-		Key: "aws.instance_type", Group: "aws", Label: "machine", Hint: "default VM for new sessions",
-		Kind: KindMachine, Default: "t4g.medium",
-		Detail: "New sessions start on this VM type. Undersize freely — `m` resizes any live session in about a minute, disk intact.",
-	},
-	{
-		Key: "aws.disk_gib", Group: "aws", Label: "disk", Hint: "per-session root disk",
-		Kind: KindChoice, Options: diskOpts, Suffix: " GiB", Default: "40",
-		Detail: "Root disk for each new session — it's what survives parking and what a parked session costs (~$3-4/mo).\nwhole GiB, at least 8",
-	},
-	{
-		Key: "aws.direct", Group: "aws", Label: "connection", Hint: "how ssh reaches the VM",
-		Kind: KindChoice, NoCustom: true, Default: "direct ssh",
-		Options: []Option{
-			{Value: "true", Label: "direct ssh", Desc: "straight to the VM's public IP — full speed"},
-			{Value: "false", Label: "SSM tunnel", Desc: "everything through SSM (~1 MB/s)"},
-		},
-		Detail: "How the terminal reaches the VM.\ndirect ssh dials the public IP (full speed), opens TCP 22 to your current IP only, and falls back to the SSM tunnel by itself when that's blocked.\nSSM tunnel forces the tunnel — for networks that block outbound 22 or orgs that disallow the ingress calls.",
-	},
-	{
-		Key: "aws.subnet", Group: "aws", Label: "subnet", Hint: "only without a default VPC",
-		Kind: KindText, Empty: "(default VPC)",
-		Detail: "Only for accounts whose default VPC was deleted: session VMs launch in this subnet. Leave empty otherwise.\nformat: subnet-0abc123…",
-	},
-	{
-		Key: "gcp.project", Group: "gcp", Label: "project", Hint: "project sessions are created in",
+		Key: "gcp.project", Group: "cloud", Cloud: "gcp", Label: "project", Hint: "project sessions live in",
 		Kind:   KindText,
-		Detail: "Sessions are created in this project — pier always passes it explicitly, never your active gcloud default. Required when cloud is GCP.",
+		Detail: "Sessions are created in this project — pier always passes it explicitly, never your active gcloud default. Required on GCP.",
 	},
 	{
-		Key: "gcp.zone", Group: "gcp", Label: "zone", Hint: "where new VMs launch",
+		Key: "gcp.zone", Group: "cloud", Cloud: "gcp", Label: "zone", Hint: "where new VMs launch",
 		Kind: KindChoice, Default: "europe-west3-a",
 		Options: []Option{
 			{Value: "us-central1-a", Desc: "Iowa"},
@@ -411,17 +539,96 @@ var Settings = []Field{
 			{Value: "europe-west4-a", Desc: "Netherlands"},
 			{Value: "asia-southeast1-a", Desc: "Singapore"},
 		},
-		Detail: "New session VMs launch in this zone; existing sessions stay put.\nformat: europe-west3-a, us-central1-a, …",
+		Detail: "New session VMs launch in this zone; existing sessions stay put.",
 	},
 	{
-		Key: "gcp.machine_type", Group: "gcp", Label: "machine", Hint: "default VM for new sessions",
+		Key: "aws.direct", Group: "cloud", Cloud: "aws", Label: "connection", Hint: "direct is fastest; SSM if port 22 is blocked",
+		Kind: KindChoice, NoCustom: true, Default: "direct ssh",
+		Options: []Option{
+			{Value: "true", Label: "direct ssh", Desc: "straight to the VM's public IP — full speed"},
+			{Value: "false", Label: "SSM tunnel", Desc: "everything through SSM (~1 MB/s)"},
+		},
+		Detail: "How your terminal reaches the VM.\ndirect ssh dials the public IP at full speed, opens TCP 22 to your current IP only, and falls back to the SSM tunnel by itself when that's blocked.\nSSM tunnel forces the tunnel — for networks that block outbound 22 or orgs that disallow the ingress rule.",
+	},
+	{
+		Key: "aws.subnet", Group: "cloud", Cloud: "aws", Label: "subnet", Hint: "only needed without a default VPC",
+		Kind: KindText, Empty: "default VPC",
+		Detail: "Only for accounts whose default VPC was deleted: session VMs launch in this subnet. Leave empty otherwise.\nformat: subnet-0abc123…",
+	},
+	{
+		Key: "aws.instance_type", Group: "sessions", Cloud: "aws", Label: "machine", Hint: "VM for new sessions",
+		Kind: KindMachine, Default: "t4g.medium",
+		Detail: "New sessions start on this VM type. Undersize freely — `m` on the Sessions tab resizes a live session in about a minute, disk intact.",
+	},
+	{
+		Key: "gcp.machine_type", Group: "sessions", Cloud: "gcp", Label: "machine", Hint: "VM for new sessions",
 		Kind: KindMachine, Default: "e2-medium",
-		Detail: "New sessions start on this machine type. Undersize freely — `m` resizes any live session in a couple of minutes, disk intact.",
+		Detail: "New sessions start on this machine type. Undersize freely — `m` on the Sessions tab resizes a live session in a couple of minutes, disk intact.",
 	},
 	{
-		Key: "gcp.disk_gib", Group: "gcp", Label: "disk", Hint: "per-session boot disk",
+		Key: "aws.disk_gib", Group: "sessions", Cloud: "aws", Label: "disk", Hint: "per-session disk; survives parking",
 		Kind: KindChoice, Options: diskOpts, Suffix: " GiB", Default: "40",
-		Detail: "Boot disk for each new session — it's what survives parking and what a parked session costs (~$3-4/mo).\nwhole GiB, at least 10",
+		Detail: "Root disk for each new session. It's what survives parking, and what a parked session costs: about $0.08-0.10 per GiB-month (40 GiB ≈ $3-4/mo).\nWith a prebuilt image, leave room for dependencies and container images.",
+	},
+	{
+		Key: "gcp.disk_gib", Group: "sessions", Cloud: "gcp", Label: "disk", Hint: "per-session disk; survives parking",
+		Kind: KindChoice, Options: diskOpts, Suffix: " GiB", Default: "40",
+		Detail: "Boot disk for each new session. It's what survives parking, and what a parked session costs (40 GiB ≈ $3-4/mo).",
+	},
+	{
+		Key: "idle_timeout", Group: "idle", Label: "park after", Hint: "park when detached and quiet",
+		Kind: KindChoice, Options: idleOpts, Default: "30m",
+		Detail: "A session you've detached from that goes quiet this long parks itself: the VM stops and only its disk costs money. Attaching resumes it in ~20-60s with your tmux windows and agent conversations restored.\n`pier keep` exempts one session; --idle overrides one create.",
+	},
+	{
+		Key: "unattended_cap", Group: "idle", Label: "runaway cap", Hint: "park even while the agent keeps working",
+		Kind: KindChoice, Options: capOpts, Default: "8h",
+		Detail: "Parks a session even while the agent is busy, once you've been detached this long — a looping agent can't burn compute for days.\n--cap overrides one create.",
+	},
+	{
+		Key: "speed.profile", Group: "speed", Label: "profile", Hint: "preset for the two rows below",
+		Kind: KindChoice, NoCustom: true, Default: "fast",
+		Options: []Option{
+			{Value: "fast", Label: "Fast", Desc: "image + 1 ready session per repo · ~25s starts"},
+			{Value: "lean", Label: "Lean", Desc: "image only · ~1-2 min starts, image storage only"},
+			{Value: "minimal", Label: "Minimal", Desc: "nothing stored · full setup every start, $0 idle"},
+		},
+		Detail: "A profile is a preset for bake reminders and ready sessions. Change either row and the profile reads custom.\nFast: new sessions claim a parked, set-up session (~25s); each ready session costs its parked disk.\nLean: new sessions boot from the repo's image and re-run setup warm.\nMinimal: nothing is stored; every session runs the full setup.",
+	},
+	{
+		Key: "speed.ready_sessions", Group: "speed", Label: "ready sessions", Hint: "parked and set up, per baked repo",
+		Kind: KindChoice, NoCustom: true, Default: "1",
+		Options: []Option{
+			{Value: "0", Label: "none"},
+			{Value: "1", Desc: "the next session starts in ~25s"},
+			{Value: "2", Desc: "two quick starts back to back"},
+			{Value: "3"},
+		},
+		Detail: "How many parked, setup-complete sessions pier keeps for each repo that has a session image. They're stopped VMs: each costs only its disk while waiting, and runs only while being refilled.\nOverride one repo on the Repos tab.",
+	},
+	{
+		Key: "speed.bake_reminders", Group: "speed", Label: "bake reminders", Hint: "suggest `pier bake` when it would help",
+		Kind: KindChoice, NoCustom: true, Default: "on",
+		Options: []Option{
+			{Value: "true", Label: "on", Desc: "when a repo has no image, it gets old, or .pier scripts changed"},
+			{Value: "false", Label: "off"},
+		},
+		Detail: "pier never rebakes on its own. With reminders on it points out when a bake would make sessions start faster.",
+	},
+	{
+		Key: "speed.image_repo", Group: "speed", Label: "image contents", Hint: "what `pier bake` puts in a repo's image",
+		Kind: KindChoice, NoCustom: true, Default: "toolchains + repo",
+		Options: []Option{
+			{Value: "true", Label: "toolchains + repo", Desc: "checkout with setup already run — fastest starts"},
+			{Value: "false", Label: "toolchains only", Desc: "keeps repo state out of images"},
+		},
+		Detail: "toolchains + repo: the bake runs .pier/setup.sh on a checkout, scrubs every secret pier pushed, and images the result; sessions only fetch what changed and re-run setup warm.\ntoolchains only: images carry the harnesses and .pier/bake.sh tools; every session runs the full setup.\nApplies to the next `pier bake`.",
+	},
+	{
+		Key: "speed.reminder_age", Group: "speed", Label: "rebake after", Hint: "remind when an image gets this old",
+		Kind: KindChoice, Default: "30d",
+		Options: []Option{{Value: "14d"}, {Value: "30d"}, {Value: "60d"}, {Value: "never"}},
+		Detail:  "Once a repo's image is this old, pier suggests a rebake so new sessions start with current dependencies.",
 	},
 }
 
@@ -454,8 +661,29 @@ func Get(c Config, key string) string {
 		return c.GCP.MachineType
 	case "gcp.disk_gib":
 		return strconv.Itoa(c.GCP.DiskGiB)
+	case "speed.profile":
+		return c.Profile()
+	case "speed.ready_sessions":
+		return strconv.Itoa(c.Speed.ReadySessions)
+	case "speed.bake_reminders":
+		return strconv.FormatBool(c.Speed.BakeReminders)
+	case "speed.image_repo":
+		return strconv.FormatBool(c.Speed.ImageRepo)
+	case "speed.reminder_age":
+		return c.Speed.ReminderAge
 	}
 	return ""
+}
+
+// Visible reports whether a field applies under the config's active cloud.
+func (c Config) Visible(f Field) bool {
+	switch f.Cloud {
+	case "aws":
+		return !c.gcp()
+	case "gcp":
+		return c.gcp()
+	}
+	return true
 }
 
 // Set mutates one whitelisted scalar, validating it before it lands. A
@@ -547,6 +775,34 @@ func Set(c *Config, key, val string) error {
 		default:
 			return fmt.Errorf("aws.direct: want true or false (got %q)", val)
 		}
+	case "speed.profile":
+		return c.ApplyProfile(strings.ToLower(strings.TrimSpace(val)))
+	case "speed.ready_sessions":
+		n, err := strconv.Atoi(strings.TrimSpace(val))
+		if err != nil || n < 0 || n > 8 {
+			return fmt.Errorf("speed.ready_sessions: want 0-8 (got %q)", val)
+		}
+		c.Speed.ReadySessions = n
+	case "speed.bake_reminders", "speed.image_repo":
+		var b bool
+		switch strings.ToLower(strings.TrimSpace(val)) {
+		case "true", "yes", "on":
+			b = true
+		case "false", "no", "off":
+		default:
+			return fmt.Errorf("%s: want on or off (got %q)", key, val)
+		}
+		if key == "speed.bake_reminders" {
+			c.Speed.BakeReminders = b
+		} else {
+			c.Speed.ImageRepo = b
+		}
+	case "speed.reminder_age":
+		val = strings.TrimSpace(val)
+		if _, err := parseDays(val); err != nil {
+			return fmt.Errorf("speed.reminder_age: %v, or never", err)
+		}
+		c.Speed.ReminderAge = val
 	default:
 		keys := make([]string, len(Settings))
 		for i, s := range Settings {

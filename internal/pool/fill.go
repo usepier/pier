@@ -31,30 +31,30 @@ func Fill(ctx context.Context, p Params) error {
 	// two disagree about a member only across a re-bake racing a create. Known,
 	// accepted: the claimer fails loudly and falls back to a fresh create.
 	for _, m := range plan.Stale {
-		progress("recycling stale member " + m.Name)
+		progress("recycling stale ready session " + m.Name)
 		if err := p.Driver.Destroy(ctx, m.ID); err != nil {
 			return err
 		}
 	}
 	if plan.Fill == 0 {
-		progress(fmt.Sprintf("pool %s is full (%d ready, %d filling)", repo, len(plan.Ready), plan.InFlight))
+		progress(fmt.Sprintf("%s has its ready sessions (%d ready, %d filling)", repo, len(plan.Ready), plan.InFlight))
 		return nil
 	}
 	// Quota gate, conservative: at least 2 vCPUs per member. Pools must not
 	// eat the headroom real sessions need; an unreadable quota is not fatal —
 	// the create itself fails loudly on the provider's limit.
 	if q, err := p.Driver.Headroom(ctx); err == nil && q.Limit > 0 && q.Limit-q.Used < 2*plan.Fill {
-		return fmt.Errorf("filling %d member(s) needs more vCPU headroom than %s has — raise the quota or shrink the pool",
+		return fmt.Errorf("filling %d ready session(s) needs more vCPU headroom than %s has — raise the quota or lower the ready count",
 			plan.Fill, q.Detail)
 	}
 	hasSetup := len(SetupScript(p.RepoRoot)) > 0
 	for i := range plan.Fill {
-		progress(fmt.Sprintf("filling member %d/%d", i+1, plan.Fill))
+		progress(fmt.Sprintf("filling ready session %d/%d", i+1, plan.Fill))
 		if err := fillOne(ctx, p, hasSetup); err != nil {
 			return err
 		}
 	}
-	progress(fmt.Sprintf("pool %s is full (%d ready)", repo, len(plan.Ready)+plan.Fill))
+	progress(fmt.Sprintf("%s has its ready sessions (%d ready)", repo, len(plan.Ready)+plan.Fill))
 	return nil
 }
 
@@ -77,11 +77,11 @@ func fillOne(ctx context.Context, p Params, hasSetup bool) error {
 		return err
 	}
 	if hasSetup {
-		p.progress()("waiting for .pier/setup.sh — a member is only warm once setup finished")
+		p.progress()("waiting for .pier/setup.sh — a session is only ready once setup finished")
 		if err := waitSetup(ctx, p, sess.ID); err != nil {
 			// An unfinished setup is exactly what the pool exists to avoid:
 			// destroy rather than park a member that would claim cold.
-			p.progress()("destroying the failed member")
+			p.progress()("destroying the failed ready session")
 			_ = p.Driver.Destroy(context.WithoutCancel(ctx), sess.ID)
 			return err
 		}

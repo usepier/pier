@@ -17,7 +17,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -310,6 +309,6 @@ func (d *Driver) directNotice(id, msg string) {
 	}
 	d.dmu.Unlock()
 	if !seen {
-		fmt.Fprintln(os.Stderr, "pier: "+msg)
+		d.notify(msg)
 	}
 }

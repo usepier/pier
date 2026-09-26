@@ -1,743 +1,373 @@
 package tui
 
 import (
+	"context"
 	"errors"
-	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/usepier/pier/internal/config"
-	"github.com/usepier/pier/internal/driver"
-	"github.com/usepier/pier/internal/driver/awsec2"
+	"github.com/usepier/pier/pkg/pier"
 )
 
-// View smoke tests: the load-flash bug was View rendering "0 sessions"
-// before the first fetch landed, so pin the three distinct states.
-func TestViewStates(t *testing.T) {
-	m := model{loading: true}
-	if v := m.View(); !strings.Contains(v, "fetching") {
-		t.Errorf("pre-fetch view must show a loading line, not a session count:\n%s", v)
-	}
-	if v := m.View(); strings.Contains(v, "0 session") || strings.Contains(v, "no sessions") {
-		t.Errorf("pre-fetch view leaked an empty-state:\n%s", v)
-	}
-
-	m.loaded = true
-	if v := m.View(); !strings.Contains(v, "no sessions") {
-		t.Errorf("loaded-empty view must say no sessions:\n%s", v)
-	}
-
-	m.sessions = []driver.Session{
-		{Name: "fix-auth", Repo: "myapp", State: driver.StateWorking, Created: time.Now()},
-		{Name: "big-build", Repo: "myapp", State: driver.StateRunning, Strained: true},
-		{Name: "bad-deps", Repo: "myapp", State: driver.StateIdle, Setup: "failed"},
-	}
-	v := m.View()
-	for _, want := range []string{"fix-auth", "big-build", "working", "strained", "(setup failed)", "NAME"} {
-		if !strings.Contains(v, want) {
-			t.Errorf("list view missing %q:\n%s", want, v)
-		}
-	}
+// fake is a Backend with canned data that records what the app asked for.
+type fake struct {
+	sessions []pier.Session
+	repos    []pier.Repo
+	cfg      config.Config
+	removed  []string
+	kept     []string
+	spawned  []string
+	ready    map[string]int
+	setErr   error
 }
 
-func TestEnterReauthenticatesExpiredCloudSession(t *testing.T) {
-	expired := errors.New("aws sts get-caller-identity: your session has expired; use aws login")
-	logins, fetches := 0, 0
-	m := model{opts: Options{
-		AuthExpired: func(err error) bool { return strings.Contains(err.Error(), "session has expired") },
-		Reauthenticate: func() *exec.Cmd {
-			logins++
-			return exec.Command("true")
+func newFake() *fake {
+	now := time.Now()
+	return &fake{
+		cfg:   config.Default(),
+		ready: map[string]int{},
+		sessions: []pier.Session{
+			{ID: "i-1", Name: "checkout-flow", Repo: "shop", Branch: "checkout-flow", State: pier.StateWorking, InstanceType: "t4g.medium", CostNote: "~$0.04/h", Created: now.Add(-2 * time.Hour)},
+			{ID: "i-2", Name: "fix-login", Repo: "flb-estimation", Branch: "fix-login", State: pier.StateParked, InstanceType: "t4g.xlarge", CostNote: "~$7/mo", Created: now.Add(-26 * time.Hour)},
+			{ID: "i-3", Name: "perf-test", Repo: "flb-estimation", State: pier.StateIdle, Setup: "running", InstanceType: "t4g.xlarge", CostNote: "~$0.13/h", Created: now.Add(-3 * time.Minute)},
+			{Name: "broken", Repo: "shop", State: pier.StateFailed, FailReason: "scp: Connection closed", Created: now.Add(-time.Hour)},
+			{ID: "i-4", Name: "pool-flb-1", Repo: "flb-estimation", State: pier.StateParked, PoolGen: "abc", Created: now.Add(-time.Hour)},
 		},
-		Fetch: func() ([]driver.Session, error) {
-			fetches++
-			return []driver.Session{{Name: "fix-auth", State: driver.StateRunning}}, nil
+		repos: []pier.Repo{
+			{Name: "flb-estimation", Current: true, Image: "ami-1", Baked: &config.ImageInfo{BakedAt: now.Add(-62 * 24 * time.Hour), RepoIncluded: true},
+				ReadyTarget: 1, Ready: 1, Sessions: 2, MonthlyUSD: 9.6,
+				Reminders: []pier.Reminder{{Message: "flb-estimation's session image is 62 days old. Rebake so new sessions start with current dependencies.", Action: "pier bake"}}},
+			{Name: "shop", Sessions: 1},
 		},
-	}}
-
-	got, _ := m.Update(sessionsMsg{err: expired})
-	m = got.(model)
-	view := m.View()
-	if !m.authRequired || !strings.Contains(view, "enter") || !strings.Contains(view, "reauthenticate") || strings.Contains(view, "no sessions") {
-		t.Fatalf("expired auth must offer enter-to-reauthenticate:\n%s", view)
 	}
+}
 
-	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if cmd == nil || logins != 1 || !m.reauthenticating {
-		t.Fatalf("enter must build the foreground login, got cmd=%v logins=%d running=%v", cmd, logins, m.reauthenticating)
-	}
-
-	got, cmd = m.Update(reauthenticatedMsg{})
-	m = got.(model)
-	if cmd == nil || m.authRequired || !m.loading || !strings.Contains(m.status, "refreshing") {
-		t.Fatalf("successful login must start a refresh, got auth=%v loading=%v status=%q", m.authRequired, m.loading, m.status)
-	}
-	if batch, ok := cmd().(tea.BatchMsg); ok {
-		for _, c := range batch {
-			if c != nil {
-				c()
-			}
+func (f *fake) Cloud() string { return "AWS eu-central-1" }
+func (f *fake) Sessions(context.Context) ([]pier.Session, error) {
+	return f.sessions, nil
+}
+func (f *fake) Repos([]pier.Session, string) []pier.Repo { return f.repos }
+func (f *fake) Headroom(context.Context) (pier.Quota, error) {
+	return pier.Quota{Detail: "10/32 vCPU"}, nil
+}
+func (f *fake) Remove(_ context.Context, s pier.Session) error {
+	f.removed = append(f.removed, s.Name)
+	return nil
+}
+func (f *fake) Keep(_ context.Context, s pier.Session) error {
+	f.kept = append(f.kept, s.Name)
+	return nil
+}
+func (f *fake) Resume(context.Context, pier.Session) error         { return nil }
+func (f *fake) Resize(context.Context, pier.Session, string) error { return nil }
+func (f *fake) Machines(pier.Session) []pier.Machine {
+	return []pier.Machine{{Type: "t4g.medium", CPU: "2", Mem: "4", Cost: "~$0.03/h"}, {Type: "t4g.xlarge", CPU: "4", Mem: "16", Cost: "~$0.13/h"}}
+}
+func (f *fake) AttachCommand(context.Context, pier.Session) (*exec.Cmd, error) {
+	return exec.Command("true"), nil
+}
+func (f *fake) WaitReachable(context.Context, pier.Session, time.Duration) error { return nil }
+func (f *fake) SetupLog(context.Context, pier.Session, int) (string, error) {
+	return "\x1b[32m==> installing\x1b[0m\nprogress 10%\rprogress 100%\npier setup: done\n", nil
+}
+func (f *fake) SpawnCreate(root, branch string) (string, error) {
+	f.spawned = append(f.spawned, branch)
+	return "/tmp/create-" + branch + ".log", nil
+}
+func (f *fake) SpawnBake(string) (string, error) { return "/tmp/bake.log", nil }
+func (f *fake) SetReady(_ context.Context, root string, n int, _ pier.Progress) (string, error) {
+	f.ready[root] = n
+	return "", nil
+}
+func (f *fake) DrainReady(context.Context, string, pier.Progress) (int, error) { return 0, nil }
+func (f *fake) Settings() []pier.SettingValue {
+	var out []pier.SettingValue
+	for _, fl := range config.Settings {
+		if !f.cfg.Visible(fl) {
+			continue
 		}
+		v := config.Get(f.cfg, fl.Key)
+		out = append(out, pier.SettingValue{Field: fl, Value: v, Display: fl.Display(v)})
 	}
-	if fetches != 1 {
-		t.Errorf("successful login fetched %d times, want 1", fetches)
-	}
+	return out
 }
-
-func TestFailedReauthenticationCanRetry(t *testing.T) {
-	m := model{authRequired: true, reauthenticating: true,
-		opts: Options{Reauthenticate: func() *exec.Cmd { return exec.Command("true") }}}
-	got, _ := m.Update(reauthenticatedMsg{err: errors.New("exit status 1")})
-	m = got.(model)
-	if !m.authRequired || m.reauthenticating || !m.statusBad || !strings.Contains(m.View(), "reauthenticate") {
-		t.Fatalf("failed login must preserve the retry action, got auth=%v running=%v status=%q", m.authRequired, m.reauthenticating, m.status)
+func (f *fake) Set(key, val string) error {
+	if f.setErr != nil {
+		return f.setErr
 	}
+	return config.Set(&f.cfg, key, val)
 }
+func (f *fake) MachineCatalog(string) []pier.Machine { return f.Machines(pier.Session{}) }
+func (f *fake) ReauthCommand() *exec.Cmd             { return exec.Command("true") }
+func (f *fake) DiskMonthlyUSD() float64              { return 7.6 }
 
-// The settings page groups fields under human labels, shows the current
-// values, surfaces the read-only "managed elsewhere" section, and explains
-// the selected field in the detail footer.
-func TestSettingsPage(t *testing.T) {
-	cfg := config.Default()
-	m := model{mode: modeSettings, cfg: &cfg}
-
-	v := m.View()
-	for _, want := range []string{
-		"pier settings",         // title
-		"session", "aws", "gcp", // group headers
-		"auto-park", "machine", "connection", // human labels
-		"t4g.medium",        // a current value
-		"managed elsewhere", // read-only section
-		"claude token",      // a read-only row
-		"config: driver",    // detail footer for the selected (first) field
-	} {
-		if !strings.Contains(v, want) {
-			t.Errorf("settings view missing %q:\n%s", want, v)
-		}
-	}
-	// The raw TOML keys are gone from the rows — only the footer names them.
-	if strings.Contains(v, "idle_timeout ") {
-		t.Errorf("row still shows a raw config key instead of a label:\n%s", v)
-	}
-}
-
-// A free-text field (gcp.project) opens the editor on enter and, on a bad
-// value, stays in edit with an error without touching disk.
-func TestSettingsTextValidation(t *testing.T) {
-	cfg := config.Default()
-	m := model{mode: modeSettings, cfg: &cfg, setIdx: fieldIndex(t, "gcp.project")}
-
-	got, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if !m.editing {
-		t.Fatalf("enter on a text field must open the editor, got editing=%v picking=%v", m.editing, m.picking)
-	}
-	m.setInput = "Bad_Project"
-	got, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if !m.editing || !m.statusBad {
-		t.Errorf("a bad project id must stay in edit with an error, got editing=%v status=%q", m.editing, m.status)
-	}
-	if cfg.GCP.Project != "" {
-		t.Errorf("a rejected value leaked into config: %q", cfg.GCP.Project)
-	}
-}
-
-// A choice field (auto-park / idle_timeout) opens a picker preselected on the
-// current value; selecting a different option saves it.
-func TestSettingsChoicePicker(t *testing.T) {
-	cfg := config.Default() // idle_timeout defaults to 30m
-	m := model{mode: modeSettings, cfg: &cfg, setIdx: fieldIndex(t, "idle_timeout")}
-
-	got, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if !m.picking {
-		t.Fatalf("enter on a choice field must open the picker, got picking=%v editing=%v", m.picking, m.editing)
-	}
-	if m.pickOpts[m.pickIdx].Value != "30m" {
-		t.Errorf("picker must preselect the current value, got %q", m.pickOpts[m.pickIdx].Value)
-	}
-	if v := m.View(); !strings.Contains(v, "(current)") || !strings.Contains(v, "custom…") {
-		t.Errorf("picker must mark the current option and offer custom…:\n%s", v)
-	}
-	// Move to a different option and select it.
-	got, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyDown})
-	m = got.(model)
-	want := m.pickOpts[m.pickIdx].Value
-	got, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if m.picking || cfg.IdleTimeout != want {
-		t.Errorf("selecting an option must save it and close the picker, got picking=%v idle=%q want=%q", m.picking, cfg.IdleTimeout, want)
-	}
-}
-
-// The machine field builds its picker from the injected catalog and converts
-// each machine into an annotated option.
-func TestSettingsMachinePicker(t *testing.T) {
-	cfg := config.Default()
-	m := model{mode: modeSettings, cfg: &cfg, setIdx: fieldIndex(t, "aws.instance_type"),
-		opts: Options{SettingsMachines: func(driverID, cur string) []driver.Machine {
-			return awsec2.Machines(cur)
-		}}}
-	got, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if !m.picking || len(m.pickOpts) == 0 {
-		t.Fatalf("enter on the machine field must open a populated picker, got picking=%v opts=%d", m.picking, len(m.pickOpts))
-	}
-	if m.pickOpts[m.pickIdx].Value != "t4g.medium" {
-		t.Errorf("picker must preselect the configured type, got %q", m.pickOpts[m.pickIdx].Value)
-	}
-	if v := m.View(); !strings.Contains(v, "vCPU") || !strings.Contains(v, "GiB") {
-		t.Errorf("machine picker must show specs:\n%s", v)
-	}
-}
-
-// fieldIndex is the position of key in config.Settings, failing the test if
-// the key was renamed out from under it.
-func fieldIndex(t *testing.T, key string) int {
+// loaded returns a model that has received its first list at w×h.
+func loaded(t *testing.T, f *fake, w, h int) model {
 	t.Helper()
-	for i, f := range config.Settings {
-		if f.Key == key {
-			return i
-		}
-	}
-	t.Fatalf("no settable field %q", key)
-	return 0
+	m := newModel(Options{Open: func() (Backend, error) { return f, nil }, RepoRoot: "/code/flb-estimation", Version: "test"}, f)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	m = next.(model)
+	all, _ := f.Sessions(context.Background())
+	next, _ = m.Update(sessionsMsg{all: all})
+	return next.(model)
 }
 
-// The m key opens the resize picker preselected on the session's current
-// type, and enter on that same type is a no-op notice, not a resize call.
-func TestResizePicker(t *testing.T) {
-	resized := ""
-	m := model{loaded: true,
-		sessions: []driver.Session{{Name: "fix-auth", Repo: "myapp", State: driver.StateRunning, InstanceType: "t4g.medium"}},
-		opts: Options{
-			Fetch:    func() ([]driver.Session, error) { return nil, nil },
-			Resize:   func(s driver.Session, itype string) error { resized = itype; return nil },
-			Machines: func(s driver.Session) []driver.Machine { return awsec2.Machines(s.InstanceType) },
-		}}
-	got, _ := m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	m = got.(model)
-	if m.mode != modeResize {
-		t.Fatalf("m must open the picker, got mode=%v status=%q", m.mode, m.status)
+func press(t *testing.T, m model, keys ...string) (model, tea.Cmd) {
+	t.Helper()
+	var cmd tea.Cmd
+	for _, k := range keys {
+		var msg tea.KeyMsg
+		switch k {
+		case "enter":
+			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		case "esc":
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		case "tab":
+			msg = tea.KeyMsg{Type: tea.KeyTab}
+		case "down":
+			msg = tea.KeyMsg{Type: tea.KeyDown}
+		default:
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+		}
+		next, c := m.Update(msg)
+		m, cmd = next.(model), c
 	}
-	if cur := m.machines[m.machIdx].Type; cur != "t4g.medium" {
-		t.Errorf("picker must preselect the current type, got %q", cur)
+	return m, cmd
+}
+
+// run executes a command chain until it yields a message the test cares
+// about (doneMsg), feeding it back through Update.
+func settle(t *testing.T, m model, cmd tea.Cmd) model {
+	t.Helper()
+	for i := 0; cmd != nil && i < 5; i++ {
+		msg := cmd()
+		if _, ok := msg.(doneMsg); !ok {
+			return m
+		}
+		next, c := m.Update(msg)
+		m, cmd = next.(model), c
+	}
+	return m
+}
+
+// Ready sessions are inventory, not work: they never sit in the session
+// table, but the header counts them.
+func TestReadySessionsStayOutOfTheTable(t *testing.T) {
+	m := loaded(t, newFake(), 140, 32)
+	v := m.View()
+	if strings.Contains(v, "pool-flb-1") {
+		t.Error("a ready session must not render as a session row")
+	}
+	if !strings.Contains(v, "1 ready") || !strings.Contains(v, "checkout-flow") {
+		t.Errorf("header must count ready sessions and the table must list real ones:\n%s", v)
+	}
+}
+
+func TestNewSessionSpawnsInTheBackground(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 120, 30)
+	m, _ = press(t, m, "n", "f", "e", "a", "t")
+	if m.ov != ovNew || m.input != "feat" {
+		t.Fatalf("n must open the branch prompt, got ov=%v input=%q", m.ov, m.input)
+	}
+	m, cmd := press(t, m, "enter")
+	m = settle(t, m, cmd)
+	if len(f.spawned) != 1 || f.spawned[0] != "feat" {
+		t.Fatalf("enter must spawn a background create, got %v", f.spawned)
+	}
+	if !strings.Contains(m.status, "creating feat") || m.watch == 0 {
+		t.Errorf("the app must say where the create went and poll until it shows, status=%q watch=%d", m.status, m.watch)
+	}
+}
+
+func TestNewSessionNeedsARepo(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 120, 30)
+	m.opts.RepoRoot = ""
+	m, _ = press(t, m, "n")
+	if m.ov == ovNew || !m.statusBad {
+		t.Errorf("outside a repo, n must explain instead of prompting")
+	}
+}
+
+func TestDeleteAsksFirst(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 120, 30)
+	m, _ = press(t, m, "d")
+	if m.ov != ovConfirm || !strings.Contains(m.confirmQ, "checkout-flow") {
+		t.Fatalf("d must ask before destroying, got ov=%v q=%q", m.ov, m.confirmQ)
+	}
+	m, cmd := press(t, m, "n")
+	if cmd != nil || len(f.removed) != 0 {
+		t.Fatal("n must cancel")
+	}
+	m, _ = press(t, m, "d")
+	m, cmd = press(t, m, "y")
+	settle(t, m, cmd)
+	if len(f.removed) != 1 || f.removed[0] != "checkout-flow" {
+		t.Errorf("y must remove the selected session, got %v", f.removed)
+	}
+}
+
+func TestFailedCreateClearsInsteadOfDestroying(t *testing.T) {
+	m := loaded(t, newFake(), 120, 30)
+	m, _ = press(t, m, "down", "down", "down", "d")
+	if !strings.Contains(m.confirmQ, "clear the failed create broken") {
+		t.Errorf("a failed create has nothing to destroy; got %q", m.confirmQ)
+	}
+}
+
+func TestAttachRefusesWhatIsntReady(t *testing.T) {
+	f := newFake()
+	f.sessions[0].State = pier.StateCreating
+	m := loaded(t, f, 120, 30)
+	m, cmd := press(t, m, "enter")
+	if cmd != nil || !m.statusBad || !strings.Contains(m.status, "still setting up") {
+		t.Errorf("attaching mid-create must refuse cleanly, got status %q", m.status)
+	}
+}
+
+func TestParkedAttachResumesFirst(t *testing.T) {
+	m := loaded(t, newFake(), 120, 30)
+	m, cmd := press(t, m, "down", "enter")
+	if m.attaching != "fix-login" || cmd == nil {
+		t.Fatal("enter on a parked session must start the resume")
+	}
+	if _, ok := cmd().(resumedMsg); !ok {
+		t.Error("a parked attach must resume before handing over the terminal")
+	}
+}
+
+func TestTabsAndRemindersBadge(t *testing.T) {
+	m := loaded(t, newFake(), 140, 32)
+	if !strings.Contains(m.header(), "•") {
+		t.Error("a pending rebake reminder must badge the Repos tab")
+	}
+	m, _ = press(t, m, "tab")
+	if m.tab != tabRepos {
+		t.Fatal("tab must move to Repos")
 	}
 	v := m.View()
-	for _, want := range []string{"resize fix-auth", "t4g.large", "(current)", "vCPU", "GiB"} {
+	for _, want := range []string{"flb-estimation", "prebuilt", "62 days old", "1/1"} {
 		if !strings.Contains(v, want) {
-			t.Errorf("picker view missing %q:\n%s", want, v)
+			t.Errorf("Repos tab missing %q:\n%s", want, v)
 		}
 	}
+}
 
-	// Enter on the current type: notice, no resize.
-	got, cmd := m.updateResize(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if cmd != nil || resized != "" {
-		t.Errorf("enter on the current type must not resize, got resized=%q", resized)
+func TestReadyCountChangesOnlyFromTheRepo(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 140, 32)
+	m, _ = press(t, m, "tab")
+	m, cmd := press(t, m, "+")
+	settle(t, m, cmd)
+	if f.ready["/code/flb-estimation"] != 2 {
+		t.Errorf("+ on this repo must raise its ready count, got %v", f.ready)
 	}
-	if m.mode != modeList || !strings.Contains(m.status, "already") {
-		t.Errorf("want an already-that-size notice back on the list, got mode=%v status=%q", m.mode, m.status)
-	}
-
-	// Reopen, move down one, confirm: the resize command fires.
-	got, _ = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	m = got.(model)
-	got, _ = m.updateResize(tea.KeyMsg{Type: tea.KeyDown})
-	m = got.(model)
-	want := m.machines[m.machIdx].Type
-	got, cmd = m.updateResize(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if cmd == nil {
-		t.Fatal("enter on a different type must return the resize command")
-	}
-	if batch, ok := cmd().(tea.BatchMsg); ok { // Batch wraps, doesn't run
-		for _, c := range batch {
-			c()
-		}
-	}
-	if resized != want {
-		t.Errorf("resize called with %q, want %q", resized, want)
-	}
-	if !m.loading || !strings.Contains(m.status, "resizing fix-auth") {
-		t.Errorf("want spinner + resizing status, got loading=%v status=%q", m.loading, m.status)
+	m, _ = press(t, m, "down", "+")
+	if !m.statusBad {
+		t.Error("+ on another repo must explain that refills need its checkout")
 	}
 }
 
-// Enter on a still-creating session must not spawn ssh — mid-create attaches
-// used to dump a raw TargetNotConnected. It shows a notice and stays put
-// instead.
-func TestEnterOnCreatingSession(t *testing.T) {
-	m := model{loaded: true,
-		opts: Options{Attach: func(driver.Session) (*exec.Cmd, error) {
-			t.Fatal("attach spawned for a creating session")
-			return nil, nil
-		}},
-		sessions: []driver.Session{
-			{Name: "half-built", Repo: "myapp", State: driver.StateCreating},
-		}}
-	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("enter on a creating session must not attach")
-	}
-	gm := got.(model)
-	if gm.attachSess.Name != "" {
-		t.Error("attach in flight for a creating session")
-	}
-	if !strings.Contains(gm.status, "still setting up") || gm.statusBad {
-		t.Errorf("want a friendly notice, got status=%q bad=%v", gm.status, gm.statusBad)
-	}
-}
-
-func TestLogsKey(t *testing.T) {
-	m := model{loaded: true,
-		opts: Options{FetchLog: func(driver.Session) (string, error) { return "pier setup: done", nil }},
-		sessions: []driver.Session{
-			{Name: "half-built", Repo: "myapp", State: driver.StateCreating},
-		}}
-	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
-	if cmd != nil {
-		t.Fatal("l on a creating session must do nothing — there is no log yet")
-	}
-	gm := got.(model)
-	if !strings.Contains(gm.status, "still setting up") || gm.statusBad {
-		t.Errorf("want a friendly notice, got status=%q bad=%v", gm.status, gm.statusBad)
-	}
-
-	// A parked session must not resume as a side effect of opening logs.
-	m.sessions[0].State = driver.StateParked
-	got, cmd = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
-	if cmd != nil {
-		t.Fatal("l on a parked session must not fire a fetch — that would resume the VM")
-	}
-	gm = got.(model)
-	if !strings.Contains(gm.status, "pier logs half-built") {
-		t.Errorf("want the notice to point at the CLI, got %q", gm.status)
-	}
-
-	m.sessions[0].State = driver.StateRunning
-	got, cmd = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
-	if cmd == nil {
-		t.Fatal("l on a running session must fire the log fetch")
-	}
-	gm = got.(model)
-	if gm.mode != modeLogs || gm.logSess.Name != "half-built" {
-		t.Errorf("want modeLogs on half-built, got mode=%v session=%q", gm.mode, gm.logSess.Name)
-	}
-	if !gm.logStick || !gm.logLoading {
-		t.Errorf("the viewer must open following the tail while it fetches, got stick=%v loading=%v", gm.logStick, gm.logLoading)
-	}
-
-	// esc goes back to the list with the sessions intact.
-	got, _ = gm.updateLogs(tea.KeyMsg{Type: tea.KeyEsc})
-	gm = got.(model)
-	if gm.mode != modeList || len(gm.sessions) != 1 {
-		t.Errorf("esc must return to the list, got mode=%v sessions=%d", gm.mode, len(gm.sessions))
-	}
-}
-
-// Enter on a running session hands the terminal to ssh via ExecProcess —
-// the TUI must survive the attach (no tea.Quit), so a detach lands back on
-// the list.
-func TestEnterAttachesWithoutQuitting(t *testing.T) {
-	attached := 0
-	m := model{loaded: true,
-		opts: Options{Attach: func(driver.Session) (*exec.Cmd, error) {
-			attached++
-			return exec.Command("true"), nil
-		}},
-		sessions: []driver.Session{
-			{Name: "fix-auth", Repo: "myapp", State: driver.StateRunning},
-		}}
-	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
-	gm := got.(model)
-	if attached != 1 || cmd == nil {
-		t.Fatalf("enter must build and run the attach command, got attached=%d cmd=%v", attached, cmd)
-	}
-	if _, quit := cmd().(tea.QuitMsg); quit {
-		t.Error("enter must not quit the TUI to attach")
-	}
-	if gm.attachSess.Name != "fix-auth" {
-		t.Errorf("attachSess must mark the attach in flight, got %q", gm.attachSess.Name)
-	}
-	if !strings.Contains(gm.status, "C-b d") {
-		t.Errorf("the detach hint must show in the TUI, got status=%q", gm.status)
-	}
-
-	// A second enter while the attach is in flight is a no-op.
-	if _, cmd := gm.updateList(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil || attached != 1 {
-		t.Errorf("enter during an attach must do nothing, got attached=%d", attached)
-	}
-}
-
-// Enter on a parked session resumes it inside the TUI first, then attaches;
-// a failed resume clears the in-flight state with an error status.
-func TestEnterOnParkedResumesFirst(t *testing.T) {
-	resumed, attached := 0, 0
-	m := model{loaded: true,
-		opts: Options{
-			Resume: func(driver.Session) error { resumed++; return nil },
-			Attach: func(driver.Session) (*exec.Cmd, error) {
-				attached++
-				return exec.Command("true"), nil
-			},
-		},
-		sessions: []driver.Session{
-			{Name: "fix-auth", Repo: "myapp", State: driver.StateParked},
-		}}
-	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
-	gm := got.(model)
-	if attached != 0 || !strings.Contains(gm.status, "resuming") || !gm.loading {
-		t.Fatalf("enter on parked must resume before attaching, got attached=%d status=%q", attached, gm.status)
-	}
-	var rm tea.Msg
-	if batch, ok := cmd().(tea.BatchMsg); ok { // Batch wraps, doesn't run
-		for _, c := range batch {
-			if msg, ok := c().(resumedMsg); ok {
-				rm = msg
-			}
-		}
-	}
-	if resumed != 1 || rm == nil {
-		t.Fatalf("the batch must run the resume, got resumed=%d msg=%v", resumed, rm)
-	}
-	got, cmd = gm.Update(rm)
-	gm = got.(model)
-	if attached != 1 || cmd == nil || gm.attachSess.Name != "fix-auth" {
-		t.Errorf("a finished resume must attach, got attached=%d cmd=%v sess=%q", attached, cmd, gm.attachSess.Name)
-	}
-
-	// A failed resume surfaces the error and clears the in-flight state.
-	got, _ = gm.Update(resumedMsg{gm.attachSess, errors.New("quota exceeded")})
-	gm = got.(model)
-	if !gm.statusBad || gm.attachSess.Name != "" {
-		t.Errorf("a failed resume must error and clear the attach, got status=%q sess=%q", gm.status, gm.attachSess.Name)
-	}
-}
-
-// A fast transport failure gets exactly one wait-for-reachability and retry,
-// mirroring the CLI attach loop; a second failure lands an error on the list.
-func TestAttachRetriesOnceThenFails(t *testing.T) {
-	waited, attached := 0, 0
-	s := driver.Session{Name: "fix-auth", Repo: "myapp", State: driver.StateRunning}
-	m := model{loaded: true, sessions: []driver.Session{s},
-		attachSess: s, attachStart: time.Now(),
-		opts: Options{
-			Fetch:         func() ([]driver.Session, error) { return nil, nil },
-			RetryAttach:   func(error, time.Duration) bool { return true },
-			WaitReachable: func(driver.Session) error { waited++; return nil },
-			Attach: func(driver.Session) (*exec.Cmd, error) {
-				attached++
-				return exec.Command("true"), nil
-			},
-		}}
-	got, cmd := m.Update(attachDoneMsg{s, errors.New("exit status 255")})
-	gm := got.(model)
-	if !gm.attachRetried || !strings.Contains(gm.status, "not reachable yet") {
-		t.Fatalf("a retryable failure must wait for reachability, got status=%q", gm.status)
-	}
-	var rm tea.Msg
-	if batch, ok := cmd().(tea.BatchMsg); ok {
-		for _, c := range batch {
-			if msg, ok := c().(reachableMsg); ok {
-				rm = msg
-			}
-		}
-	}
-	if waited != 1 || rm == nil {
-		t.Fatalf("the batch must run the reachability wait, got waited=%d msg=%v", waited, rm)
-	}
-	got, cmd = gm.Update(rm)
-	gm = got.(model)
-	if attached != 1 || cmd == nil {
-		t.Fatalf("a reachable session must attach again, got attached=%d cmd=%v", attached, cmd)
-	}
-
-	// The second failure is final: error status, no more waits.
-	got, _ = gm.Update(attachDoneMsg{s, errors.New("exit status 255")})
-	gm = got.(model)
-	if !gm.statusBad || gm.attachSess.Name != "" || waited != 1 {
-		t.Errorf("a second failure must give up, got status=%q sess=%q waited=%d", gm.status, gm.attachSess.Name, waited)
-	}
-}
-
-// Detaching (ssh exiting 0) lands back on the list with a notice and a
-// fresh session fetch — never at the shell.
-func TestDetachReturnsToList(t *testing.T) {
-	s := driver.Session{Name: "fix-auth", Repo: "myapp", State: driver.StateRunning}
-	m := model{loaded: true, sessions: []driver.Session{s}, attachSess: s,
-		opts: Options{Fetch: func() ([]driver.Session, error) { return []driver.Session{s}, nil }}}
-	got, cmd := m.Update(attachDoneMsg{s, nil})
-	gm := got.(model)
-	if !strings.Contains(gm.status, "detached from fix-auth") || gm.statusBad {
-		t.Errorf("want a detach notice, got status=%q bad=%v", gm.status, gm.statusBad)
-	}
-	if gm.attachSess.Name != "" {
-		t.Errorf("the attach must no longer be in flight, got %q", gm.attachSess.Name)
-	}
-	fetched := false
-	if batch, ok := cmd().(tea.BatchMsg); ok {
-		for _, c := range batch {
-			if _, ok := c().(sessionsMsg); ok {
-				fetched = true
-			}
-		}
-	}
-	if !fetched {
-		t.Error("a detach must refresh the session list")
-	}
-}
-
-// On the alternate screen the renderer keeps the LAST height lines when the
-// view overflows, which would scroll the header off — the table must window
-// its rows around the cursor instead.
-func TestTableWindowFollowsCursor(t *testing.T) {
-	m := model{loaded: true, height: 15}
-	for i := range 40 {
-		m.sessions = append(m.sessions, driver.Session{
-			Name: fmt.Sprintf("s%d", i), Repo: "myapp", State: driver.StateRunning,
-		})
-	}
-
+func TestSettingsGroupedAndSavable(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 120, 40)
+	m, _ = press(t, m, "s")
 	v := m.View()
-	if !strings.Contains(v, "s0") || strings.Contains(v, "s39") {
-		t.Errorf("cursor at the top must show the first rows:\n%s", v)
-	}
-	if c := strings.Count(v, "\n"); c > m.height {
-		t.Errorf("view is %d lines for a %d-line terminal:\n%s", c, m.height, v)
-	}
-	if !strings.Contains(v, "NAME") || !strings.Contains(v, "quit") {
-		t.Errorf("header and footer must survive the windowing:\n%s", v)
-	}
-
-	m.cursor = 39
-	v = m.View()
-	if !strings.Contains(v, "s39") || strings.Contains(v, "s0 ") {
-		t.Errorf("the window must follow the cursor to the bottom:\n%s", v)
-	}
-
-	// No WindowSizeMsg yet (height 0): render everything, as inline tests do.
-	m.height, m.cursor = 0, 0
-	v = m.View()
-	if !strings.Contains(v, "s0") || !strings.Contains(v, "s39") {
-		t.Errorf("zero height must render all rows:\n%s", v)
-	}
-}
-
-// FoldPool classifies members the way reconcile would; the generation check
-// applies only to the repo whose local checkout produced curGen — other
-// repos' gens are unknowable here.
-func TestFoldPool(t *testing.T) {
-	now := time.Now()
-	ss := []driver.Session{
-		{Repo: "shop", PoolGen: "aaa", State: driver.StateParked, Created: now.Add(-time.Hour)},
-		{Repo: "shop", PoolGen: "bbb", State: driver.StateParked, Created: now}, // wrong gen
-		{Repo: "shop", PoolGen: "aaa", State: driver.StateCreating, Created: now},
-		{Repo: "shop", PoolGen: "aaa", State: driver.StateDead, Created: now},
-		{Repo: "shop", PoolGen: "aaa", State: driver.StateDeleting, Created: now},
-		{Repo: "shop", State: driver.StateRunning, Created: now}, // a real session
-		{Repo: "tools", PoolGen: "zzz", State: driver.StateParked, Created: now},
-	}
-	if st := FoldPool(ss, "shop", "shop", "aaa", 0, now); st.Ready != 1 || st.Filling != 1 || st.Stale != 2 {
-		t.Errorf("shop = %+v, want 1 ready, 1 filling, 2 stale", st)
-	}
-	if st := FoldPool(ss, "tools", "shop", "aaa", 0, now); st.Ready != 1 || st.Stale != 0 {
-		t.Errorf("tools = %+v, want its member ready (gen unknowable from here)", st)
-	}
-
-	// Age judgments: a parked member past max_age is stale even for repos
-	// whose gen is unknowable, and an unparked member past the fill grace is
-	// a corpse, not "filling" — its fill died hours ago.
-	old := []driver.Session{
-		{Repo: "tools", PoolGen: "zzz", State: driver.StateParked, Created: now.Add(-30 * 24 * time.Hour)},
-		{Repo: "tools", PoolGen: "zzz", State: driver.StateCreating, Created: now.Add(-3 * time.Hour)},
-	}
-	if st := FoldPool(old, "tools", "", "", 14*24*time.Hour, now); st.Ready != 0 || st.Filling != 0 || st.Stale != 2 {
-		t.Errorf("old members = %+v, want both stale (over-age + grace-blown)", st)
-	}
-	if st := FoldPool(old[:1], "tools", "", "", 0, now); st.Ready != 1 {
-		t.Errorf("maxAge 0 = %+v, want the age check skipped", st)
-	}
-}
-
-// The w page is the primary pool surface: members split out of the session
-// list (never as table rows), the header counts them, and the page shows
-// per-repo warmth with what it costs.
-func TestPoolPage(t *testing.T) {
-	if got, _ := (model{loaded: true}).updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")}); got.(model).mode != modeList {
-		t.Error("w without pool hooks wired must be a no-op")
-	}
-
-	now := time.Now()
-	m := model{loaded: true, opts: Options{
-		PoolSizes:   func() map[string]int { return map[string]int{"shop": 2} },
-		CurrentRepo: "shop",
-		CurrentGen:  "aaaaaaaaaaaa",
-	}}
-	got, _ := m.Update(sessionsMsg{sessions: []driver.Session{
-		{Name: "fix-auth", Repo: "shop", State: driver.StateRunning, Created: now},
-		{Name: "pool-shop-a1b2", Repo: "shop", State: driver.StateParked, PoolGen: "aaaaaaaaaaaa", Created: now.Add(-time.Hour)},
-		{Name: "pool-shop-c3d4", Repo: "shop", State: driver.StateCreating, PoolGen: "aaaaaaaaaaaa", Created: now},
-		{Name: "pool-tools-e5f6", Repo: "tools", State: driver.StateParked, PoolGen: "bbbbbbbbbbbb", Created: now},
-	}})
-	m = got.(model)
-
-	v := m.View()
-	if strings.Contains(v, "pool-shop-a1b2") {
-		t.Errorf("pool members must never render as session rows:\n%s", v)
-	}
-	if !strings.Contains(v, "1 session(s)") || !strings.Contains(v, "3 warm") {
-		t.Errorf("header must count sessions and warm members separately:\n%s", v)
-	}
-
-	got, _ = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = got.(model)
-	if m.mode != modePool {
-		t.Fatalf("w must open the pool page, got mode=%v", m.mode)
-	}
-	if m.poolRepos[m.poolIdx] != "shop" {
-		t.Errorf("cursor must land on the current repo, got %q", m.poolRepos[m.poolIdx])
-	}
-	v = m.View()
-	for _, want := range []string{"pier pools", "shop", "1 ready", "1 filling", "tools", "$3-4/mo", "this repo"} {
+	for _, want := range []string{"Cloud", "New sessions", "Idle & cost", "Speed", "park after", "ready sessions"} {
 		if !strings.Contains(v, want) {
-			t.Errorf("pool page missing %q:\n%s", want, v)
+			t.Errorf("settings missing %q:\n%s", want, v)
 		}
 	}
-	// tools has a member but no configured pool — that's money leaking.
-	if !strings.Contains(v, "orphaned") {
-		t.Errorf("members without a configured pool must show as orphaned:\n%s", v)
+	if strings.Contains(v, "gcp") || strings.Contains(v, "zone") {
+		t.Error("only the active cloud's fields may show")
+	}
+	// Pick the speed profile row and choose Lean.
+	for i, s := range m.settings {
+		if s.Key == "speed.profile" {
+			m.setIdx = i
+		}
+	}
+	m, _ = press(t, m, "enter")
+	if m.ov != ovPick {
+		t.Fatal("enter on a choice must open the picker")
+	}
+	m, _ = press(t, m, "down", "enter")
+	if f.cfg.Profile() != "lean" || f.cfg.Speed.ReadySessions != 0 {
+		t.Errorf("choosing Lean must apply the preset, got %s ready=%d", f.cfg.Profile(), f.cfg.Speed.ReadySessions)
 	}
 }
 
-// Sizing works only on the current repo's row, stages with +/- (rendered as
-// from→to), applies on enter through PoolSet, and esc cancels the staging
-// before it leaves the page.
-func TestPoolSizeEditing(t *testing.T) {
-	applied := -1
-	sizes := map[string]int{"shop": 1}
-	m := model{loaded: true, mode: modePool,
-		poolSizes: sizes, poolRepos: []string{"other", "shop"}, poolIdx: 1, poolPend: -1,
-		members: []driver.Session{{Name: "pool-other-x", Repo: "other", State: driver.StateParked, PoolGen: "g", Created: time.Now()}},
-		opts: Options{
-			CurrentRepo: "shop",
-			PoolSizes:   func() map[string]int { return sizes },
-			Fetch:       func() ([]driver.Session, error) { return nil, nil },
-			PoolSet:     func(size int) (string, error) { applied = size; return "/tmp/pool-shop.log", nil },
-		}}
+func TestRejectedSettingKeepsTheEditorOpen(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 120, 40)
+	m, _ = press(t, m, "s")
+	for i, s := range m.settings {
+		if s.Key == "aws.subnet" {
+			m.setIdx = i
+		}
+	}
+	m, _ = press(t, m, "enter", "x", "y", "z", "enter")
+	if m.ov != ovEdit || !m.statusBad {
+		t.Errorf("a bad value must keep the editor open with the reason, ov=%v status=%q", m.ov, m.status)
+	}
+}
 
-	for range 2 {
-		got, _ := m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
-		m = got.(model)
+func TestLogViewerSanitizesAndFollows(t *testing.T) {
+	m := loaded(t, newFake(), 120, 30)
+	m, _ = press(t, m, "down", "down", "l")
+	if m.ov != ovLogs {
+		t.Fatal("l must open the log viewer")
 	}
-	if m.poolPend != 3 || applied != -1 {
-		t.Fatalf("+ must stage, not apply: pend=%d applied=%d", m.poolPend, applied)
+	next, _ := m.Update(m.fetchLog()())
+	m = next.(model)
+	v := m.View()
+	if !strings.Contains(v, "progress 100%") || strings.Contains(v, "progress 10%") || !strings.Contains(v, "following") {
+		t.Errorf("the viewer must show each line's final state and follow the tail:\n%s", v)
 	}
-	if v := m.View(); !strings.Contains(v, "1→3") {
-		t.Errorf("a staged size must render as from→to:\n%s", v)
-	}
+}
 
-	got, _ := m.updatePool(tea.KeyMsg{Type: tea.KeyEsc})
-	m = got.(model)
-	if m.poolPend != -1 || m.mode != modePool {
-		t.Fatalf("first esc must only cancel the staged size, got pend=%d mode=%v", m.poolPend, m.mode)
+func TestAuthExpiryOffersSignIn(t *testing.T) {
+	m := loaded(t, newFake(), 120, 30)
+	next, _ := m.Update(sessionsMsg{err: errors.New("aws sts get-caller-identity: Your session has expired. Please reauthenticate using 'aws login'.")})
+	m = next.(model)
+	if !m.authRequired || !strings.Contains(m.View(), "sign in") {
+		t.Error("an expired login must offer to sign in again")
 	}
+}
 
-	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
-	m = got.(model)
-	got, cmd := m.updatePool(tea.KeyMsg{Type: tea.KeyEnter})
-	m = got.(model)
-	if cmd == nil {
-		t.Fatal("enter on a staged size must return the apply command")
-	}
-	var act tea.Msg
-	if batch, ok := cmd().(tea.BatchMsg); ok { // Batch wraps, doesn't run
-		for _, c := range batch {
-			if msg, ok := c().(poolActMsg); ok {
-				act = msg
+// Screens render inside the terminal at common sizes: no line wider than
+// the window, header on top, keys at the bottom.
+func TestScreensFitTheWindow(t *testing.T) {
+	for _, size := range [][2]int{{160, 40}, {100, 30}, {80, 24}} {
+		for _, tb := range []tab{tabSessions, tabRepos, tabSettings} {
+			m := loaded(t, newFake(), size[0], size[1])
+			m.tab = tb
+			v := m.View()
+			lines := strings.Split(v, "\n")
+			if len(lines) > size[1] {
+				t.Errorf("%dx%d %s: %d lines, taller than the window", size[0], size[1], tabNames[tb], len(lines))
+			}
+			for i, l := range lines {
+				if w := len([]rune(stripANSI(l))); w > size[0] {
+					t.Errorf("%dx%d %s line %d is %d wide", size[0], size[1], tabNames[tb], i, w)
+				}
+			}
+			if os.Getenv("PIER_TUI_DUMP") != "" {
+				t.Logf("\n%s", v)
 			}
 		}
 	}
-	if applied != 2 || act == nil {
-		t.Fatalf("apply must call PoolSet with the staged size, got applied=%d msg=%v", applied, act)
-	}
-	got, _ = m.Update(act)
-	m = got.(model)
-	if !strings.Contains(m.status, "pool size 2") || m.statusBad {
-		t.Errorf("a landed apply must confirm with the log path, got status=%q", m.status)
-	}
-
-	// Another repo's row can't be sized from here — its checkout is elsewhere.
-	m.poolIdx, m.poolPend = 0, -1
-	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
-	m = got.(model)
-	if m.poolPend != -1 || !strings.Contains(m.status, "inside other") {
-		t.Errorf("sizing another repo must be refused with a pointer, got pend=%d status=%q", m.poolPend, m.status)
-	}
 }
 
-// Draining destroys money-costing VMs, so d asks y/n first; it works for any
-// repo (no checkout needed) but refuses politely when there's nothing there.
-func TestPoolDrainConfirm(t *testing.T) {
-	drained := ""
-	m := model{loaded: true, mode: modePool,
-		poolRepos: []string{"old"}, poolPend: -1,
-		members: []driver.Session{{Name: "pool-old-x", Repo: "old", State: driver.StateParked, PoolGen: "g", Created: time.Now()}},
-		opts: Options{
-			PoolSizes: func() map[string]int { return nil },
-			Fetch:     func() ([]driver.Session, error) { return nil, nil },
-			PoolDrain: func(repo string) (int, error) { drained = repo; return 1, nil },
-		}}
-	got, _ := m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = got.(model)
-	if !m.poolConfirm {
-		t.Fatal("d on a repo with members must ask for confirmation")
-	}
-	if v := m.View(); !strings.Contains(v, "drain old") || !strings.Contains(v, "(y/n)") {
-		t.Errorf("the confirm prompt must name the repo:\n%s", v)
-	}
-	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = got.(model)
-	if m.poolConfirm || drained != "" {
-		t.Fatalf("n must cancel the drain, got confirm=%v drained=%q", m.poolConfirm, drained)
-	}
-
-	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = got.(model)
-	got, cmd := m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	m = got.(model)
-	if cmd == nil {
-		t.Fatal("y must fire the drain")
-	}
-	var act tea.Msg
-	if batch, ok := cmd().(tea.BatchMsg); ok {
-		for _, c := range batch {
-			if msg, ok := c().(poolActMsg); ok {
-				act = msg
-			}
-		}
-	}
-	if drained != "old" || act == nil {
-		t.Fatalf("drain must target the selected repo, got %q", drained)
-	}
-	got, _ = m.Update(act)
-	m = got.(model)
-	if !strings.Contains(m.status, "drained 1 member") {
-		t.Errorf("a landed drain must report the count, got %q", m.status)
-	}
-
-	m.members, m.poolConfirm, m.status = nil, false, ""
-	got, _ = m.updatePool(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = got.(model)
-	if m.poolConfirm || !strings.Contains(m.status, "no warm members") {
-		t.Errorf("d on an empty pool must notice, not prompt, got confirm=%v status=%q", m.poolConfirm, m.status)
-	}
-}
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 func TestSanitizeLog(t *testing.T) {
 	// pnpm/docker progress spam: color codes plus \r-redrawn meters. Only

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,13 +143,13 @@ func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, scri
 	return strings.TrimSpace(string(out)), nil
 }
 
-// sshStream is sshRun with output flowing straight to the terminal — for
+// sshStream is sshRun with output streaming to d.Out as it arrives — for
 // long user-visible steps (the bake hook) where buffered output would look
 // like a hang.
 func (d *Driver) sshStream(ctx context.Context, id, script string) error {
 	args := append(d.sshOpts(id), "agent@"+id, script)
 	cmd := execCommandContext(ctx, "ssh", args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.Stdout, cmd.Stderr = d.out(), d.out()
 	return cmd.Run()
 }
 
@@ -158,9 +159,9 @@ func (d *Driver) scpTo(ctx context.Context, id, local, remote string, extra ...s
 	args := append(append(d.sshOpts(id), extra...), local, "agent@"+id+":"+remote)
 	cmd := execCommandContext(ctx, "scp", args...)
 	// scp draws its progress meter only when stdout is a terminal — so big
-	// pushes (the repo bundle) show live progress interactively and stay
-	// silent when piped.
-	cmd.Stdout = os.Stdout
+	// pushes (the repo bundle) show live progress when the frontend hands
+	// its terminal in as Out, and stay silent otherwise.
+	cmd.Stdout = d.out()
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
@@ -206,4 +207,19 @@ func (d *Driver) waitSSH(ctx context.Context, id string, timeout time.Duration) 
 		time.Sleep(3 * time.Second)
 	}
 	return fmt.Errorf("session %s not reachable after %s", id, timeout)
+}
+
+// out is Out, or a sink when the frontend wants no driver output.
+func (d *Driver) out() io.Writer {
+	if d.Out == nil {
+		return io.Discard
+	}
+	return d.Out
+}
+
+// notify passes a transport notice to the frontend, if it listens.
+func (d *Driver) notify(msg string) {
+	if d.Notify != nil {
+		d.Notify(msg)
+	}
 }

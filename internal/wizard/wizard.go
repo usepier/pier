@@ -1,8 +1,7 @@
-// Package wizard implements `pier setup`: detect → ask (plain prompts, ≤6
-// questions) → apply groundwork → doctor → write config → offer skills →
-// offer bake.
-// Everything detected becomes a prefilled default, so a second dev on a
-// prepared account just presses enter a few times.
+// Package wizard implements `pier setup`: cloud and account → every default
+// shown for confirm or edit → groundwork and checks → the offer to bake the
+// current repo. Everything detected becomes a prefilled default, so a second
+// dev on a prepared account just presses enter a few times.
 package wizard
 
 import (
@@ -17,12 +16,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/internal/ui"
+	"github.com/usepier/pier/pkg/pier"
 )
 
 // adminDoc is for devs without IAM rights: the exact groundwork their admin
@@ -77,7 +79,12 @@ gcloud compute firewall-rules create pier-deny-ingress \
 # by instanceAdmin).
 `
 
-func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bool) error {
+// Run is `pier setup`: cloud and account, then every default shown in one
+// block for the user to confirm or edit (nothing is applied silently), the
+// account groundwork, checks, and — inside a repo — the offer to bake its
+// session image. It ends by pointing at the settings page, where all of it
+// can change later.
+func Run(opts pier.Options, printAdminOnly bool) error {
 	if printAdminOnly {
 		// The doc matches the configured cloud; without a config, AWS.
 		if cfg, err := config.Load(); err == nil && cfg.Driver == "gcp-gce" {
@@ -90,7 +97,6 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	in := bufio.NewReader(os.Stdin)
 	ctx := context.Background()
 
-	// 1. detect
 	fmt.Println("\n " + ui.Title.Render("⚓ pier setup") +
 		ui.Dim.Render("  sessions run on your own cloud account; nothing leaves it"))
 	fmt.Println()
@@ -108,7 +114,8 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		cfg = existing // re-running keeps previous answers as defaults
 	}
 
-	// 2. ask — the cloud first, then that cloud's own few questions.
+	// 1. cloud and account — the only questions without a default answer.
+	fmt.Println(" " + ui.Accent.Render("1 · cloud"))
 	cloudDef := "aws"
 	if cfg.Driver == "gcp-gce" {
 		cloudDef = "gcp"
@@ -130,41 +137,40 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	default:
 		return fmt.Errorf("unknown cloud — aws or gcp")
 	}
-	cfg.IdleTimeout = ask(in, "self-park after idling for (e.g. 30m, never)", cfg.IdleTimeout)
+	drv, err := pier.NewDriver(cfg, opts)
+	if err != nil {
+		return err
+	}
 
+	// 2. defaults — shown together, confirmed or edited, never assumed.
 	if len(cfg.Secrets.Manifest) == 0 {
 		cfg.Secrets.Manifest = detectManifest()
 	}
-	if len(cfg.Secrets.Manifest) > 0 {
-		fmt.Println("  found agent config to copy into sessions:")
-		for _, m := range cfg.Secrets.Manifest {
-			fmt.Println(ui.Dim.Render("    ~/" + m))
-		}
-		if !yes(in, "copy these into every session?", true) {
-			cfg.Secrets.Manifest = nil
-		}
+	home, _ := os.UserHomeDir()
+	agents := AgentDirs(home)
+	skills := len(agents) > 0
+	fmt.Println("\n " + ui.Accent.Render("2 · defaults") + ui.Dim.Render("  for new sessions — all of it changes later in settings"))
+	printDefaults(cfg, drv, agents, skills)
+	switch strings.ToLower(ask(in, "use these? [Y]es · [e]dit", "")) {
+	case "e", "edit":
+		editDefaults(in, &cfg, drv)
+		skills = false // edited: the per-agent prompts below decide instead
 	}
-
 	if cfg.Secrets.ClaudeOAuthToken == "" {
 		if p := claudeSelfContained(); p != "" && slices.Contains(cfg.Secrets.Manifest, ".claude/settings.json") {
 			fmt.Printf("  %s claude auth: %s in ~/.claude/settings.json %s\n",
-				ui.Mark(true), p, ui.Dim.Render("— travels with the manifest, no token needed"))
-		} else {
+				ui.Mark(true), p, ui.Dim.Render("— travels with the copied config, no token needed"))
+		} else if slices.ContainsFunc(cfg.Secrets.Manifest, func(m string) bool { return strings.HasPrefix(m, ".claude") }) {
 			fmt.Println(ui.Dim.Render("  Claude subscription auth lives in the macOS Keychain and can't be copied."))
-			fmt.Println(ui.Dim.Render("  Run `claude setup-token` in another terminal to mint a session token."))
+			fmt.Println(ui.Dim.Render("  Run `claude setup-token` in another terminal to mint a token for sessions."))
 			if tok := ask(in, "paste token (enter to skip)", ""); tok != "" {
 				cfg.Secrets.ClaudeOAuthToken = tok
 			}
 		}
 	}
 
-	// 3. apply
-	drv, err := newDriver(cfg)
-	if err != nil {
-		return err
-	}
-	fmt.Println("\n " + ui.Accent.Render("creating groundwork") +
-		ui.Dim.Render("  "+groundwork))
+	// 3. groundwork
+	fmt.Println("\n " + ui.Accent.Render("3 · account") + ui.Dim.Render("  "+groundwork))
 	rep, err := drv.SetupOnce(ctx)
 	if err != nil && strings.Contains(err.Error(), "no default VPC") {
 		// Enterprise accounts routinely delete the default VPC. Without this
@@ -173,7 +179,7 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		fmt.Println("  "+ui.Mark(false), err.Error())
 		if subnet := ask(in, "subnet for sessions (subnet-...)", ""); subnet != "" {
 			cfg.AWS.Subnet = subnet
-			if drv, err = newDriver(cfg); err != nil {
+			if drv, err = pier.NewDriver(cfg, opts); err != nil {
 				return err
 			}
 			rep, err = drv.SetupOnce(ctx)
@@ -199,27 +205,25 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		fmt.Println(ui.Dim.Render("  = found " + e))
 	}
 
-	// Write only what the wizard actually asked about. The prompts above can
-	// take minutes, and cfg was read before them — saving it wholesale would
+	// Write only what the wizard asked about. The prompts above can take
+	// minutes, and cfg was read before them — saving it wholesale would
 	// revert anything written meanwhile, including a `pier bake` finishing in
-	// another terminal. Untouched settings (disk size, connection mode, the
-	// baked-image maps) come from disk, not from this stale copy.
+	// another terminal. Untouched settings (connection mode, the image maps)
+	// come from disk, not from this stale copy.
 	if _, err := config.Update(func(c *config.Config) error {
 		c.Driver = cfg.Driver
-		c.IdleTimeout = cfg.IdleTimeout
+		c.IdleTimeout, c.UnattendedCap = cfg.IdleTimeout, cfg.UnattendedCap
 		c.Secrets = cfg.Secrets
+		c.Speed = cfg.Speed
 		c.AWS.Profile, c.AWS.Region = cfg.AWS.Profile, cfg.AWS.Region
-		c.AWS.InstanceType, c.AWS.Subnet = cfg.AWS.InstanceType, cfg.AWS.Subnet
+		c.AWS.InstanceType, c.AWS.DiskGiB, c.AWS.Subnet = cfg.AWS.InstanceType, cfg.AWS.DiskGiB, cfg.AWS.Subnet
 		c.GCP.Project, c.GCP.Zone = cfg.GCP.Project, cfg.GCP.Zone
-		c.GCP.MachineType = cfg.GCP.MachineType
+		c.GCP.MachineType, c.GCP.DiskGiB = cfg.GCP.MachineType, cfg.GCP.DiskGiB
 		return nil
 	}); err != nil {
 		return err
 	}
 	fmt.Println(ui.Dim.Render("  wrote " + config.Path()))
-
-	// 4. doctor
-	fmt.Println("\n " + ui.Accent.Render("checks"))
 	for _, c := range drv.Doctor(ctx) {
 		line := "  " + ui.Mark(c.OK) + " " + c.Name
 		if c.Detail != "" {
@@ -227,47 +231,248 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		}
 		fmt.Println(line)
 	}
-
-	// 5. offer the bundled skills — per-agent confirms, before bake so no
-	// question hides behind the build.
-	if home, err := os.UserHomeDir(); err == nil {
+	if skills {
+		if err := installChosen(&cfg, home, agents); err != nil {
+			return err
+		}
+	} else if len(agents) > 0 {
 		if err := offerSkills(in, &cfg, home); err != nil {
 			return err
 		}
 	}
 
-	// 6. offer bake — images are repo-specific, so only when the wizard runs
-	// inside a repo; otherwise point at `pier bake` from one.
-	fmt.Println()
-	if repo := gitToplevel(); repo == "" {
-		fmt.Println(ui.Dim.Render("  (images bake per repo: cd <repo> && pier bake — harnesses plus one full .pier/setup.sh run, so creates skip both)"))
-	} else if name := filepath.Base(repo); yes(in, "bake the session image for "+name+" now? (harnesses ~5 min plus one full .pier/setup.sh run; creates then skip both)", true) {
-		// ctrl-c mid-bake must cancel the ctx so Bake's deferred cleanup can
-		// terminate the temporary instance — it has no supervisor, so a
-		// leaked one never parks itself.
-		bctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-		img, err := drv.Bake(bctx, driver.BakeSpec{
-			RepoName: name, RepoRoot: repo, HookPath: driver.BakeHook(repo),
-			Replaces: cfg.BakedReplaces(name),
-		})
-		stop()
-		if err != nil {
+	// 4. this repo's session image — offered, never assumed.
+	if repo := gitToplevel(); repo != "" {
+		if err := offerBake(ctx, in, opts, repo); err != nil {
 			return err
 		}
-		// Update, not Save: the bake just took minutes, and cfg predates it.
-		if _, err := config.Update(func(c *config.Config) error {
-			c.RecordBake(name, img)
-			return nil
-		}); err != nil {
-			return err
-		}
-		fmt.Println("  "+ui.Mark(true), "baked", img, "for", name)
-	} else {
-		fmt.Println(ui.Dim.Render("  (you can run `pier bake` in any repo, anytime)"))
 	}
 
-	fmt.Println("\n " + ui.OK.Render("done") + " — try: " +
-		ui.Accent.Render("cd <some-repo> && pier my-branch"))
+	fmt.Println("\n " + ui.OK.Render("✓ pier is ready"))
+	fmt.Println("   start a session    " + ui.Accent.Render("cd <repo> && pier <branch>"))
+	fmt.Println("   change anything    " + ui.Accent.Render("run `pier`, press s for settings"))
+	fmt.Println()
+	return nil
+}
+
+// printDefaults shows every default a new session will use, with what it
+// costs, so the confirm that follows is informed.
+func printDefaults(cfg config.Config, drv driver.Driver, agents []string, skills bool) {
+	row := func(label, value, note string) {
+		fmt.Printf("    %-14s %s %s\n", label, value, ui.Dim.Render(note))
+	}
+	machine, disk := cfg.AWS.InstanceType, cfg.AWS.DiskGiB
+	if cfg.Driver == "gcp-gce" {
+		machine, disk = cfg.GCP.MachineType, cfg.GCP.DiskGiB
+	}
+	row("machine", machine, machineNote(drv, machine))
+	row("disk", fmt.Sprintf("%d GiB", disk), fmt.Sprintf("the part that survives parking, ~$%.0f/mo while parked", diskMonthly(cfg, disk)))
+	row("park after", cfg.IdleTimeout+" idle", "detached and quiet this long → the VM stops, the disk stays")
+	row("runaway cap", cfg.UnattendedCap, "parks even a busy agent once you've been away this long")
+	row("speed", profileLabel(cfg.Profile()), profileNote(cfg, cfg.Profile(), disk))
+	row("copied in", manifestSummary(cfg.Secrets.Manifest), "agent config each session starts with")
+	if len(agents) > 0 {
+		names := make([]string, len(agents))
+		for i, a := range agents {
+			names[i] = strings.TrimPrefix(a, ".")
+		}
+		state := "install for " + strings.Join(names, ", ")
+		if !skills {
+			state = "skip"
+		}
+		row("agent skill", state, "pier-onboard teaches your agent to set a repo up for pier")
+	}
+	fmt.Println()
+}
+
+// editDefaults walks each default with its current value preselected; enter
+// keeps it.
+func editDefaults(in *bufio.Reader, cfg *config.Config, drv driver.Driver) {
+	machine := &cfg.AWS.InstanceType
+	disk := &cfg.AWS.DiskGiB
+	if cfg.Driver == "gcp-gce" {
+		machine, disk = &cfg.GCP.MachineType, &cfg.GCP.DiskGiB
+	}
+	if ms := drv.Machines(*machine); len(ms) > 0 {
+		fmt.Println(ui.Dim.Render("    machines:"))
+		for i, m := range ms {
+			fmt.Printf("      %s %-14s %s vCPU · %s GB · %s\n", ui.Dim.Render(fmt.Sprintf("%d", i+1)), m.Type, m.CPU, m.Mem, m.Cost)
+		}
+		pick := ask(in, "machine (number or type)", *machine)
+		if n, err := strconv.Atoi(pick); err == nil && n >= 1 && n <= len(ms) {
+			pick = ms[n-1].Type
+		}
+		setOr(cfg, keyFor(cfg, "machine"), pick)
+	} else {
+		setOr(cfg, keyFor(cfg, "machine"), ask(in, "machine", *machine))
+	}
+	setOr(cfg, keyFor(cfg, "disk"), ask(in, "disk GiB (20 / 40 / 80 / 160)", strconv.Itoa(*disk)))
+	setOr(cfg, "idle_timeout", ask(in, "park after idle (15m / 30m / 1h / 2h / never)", cfg.IdleTimeout))
+	setOr(cfg, "unattended_cap", ask(in, "runaway cap (4h / 8h / 24h / never)", cfg.UnattendedCap))
+	fmt.Println(ui.Dim.Render("    speed profiles:"))
+	for _, p := range []string{"fast", "lean", "minimal"} {
+		fmt.Printf("      %-8s %s\n", profileLabel(p), ui.Dim.Render(profileNote(*cfg, p, *disk)))
+	}
+	def := cfg.Profile()
+	if def == "custom" {
+		def = ""
+	}
+	if p := ask(in, "speed (fast / lean / minimal)", def); p != "" {
+		if err := cfg.ApplyProfile(strings.ToLower(p)); err != nil {
+			fmt.Println("  " + ui.Warn.Render("!") + " " + err.Error() + ui.Dim.Render(" — kept "+cfg.Profile()))
+		}
+	}
+	if len(cfg.Secrets.Manifest) > 0 {
+		fmt.Println(ui.Dim.Render("    copied into every session:"))
+		for i, m := range cfg.Secrets.Manifest {
+			fmt.Printf("      %s ~/%s\n", ui.Dim.Render(fmt.Sprintf("%d", i+1)), m)
+		}
+		if drop := ask(in, "numbers to leave out (enter keeps all)", ""); drop != "" {
+			skip := map[int]bool{}
+			for _, f := range strings.Fields(strings.ReplaceAll(drop, ",", " ")) {
+				if n, err := strconv.Atoi(f); err == nil {
+					skip[n] = true
+				}
+			}
+			var kept []string
+			for i, m := range cfg.Secrets.Manifest {
+				if !skip[i+1] {
+					kept = append(kept, m)
+				}
+			}
+			cfg.Secrets.Manifest = kept
+		}
+	}
+}
+
+// setOr applies a value through config.Set, keeping the old one (and saying
+// so) when it doesn't validate.
+func setOr(cfg *config.Config, key, val string) {
+	if err := config.Set(cfg, key, val); err != nil {
+		fmt.Println("  " + ui.Warn.Render("!") + " " + err.Error() + ui.Dim.Render(" — kept "+config.Get(*cfg, key)))
+	}
+}
+
+func keyFor(cfg *config.Config, what string) string {
+	prefix := "aws."
+	if cfg.Driver == "gcp-gce" {
+		prefix = "gcp."
+	}
+	switch what {
+	case "machine":
+		if prefix == "gcp." {
+			return "gcp.machine_type"
+		}
+		return "aws.instance_type"
+	default:
+		return prefix + "disk_gib"
+	}
+}
+
+func machineNote(drv driver.Driver, machine string) string {
+	for _, m := range drv.Machines(machine) {
+		if m.Type == machine {
+			return fmt.Sprintf("%s vCPU · %s GB · %s — resize any session later", m.CPU, m.Mem, m.Cost)
+		}
+	}
+	return "resize any session later"
+}
+
+func diskMonthly(cfg config.Config, gib int) float64 {
+	if cfg.Driver == "gcp-gce" {
+		return float64(gib) * 0.10
+	}
+	return float64(gib) * 0.095
+}
+
+func profileLabel(p string) string {
+	switch p {
+	case "fast":
+		return "Fast"
+	case "lean":
+		return "Lean"
+	case "minimal":
+		return "Minimal"
+	}
+	return "Custom"
+}
+
+// profileNote says what a speed profile does and costs while idle.
+func profileNote(cfg config.Config, p string, disk int) string {
+	switch p {
+	case "fast":
+		return fmt.Sprintf("image + 1 ready session per repo · new sessions in ~25s · ~$%.0f/mo per repo idle", diskMonthly(cfg, disk)+2)
+	case "lean":
+		return "image per repo · new sessions in ~1-2 min · ~$2/mo per repo idle"
+	case "minimal":
+		return "nothing stored · every session runs the full setup · $0 idle"
+	}
+	return fmt.Sprintf("%d ready session(s) per repo, bake reminders %s", cfg.Speed.ReadySessions, onOff(cfg.Speed.BakeReminders))
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// manifestSummary names what's copied in, briefly: "Claude, Codex, tmux".
+func manifestSummary(m []string) string {
+	if len(m) == 0 {
+		return "nothing"
+	}
+	var parts []string
+	seen := map[string]bool{}
+	for _, e := range m {
+		name := e
+		switch {
+		case strings.HasPrefix(e, ".claude"):
+			name = "Claude"
+		case strings.HasPrefix(e, ".codex"):
+			name = "Codex"
+		case e == ".tmux.conf":
+			name = "tmux"
+		}
+		if !seen[name] {
+			seen[name] = true
+			parts = append(parts, name)
+		}
+	}
+	return strings.Join(parts, ", ") + " config"
+}
+
+// offerBake asks to bake the repo's session image now. A no is fine: the
+// same suggestion comes back as a reminder after creates.
+func offerBake(ctx context.Context, in *bufio.Reader, opts pier.Options, repo string) error {
+	name := filepath.Base(repo)
+	c, err := pier.Open(opts)
+	if err != nil {
+		return err
+	}
+	if c.Config().BakedImage(name) != "" {
+		return nil
+	}
+	fmt.Println("\n " + ui.Accent.Render("4 · "+name))
+	if _, err := os.Stat(filepath.Join(repo, ".pier", "setup.sh")); err != nil {
+		fmt.Println(ui.Dim.Render("  no .pier/setup.sh yet — ask your agent to \"set this repo up for pier\" so sessions install its dependencies"))
+	}
+	if !yes(in, "No session image for "+name+" yet. Bake one now? New sessions then start in a minute or two instead of running the full setup", true) {
+		fmt.Println(ui.Dim.Render("  later: `pier bake` in the repo"))
+		return nil
+	}
+	// ctrl-c mid-bake must cancel the ctx so the bake's cleanup can
+	// terminate the temporary instance — it has no supervisor, so a leaked
+	// one never parks itself.
+	bctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	res, err := c.Bake(bctx, pier.BakeRequest{RepoRoot: repo, Progress: func(e pier.Event) {
+		fmt.Println(ui.Step(e.Message) + ui.Dim.Render(fmt.Sprintf("  +%s", e.Elapsed.Round(time.Second))))
+	}})
+	if err != nil {
+		return err
+	}
+	fmt.Println("  "+ui.Mark(true), "baked", res.Image, "for", name)
 	return nil
 }
 
@@ -298,7 +503,6 @@ func askAWS(in *bufio.Reader, cfg *config.Config) error {
 		cfg.AWS.Region = strings.TrimSpace(string(out))
 	}
 	cfg.AWS.Region = ask(in, "region", or(cfg.AWS.Region, "eu-central-1"))
-	cfg.AWS.InstanceType = ask(in, "instance type", cfg.AWS.InstanceType)
 	return nil
 }
 
@@ -340,7 +544,6 @@ func askGCP(in *bufio.Reader, cfg *config.Config) error {
 		return fmt.Errorf("cannot access project %q: %s", cfg.GCP.Project, strings.TrimSpace(string(out)))
 	}
 	cfg.GCP.Zone = ask(in, "zone", cfg.GCP.Zone)
-	cfg.GCP.MachineType = ask(in, "machine type", cfg.GCP.MachineType)
 	return nil
 }
 
