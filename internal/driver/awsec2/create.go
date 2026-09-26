@@ -28,11 +28,18 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	if err := payload.ValidateNames(spec); err != nil {
 		return nil, err
 	}
-	me, err := d.user(ctx)
-	if err != nil {
-		return nil, err
+	// Each AWS CLI call costs ~0.4s of process startup and a round trip, and
+	// nothing here waits on the caller identity: look it up alongside the
+	// arch → AMI chain instead of before it.
+	type ident struct {
+		arn string
+		err error
 	}
-
+	identity := make(chan ident, 1)
+	go func() {
+		arn, err := d.user(ctx)
+		identity <- ident{arn, err}
+	}()
 	arch, err := d.archOf(ctx, d.InstanceType)
 	if err != nil {
 		return nil, err
@@ -45,6 +52,11 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	if err != nil {
 		return nil, err
 	}
+	id0 := <-identity
+	if id0.err != nil {
+		return nil, id0.err
+	}
+	me := id0.arn
 
 	// The keypair is instance-id-keyed but must exist pre-launch (pubkey goes
 	// into user-data), so generate under a temp name and rename after launch.
@@ -191,18 +203,30 @@ func (d *Driver) push(ctx context.Context, id, local, remote string, progress fu
 // launch retries on IAM instance-profile propagation lag (the spike showed
 // one retry is usually needed right after `pier setup`).
 func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, udPath string) (string, error) {
+	// The security group (two calls) and the image's root device are
+	// independent lookups: run them side by side.
+	type lookup struct {
+		val string
+		err error
+	}
+	root := make(chan lookup, 1)
+	go func() {
+		dev, err := d.aws(ctx, "ec2", "describe-images", "--image-ids", ami,
+			"--query", "Images[0].RootDeviceName", "--output", "text")
+		root <- lookup{dev, err}
+	}()
 	sg, err := d.securityGroupID(ctx)
+	rd := <-root
 	if err != nil {
 		return "", err
 	}
 	if sg == "" {
 		return "", fmt.Errorf("security group %s not found — run `pier setup`", SecurityGroup)
 	}
-	rootDev, err := d.aws(ctx, "ec2", "describe-images", "--image-ids", ami,
-		"--query", "Images[0].RootDeviceName", "--output", "text")
-	if err != nil {
-		return "", err
+	if rd.err != nil {
+		return "", rd.err
 	}
+	rootDev := rd.val
 
 	tags, _ := json.Marshal([]map[string]any{
 		{"ResourceType": "instance", "Tags": tagList(spec, me, "pier-"+spec.Name)},
