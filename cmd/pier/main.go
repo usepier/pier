@@ -816,7 +816,10 @@ func imageLabel(r pier.Repo) string {
 	if !r.Baked.RepoIncluded {
 		kind = "toolchains"
 	}
-	return kind + ", " + pier.Age(r.Baked.BakedAt, time.Now()) + " old"
+	if a := pier.Age(r.Baked.BakedAt, time.Now()); a != "now" {
+		return kind + ", " + a + " old"
+	}
+	return kind + ", just baked"
 }
 
 func readyLabel(r pier.Repo) string {
