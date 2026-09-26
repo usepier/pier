@@ -250,7 +250,7 @@ func writeAtomic(path string, data []byte) error {
 // started from a startup file, before job control is up, shares the shell's
 // group — so a child in the same group wins over the shell.
 func foreground(pid int) []string {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	stat, err := readProc(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return nil
 	}
@@ -264,10 +264,18 @@ func foreground(pid int) []string {
 		}
 		return procArgv(pid)
 	}
-	kids, _ := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid))
+	// Only a shell hides its program among its children. A pane whose root
+	// is the program itself (tmux ran `claude` directly) must not be
+	// mistaken for one of that program's own children — claude's MCP
+	// servers share its group, and the first of them used to win.
+	root := procArgv(pid)
+	if len(root) == 0 || !shells[strings.TrimPrefix(filepath.Base(root[0]), "-")] {
+		return root
+	}
+	kids, _ := readProc(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid))
 	for _, k := range strings.Fields(string(kids)) {
 		kid, _ := strconv.Atoi(k)
-		ks, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", kid))
+		ks, err := readProc(fmt.Sprintf("/proc/%d/stat", kid))
 		if err != nil {
 			continue
 		}
@@ -296,8 +304,11 @@ func parseStat(s string) (pgrp, tpgid int, ok bool) {
 	return pgrp, tpgid, err1 == nil && err2 == nil
 }
 
+// readProc reads a /proc file; a var so tests can stand in a process table.
+var readProc = os.ReadFile
+
 func procArgv(pid int) []string {
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	b, err := readProc(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil || len(b) == 0 {
 		return nil
 	}
@@ -444,13 +455,17 @@ func launchCommand(p savedPane) string {
 		if len(p.Argv) > 0 {
 			_, args = program(p.Argv)
 		}
+		kept := claudeKeptFlags(args)
 		cmd := []string{"claude", "--continue"}
 		if p.Resume != "" {
 			cmd = []string{"claude", "--resume", p.Resume}
 		}
-		return commandLine(append(cmd, claudeKeptFlags(args)...))
+		// A pane where claude sat unused has no conversation to resume, and
+		// `--continue` then exits with an error; fall back to a fresh claude
+		// so the pane comes back as it was — claude, ready.
+		return commandLine(append(cmd, kept...)) + " || " + commandLine(append([]string{"claude"}, kept...))
 	case kindCodex:
-		return "codex resume --last"
+		return "codex resume --last || codex"
 	}
 	return ""
 }

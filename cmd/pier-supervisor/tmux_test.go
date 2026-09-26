@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,14 +63,14 @@ func TestLaunchCommand(t *testing.T) {
 		pane savedPane
 		want string
 	}{
-		{savedPane{Kind: kindClaude, Argv: []string{"claude"}}, "claude --continue"},
-		{savedPane{Kind: kindClaude, Argv: []string{"claude", "-r", convID}, Resume: convID}, "claude --resume " + convID},
+		{savedPane{Kind: kindClaude, Argv: []string{"claude"}}, "claude --continue || claude"},
+		{savedPane{Kind: kindClaude, Argv: []string{"claude", "-r", convID}, Resume: convID}, "claude --resume " + convID + " || claude"},
 		// Flags that shape how the agent runs survive; a positional prompt
 		// must not, or the relaunch would send it again.
 		{savedPane{Kind: kindClaude, Argv: []string{"claude", "--dangerously-skip-permissions", "--model", "opus", "fix the login bug"}},
-			"claude --continue --dangerously-skip-permissions --model opus"},
-		{savedPane{Kind: kindClaude, Argv: []string{"node", "/x/claude-code/cli.js", "--permission-mode=plan"}}, "claude --continue --permission-mode=plan"},
-		{savedPane{Kind: kindCodex, Argv: []string{"codex", "do the thing"}}, "codex resume --last"},
+			"claude --continue --dangerously-skip-permissions --model opus || claude --dangerously-skip-permissions --model opus"},
+		{savedPane{Kind: kindClaude, Argv: []string{"node", "/x/claude-code/cli.js", "--permission-mode=plan"}}, "claude --continue --permission-mode=plan || claude --permission-mode=plan"},
+		{savedPane{Kind: kindCodex, Argv: []string{"codex", "do the thing"}}, "codex resume --last || codex"},
 		{savedPane{Kind: kindOther, Argv: []string{"pnpm", "dev"}}, ""},
 		{savedPane{Kind: kindShell}, ""},
 		{savedPane{Kind: kindSetup}, ""},
@@ -185,12 +186,12 @@ func TestBuildRestorePlan(t *testing.T) {
 		}},
 	}}
 	const rc = " bash --rcfile /home/agent/.pier/tmux/restore.rc -i"
-	claude := "env PIER_RESTORE_CWD=/home/agent/work/shop PIER_RESTORE_SCROLLBACK=/home/agent/.pier/tmux/main.0.0.txt 'PIER_RESTORE_RUN=claude --resume " + convID + " --dangerously-skip-permissions'" + rc
+	claude := "env PIER_RESTORE_CWD=/home/agent/work/shop PIER_RESTORE_SCROLLBACK=/home/agent/.pier/tmux/main.0.0.txt 'PIER_RESTORE_RUN=claude --resume " + convID + " --dangerously-skip-permissions || claude --dangerously-skip-permissions'" + rc
 	// The dev server does not run on restore: it is typed at the prompt.
 	dev := "env PIER_RESTORE_CWD=/home/agent/work/shop/web PIER_RESTORE_SCROLLBACK=/home/agent/.pier/tmux/main.0.1.txt" + rc
 	// Setup never re-runs: a shell with its scrollback.
 	setup := "env PIER_RESTORE_CWD=/home/agent/work/shop PIER_RESTORE_SCROLLBACK=/home/agent/.pier/tmux/main.1.0.txt" + rc
-	codex := "env PIER_RESTORE_CWD=/home/agent 'PIER_RESTORE_RUN=codex resume --last'" + rc
+	codex := "env PIER_RESTORE_CWD=/home/agent 'PIER_RESTORE_RUN=codex resume --last || codex'" + rc
 	sock := "SSH_AUTH_SOCK=/home/agent/.ssh/agent.sock"
 
 	want := []planStep{
@@ -338,5 +339,69 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 			t.Fatalf("scrollback replayed: %v, command typed back: %v\npane 0:\n%s\npane 1.0:\n%s", scrollOK, typedOK, shot, typed)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// fakeProc stands in a /proc tree: pid → (comm pgrp tpgid argv children).
+func fakeProc(t *testing.T, procs map[int]struct {
+	pgrp, tpgid int
+	argv        []string
+	kids        []int
+}) {
+	t.Helper()
+	old := readProc
+	t.Cleanup(func() { readProc = old })
+	readProc = func(path string) ([]byte, error) {
+		var pid int
+		var file string
+		if _, err := fmt.Sscanf(path, "/proc/%d/%s", &pid, &file); err != nil {
+			return nil, os.ErrNotExist
+		}
+		p, ok := procs[pid]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		switch {
+		case file == "stat":
+			return []byte(fmt.Sprintf("%d (x) S 1 %d %d 0 %d 0", pid, p.pgrp, p.pgrp, p.tpgid)), nil
+		case file == "cmdline":
+			return []byte(strings.Join(p.argv, "\x00") + "\x00"), nil
+		case strings.HasSuffix(file, "children"):
+			var ks []string
+			for _, k := range p.kids {
+				ks = append(ks, strconv.Itoa(k))
+			}
+			return []byte(strings.Join(ks, " ")), nil
+		}
+		return nil, os.ErrNotExist
+	}
+}
+
+// A pane whose root is the program itself keeps its identity: claude's MCP
+// servers share its process group, and the first of them used to be saved
+// as the pane's command — so a wake typed `npm exec …` instead of resuming
+// the conversation.
+func TestForegroundKeepsAProgramRootOverItsChildren(t *testing.T) {
+	type proc = struct {
+		pgrp, tpgid int
+		argv        []string
+		kids        []int
+	}
+	fakeProc(t, map[int]proc{
+		10: {10, 10, []string{"claude"}, []int{11}},
+		11: {10, 10, []string{"npm exec godspeed-mcp"}, nil},
+	})
+	if got := foreground(10); len(got) != 1 || got[0] != "claude" {
+		t.Errorf("want claude, got %q", got)
+	}
+
+	// A shell still gives way to the program running inside it.
+	fakeProc(t, map[int]proc{
+		20: {20, 20, []string{"bash", "-c", "claude"}, []int{21}},
+		21: {20, 20, []string{"claude"}, []int{22}},
+		22: {20, 20, []string{"npm exec some-mcp"}, nil},
+	})
+	if got := foreground(20); len(got) != 1 || got[0] != "claude" {
+		t.Errorf("want the shell's program, got %q", got)
 	}
 }
