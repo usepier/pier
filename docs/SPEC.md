@@ -283,6 +283,33 @@ protected by the repository's `.gitignore`.
    teardown sweeps every `pier:managed`-tagged image. ~$1/mo snapshot
    storage per repo. Offered as the wizard's last step when it runs inside
    a repo; `pier bake` refreshes it.
+
+   **Prebuild (2026-09).** A toolchain-only image turned out to save almost
+   nothing on real repos: measured on a large monorepo, a baked create was
+   attach-ready in 72s but `.pier/setup.sh` then ran ~9 min (container
+   builds with zero cache hits, dependency stores downloaded from scratch),
+   so baked and stock felt the same. The bake therefore also prebuilds: after
+   the hook, the bake instance receives a create's exact cargo off the
+   laptop's HEAD (placeholder branch `pier-prebuild`), bootstraps, and runs
+   `.pier/setup.sh` to completion; a failed setup aborts the bake. A scrub
+   then deletes, by exact path, every file the files tar delivered, plus
+   containers (their config embeds `env_file` values), setup logs and
+   status, gh/docker/git credential files and `~/.config/pier`, and resets
+   tracked edits. Images, volumes and the build cache stay. Anything setup
+   derived from secrets is the repo's responsibility, and is documented as
+   such. The bootstrap is shared: finding `~/work/<repo>/.git` it sets the
+   origin, fetches incrementally, `checkout -f -B` onto the session branch
+   (untracked artifacts survive) and drops the placeholder, so
+   `.pier/setup.sh` re-runs warm. That was already the pool-claim contract,
+   and is now stated for every session: setup must be safe to re-run on a
+   warm disk. Freshness is manual (`pier bake` again); there is no control
+   plane to schedule rebakes.
+
+   EBS restores snapshots lazily from S3, and a prebuilt image is gigabytes.
+   AWS launches from a baked image therefore set `VolumeInitializationRate`
+   (300 MiB/s, billed per GiB of snapshot data) on the root mapping. A CLI
+   that predates the field rejects it client-side, and the launch retries
+   without it. GCE documents no lazy-restore penalty, so it needs nothing.
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
    `.pier/setup.sh` runs asynchronously in a background tmux window while you

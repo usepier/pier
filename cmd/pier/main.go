@@ -289,6 +289,7 @@ func cmdNew(args []string) {
 		base = pos[1]
 	}
 
+	started := time.Now()
 	cfg, drv := loadDriver()
 	repo := repoRoot()
 	// ctrl-c mid-create must cancel the ctx (not just kill the process) so
@@ -364,7 +365,7 @@ func cmdNew(args []string) {
 		sess, err = drv.Create(ctx, driver.CreateSpec{
 			Name: branch, Repo: repo, Branch: branch, BaseRef: base, Image: image,
 			IdleTimeout: idle, UnattendedCap: cap_,
-			Progress: func(step string) { fmt.Println(ui.Step(step)) },
+			Progress: ui.TimedSteps(started),
 		})
 		if err != nil {
 			// The instance is already gone (Create destroys its own wreckage), so
@@ -1095,7 +1096,7 @@ func poolParams(cfg config.Config, drv driver.Driver, repoRoot string) (pool.Par
 		Image:       image,
 		IdleTimeout: idle, UnattendedCap: cap_,
 		Manifest: cfg.Secrets.Manifest, SessionEnv: sessionEnv(cfg),
-		Progress: func(step string) { fmt.Println(ui.Step(step)) },
+		Progress: ui.TimedSteps(time.Now()),
 	}, nil
 }
 
@@ -1412,10 +1413,11 @@ func cmdBake() {
 	name := filepath.Base(repo)
 	hook := driver.BakeHook(repo)
 	fmt.Printf("%s %s\n", ui.Bold.Render("baking "+name),
-		ui.Dim.Render("(one temporary instance ~5 min, then an image — ~$1-2/mo storage)"))
+		ui.Dim.Render("(one temporary instance: harnesses ~5 min plus one full .pier/setup.sh run, then an image — ~$1-3/mo storage)"))
 	if hook != "" {
 		fmt.Println(ui.Step(".pier/bake.sh found — its toolchains bake in"))
 	}
+	fmt.Println(ui.Step("prebuilding from HEAD — the checkout and setup's artifacts bake in, secrets are scrubbed before imaging"))
 	// This bake supersedes the repo's previous image (and on aws-ec2, once
 	// per config, the legacy shared one).
 	replaces := cfg.BakedReplaces(name)
@@ -1425,7 +1427,7 @@ func cmdBake() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	img, err := drv.Bake(ctx, driver.BakeSpec{
-		RepoName: name, HookPath: hook, Replaces: replaces,
+		RepoName: name, RepoRoot: repo, HookPath: hook, Replaces: replaces,
 	})
 	if err != nil {
 		fatal(err)
@@ -1439,7 +1441,7 @@ func cmdBake() {
 	}); err != nil {
 		fatal(err)
 	}
-	fmt.Println(ui.OK.Render("baked "+img) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~1-2 min"))
+	fmt.Println(ui.OK.Render("baked "+img) + ui.Dim.Render(" — new "+name+" sessions start from this checkout; re-run `pier bake` when dependencies drift"))
 	if cfg.PoolSize(name) > 0 {
 		fmt.Println(ui.Dim.Render("the warm pool was built on the old image — members recycle on the next claim or `pier pool fill`"))
 	}

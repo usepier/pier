@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -103,7 +104,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 		}
 	}
 
-	progress("bootstrapping (stock AMI waits for cloud-init here — `pier bake` skips that)")
+	progress(payload.BootstrapNote(spec.Image))
 	var fwd []string
 	if pl.ForwardAgent {
 		fwd = []string{"-A"}
@@ -127,6 +128,11 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 		CostNote:     costNote(driver.StateRunning, d.InstanceType),
 	}, nil
 }
+
+// volumeInitRate is the provisioned hydration rate (MiB/s) for volumes
+// restored from a baked image — the API's maximum, 300, loads a 20 GiB
+// prebuild in about 70s.
+const volumeInitRate = 300
 
 // pushBackoff is the first pause between push attempts, doubling after each.
 // A var so tests can exercise the retry policy without sleeping through it.
@@ -202,8 +208,21 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, ud
 		{"ResourceType": "instance", "Tags": tagList(spec, me, "pier-"+spec.Name)},
 		{"ResourceType": "volume", "Tags": tagList(spec, me, "pier-"+spec.Name)},
 	})
-	bdm := fmt.Sprintf(`[{"DeviceName":%q,"Ebs":{"VolumeSize":%d,"VolumeType":"gp3","DeleteOnTermination":true}}]`,
-		rootDev, d.DiskGiB)
+	// A volume restored from a snapshot is lazily loaded from S3: every block's
+	// first read stalls, which a prebuilt image — gigabytes of dependencies
+	// and container layers — feels on every command of its first minutes.
+	// Provisioned-rate initialization hydrates the whole volume at a fixed
+	// rate right after launch instead (billed per GiB of snapshot data, cents
+	// per create). Stock AMIs are small and cached by AWS, so only baked
+	// images ask for it.
+	initRate := ""
+	if spec.Image != "" {
+		initRate = fmt.Sprintf(`,"VolumeInitializationRate":%d`, volumeInitRate)
+	}
+	bdm := func(initRate string) string {
+		return fmt.Sprintf(`[{"DeviceName":%q,"Ebs":{"VolumeSize":%d,"VolumeType":"gp3","DeleteOnTermination":true%s}}]`,
+			rootDev, d.DiskGiB, initRate)
+	}
 
 	args := []string{"ec2", "run-instances",
 		"--image-id", ami,
@@ -212,7 +231,7 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, ud
 		"--security-group-ids", sg,
 		"--instance-initiated-shutdown-behavior", "stop", // in-VM shutdown = park
 		"--metadata-options", "HttpTokens=required,HttpEndpoint=enabled",
-		"--block-device-mappings", bdm,
+		"--block-device-mappings", bdm(initRate),
 		"--tag-specifications", string(tags),
 		"--user-data", "file://" + udPath,
 		"--query", "Instances[0].InstanceId",
@@ -228,6 +247,16 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, ud
 			return out, nil
 		}
 		lastErr = err
+		if initRate != "" && strings.Contains(err.Error(), "VolumeInitializationRate") {
+			// An aws CLI older than the field (mid-2025) rejects it client-side.
+			// The launch still works without it, just with slower first reads.
+			if spec.Progress != nil {
+				spec.Progress("aws CLI predates fast volume initialization — upgrade it for faster first disk reads")
+			}
+			initRate = ""
+			args[slices.Index(args, "--block-device-mappings")+1] = bdm("")
+			continue
+		}
 		if strings.Contains(err.Error(), "Invalid IAM Instance Profile") {
 			time.Sleep(3 * time.Second) // IAM propagation
 			continue

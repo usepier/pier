@@ -5,8 +5,10 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -34,6 +36,15 @@ var (
 // (create, bake, resize).
 func Step(s string) string {
 	return Accent.Render("  ▸") + " " + s
+}
+
+// TimedSteps prints progress lines as Step does, each suffixed with the time
+// since start — so a slow create or fill says which step ate the wait, in the
+// terminal and in the background logs alike.
+func TimedSteps(start time.Time) func(string) {
+	return func(s string) {
+		fmt.Println(Step(s) + Dim.Render(fmt.Sprintf("  +%s", time.Since(start).Round(time.Second))))
+	}
 }
 
 // Mark renders a green ✓ or red ✗.

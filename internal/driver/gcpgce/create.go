@@ -102,7 +102,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 		}
 	}
 
-	progress("bootstrapping (a stock image waits for cloud-init here — `pier bake` skips that)")
+	progress(payload.BootstrapNote(spec.Image))
 	var fwd []string
 	if pl.ForwardAgent {
 		fwd = []string{"-A"}

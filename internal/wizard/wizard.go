@@ -229,7 +229,7 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	}
 
 	// 5. offer the bundled skills — per-agent confirms, before bake so no
-	// question hides behind a ~5 min build.
+	// question hides behind the build.
 	if home, err := os.UserHomeDir(); err == nil {
 		if err := offerSkills(in, &cfg, home); err != nil {
 			return err
@@ -240,14 +240,14 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	// inside a repo; otherwise point at `pier bake` from one.
 	fmt.Println()
 	if repo := gitToplevel(); repo == "" {
-		fmt.Println(ui.Dim.Render("  (images bake per repo: cd <repo> && pier bake — ~5 min once, cuts creates to ~1-2 min)"))
-	} else if name := filepath.Base(repo); yes(in, "bake the session image for "+name+" now? (~5 min once; cuts creates to ~1-2 min)", true) {
+		fmt.Println(ui.Dim.Render("  (images bake per repo: cd <repo> && pier bake — harnesses plus one full .pier/setup.sh run, so creates skip both)"))
+	} else if name := filepath.Base(repo); yes(in, "bake the session image for "+name+" now? (harnesses ~5 min plus one full .pier/setup.sh run; creates then skip both)", true) {
 		// ctrl-c mid-bake must cancel the ctx so Bake's deferred cleanup can
 		// terminate the temporary instance — it has no supervisor, so a
 		// leaked one never parks itself.
 		bctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		img, err := drv.Bake(bctx, driver.BakeSpec{
-			RepoName: name, HookPath: driver.BakeHook(repo),
+			RepoName: name, RepoRoot: repo, HookPath: driver.BakeHook(repo),
 			Replaces: cfg.BakedReplaces(name),
 		})
 		stop()

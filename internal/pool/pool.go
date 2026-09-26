@@ -35,9 +35,6 @@ const (
 	// claim burns real money. Exported so doctor and the TUI census can flag
 	// the same corpses reconcile would collect.
 	FillGrace = 2 * time.Hour
-	// setupWait bounds fill's wait for .pier/setup.sh. A setup this slow is
-	// broken, not warm.
-	setupWait = 45 * time.Minute
 )
 
 // Params carries everything fill and claim need, resolved by the cmd layer

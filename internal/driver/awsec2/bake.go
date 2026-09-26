@@ -14,10 +14,12 @@ import (
 
 // Bake launches a throwaway instance with the exact session user-data, lets
 // cloud-init finish the harness install, runs the repo's .pier/bake.sh (if
-// any), and images the result. Because every install step in the user-data is
-// guarded, sessions launched from the baked AMI skip straight past it — cold
-// create drops to boot + push time (~60-90s). Images are repo-specific: the
-// hook is where a repo's toolchains (pnpm, python, ...) get baked in.
+// any), prebuilds the repo (checkout + .pier/setup.sh to completion, then a
+// scrub), and images the result. Every install step in the user-data is
+// guarded and the bootstrap reuses a checkout it finds, so sessions launched
+// from the baked AMI skip both the harness install and the repo's cold setup.
+// Images are repo-specific: the hook is where a repo's toolchains (pnpm,
+// python, ...) get baked in, setup.sh where its dependencies do.
 func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error) {
 	arch, err := d.archOf(ctx, d.InstanceType)
 	if err != nil {
@@ -89,6 +91,22 @@ exit 1`
 			return "", fmt.Errorf(".pier/bake.sh failed — nothing baked: %w", err)
 		}
 	}
+	if spec.RepoRoot != "" {
+		supervisor, err := d.SupervisorBin(arch)
+		if err != nil {
+			return "", err
+		}
+		step := func(s string) { fmt.Println(ui.Step(s)) }
+		remote := payload.Remote{
+			Push: func(ctx context.Context, local, remote string) error { return d.push(ctx, id, local, remote, step) },
+			Run: func(ctx context.Context, extra []string, script string) (string, error) {
+				return d.sshRunOpts(ctx, id, extra, script)
+			},
+		}
+		if err := payload.Prebuild(ctx, spec.RepoRoot, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
+			return "", fmt.Errorf("prebuild failed — nothing baked: %w", err)
+		}
+	}
 	// Per-instance state must not leak into the image.
 	if _, err := d.sshRun(ctx, id, "rm -f ~/.ssh/authorized_keys && sudo rm -rf /etc/pier"); err != nil {
 		return "", err
@@ -105,7 +123,7 @@ exit 1`
 	name := "pier-" + repo + "-" + time.Now().Format("20060102-1504")
 	tags := "Tags=[{Key=pier:managed,Value=1},{Key=pier:repo,Value=" + repo + "}]"
 	img, err := d.aws(ctx, "ec2", "create-image", "--instance-id", id, "--name", name,
-		"--description", "pier session base for "+repo+" (harnesses + bake hook preinstalled)",
+		"--description", "pier session base for "+repo+" (harnesses, bake hook, prebuilt checkout)",
 		"--tag-specifications",
 		"ResourceType=image,"+tags,
 		"ResourceType=snapshot,"+tags,

@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 )
 
 // Fill reconciles one repo's pool to Params.Size: stale members recycle,
@@ -90,32 +90,14 @@ func fillOne(ctx context.Context, p Params, hasSetup bool) error {
 	return p.Driver.Park(ctx, sess.ID)
 }
 
-// waitSetup polls the member's setup status (the same file the supervisor
-// beacons to ls/TUI). "running" — and, before the setup window has spun up,
-// a missing file — keep it waiting; "0" succeeds; anything else fails with
-// the log tail.
+// waitSetup waits out the member's .pier/setup.sh; a failure names the
+// member, since fill's log interleaves several.
 func waitSetup(ctx context.Context, p Params, id string) error {
-	deadline := time.Now().Add(setupWait)
-	for {
-		out, err := p.Driver.Exec(ctx, id, "cat ~/.pier-setup.status 2>/dev/null || echo none")
-		if err != nil && ctx.Err() != nil {
-			return err
-		}
-		if err == nil {
-			switch status := strings.TrimSpace(out); status {
-			case "0":
-				return nil
-			case "none", "running":
-			default:
-				tail, _ := p.Driver.Exec(ctx, id, "tail -n 15 ~/.pier-setup.log 2>/dev/null")
-				return fmt.Errorf(".pier/setup.sh failed (exit %s) on the pool member:\n%s", status, tail)
-			}
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("setup still running after %s — not pooling this member", setupWait)
-		}
-		time.Sleep(10 * time.Second)
+	exec := func(ctx context.Context, cmd string) (string, error) { return p.Driver.Exec(ctx, id, cmd) }
+	if err := payload.WaitSetup(ctx, exec, payload.SetupWait); err != nil {
+		return fmt.Errorf("pool member: %w", err)
 	}
+	return nil
 }
 
 // Drain destroys every pool member of the repo, any generation, and returns

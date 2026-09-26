@@ -16,9 +16,11 @@ import (
 // Bake launches a throwaway instance with the exact session user-data, lets
 // cloud-init finish the harness install, runs the repo's .pier/bake.sh (if
 // any), and images the boot disk. Because every install step in the user-data
-// is guarded, sessions launched from the baked image skip straight past it —
-// cold create drops to boot + push time. Images are repo-specific: the hook
-// is where a repo's toolchains (pnpm, python, ...) get baked in.
+// is guarded, sessions launched from the baked image skip straight past it.
+// With a repo root the bake is a prebuild: the checkout and a completed
+// .pier/setup.sh are imaged too, so creates skip the repo's cold setup.
+// Images are repo-specific: the hook is where a repo's toolchains (pnpm,
+// python, ...) get baked in, setup.sh where its dependencies do.
 func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error) {
 	me, err := d.user(ctx)
 	if err != nil {
@@ -79,6 +81,29 @@ exit 1`
 			return "", fmt.Errorf(".pier/bake.sh failed — nothing baked: %w", err)
 		}
 	}
+	if spec.RepoRoot != "" {
+		supervisor, err := d.SupervisorBin(archOf(d.MachineType))
+		if err != nil {
+			return "", err
+		}
+		remote := payload.Remote{
+			Push: func(ctx context.Context, local, remote string) error {
+				if err := d.scpTo(ctx, id, local, remote); err == nil || ctx.Err() != nil {
+					return err
+				}
+				// One retry, as in create: the tunnel can drop mid-push.
+				time.Sleep(2 * time.Second)
+				return d.scpTo(ctx, id, local, remote)
+			},
+			Run: func(ctx context.Context, extra []string, script string) (string, error) {
+				return d.sshRunOpts(ctx, id, extra, script)
+			},
+		}
+		step := func(s string) { fmt.Println(ui.Step(s)) }
+		if err := payload.Prebuild(ctx, spec.RepoRoot, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
+			return "", fmt.Errorf("prebuild failed — nothing baked: %w", err)
+		}
+	}
 	// Per-instance state must not leak into the image.
 	if _, err := d.sshRun(ctx, id, "rm -f ~/.ssh/authorized_keys && sudo rm -rf /etc/pier"); err != nil {
 		return "", err
@@ -99,7 +124,7 @@ exit 1`
 	// image is ready.
 	img, err := d.gcloud(ctx, "compute", "images", "create", name,
 		"--source-disk", id, "--source-disk-zone", d.Zone,
-		"--description", "pier session base for "+repo+" (harnesses + bake hook preinstalled)",
+		"--description", "pier session base for "+repo+" (harnesses, bake hook, prebuilt checkout)",
 		"--labels", LabelManaged+"=1,"+MetaRepo+"="+repo,
 		"--format", "value(name)")
 	if err != nil {

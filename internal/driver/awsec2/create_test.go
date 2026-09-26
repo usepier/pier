@@ -3,6 +3,9 @@ package awsec2
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,4 +134,81 @@ func TestTagListPoolGen(t *testing.T) {
 		}
 	}
 	t.Fatalf("pool create missing %s", TagPool)
+}
+
+// fakeAWS puts an aws CLI on PATH that answers the calls launch makes and
+// logs every run-instances invocation's arguments, one line each. With
+// rejectInitRate it fails the way a CLI older than the field does.
+func fakeAWS(t *testing.T, rejectInitRate bool) (log string) {
+	t.Helper()
+	bin := t.TempDir()
+	log = filepath.Join(bin, "run-instances.log")
+	reject := ""
+	if rejectInitRate {
+		reject = `case "$*" in *VolumeInitializationRate*) echo 'Parameter validation failed: Unknown parameter in BlockDeviceMappings[0].Ebs: "VolumeInitializationRate"' >&2; exit 252;; esac`
+	}
+	script := "#!/bin/sh\ncase \"$2\" in\n" +
+		"describe-vpcs) echo vpc-1 ;;\n" +
+		"describe-security-groups) echo sg-1 ;;\n" +
+		"describe-images) echo /dev/sda1 ;;\n" +
+		"run-instances) echo \"$*\" >> " + log + "\n" + reject + "\necho i-new ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "aws"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	return log
+}
+
+// A prebuilt image is gigabytes of lazily-loaded snapshot: baked launches
+// ask EBS to hydrate the volume up front, stock ones (small, AWS-cached)
+// don't — and a CLI too old for the field must cost speed, never the launch.
+func TestLaunchVolumeInitialization(t *testing.T) {
+	d := &Driver{InstanceType: "t4g.medium", DiskGiB: 40}
+	ud := filepath.Join(t.TempDir(), "ud")
+	os.WriteFile(ud, nil, 0o600)
+	spec := driver.CreateSpec{Name: "s", Repo: "/tmp/r", Branch: "s"}
+
+	t.Run("baked asks for provisioned-rate hydration", func(t *testing.T) {
+		log := fakeAWS(t, false)
+		spec := spec
+		spec.Image = "ami-baked"
+		if _, err := d.launch(context.Background(), spec, "me", spec.Image, ud); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(log)
+		if !strings.Contains(string(b), `"VolumeInitializationRate":300`) {
+			t.Errorf("baked launch must request volume initialization, ran: %s", b)
+		}
+	})
+
+	t.Run("stock does not", func(t *testing.T) {
+		log := fakeAWS(t, false)
+		if _, err := d.launch(context.Background(), spec, "me", "ami-stock", ud); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "VolumeInitializationRate") {
+			t.Errorf("stock launch must not pay for hydration, ran: %s", b)
+		}
+	})
+
+	t.Run("old CLI falls back without it", func(t *testing.T) {
+		log := fakeAWS(t, true)
+		spec := spec
+		spec.Image = "ami-baked"
+		var notes []string
+		spec.Progress = func(s string) { notes = append(notes, s) }
+		id, err := d.launch(context.Background(), spec, "me", spec.Image, ud)
+		if err != nil || id != "i-new" {
+			t.Fatalf("launch must survive a CLI that predates the field: id=%q err=%v", id, err)
+		}
+		b, _ := os.ReadFile(log)
+		lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+		if len(lines) != 2 || strings.Contains(lines[1], "VolumeInitializationRate") {
+			t.Errorf("want one rejected attempt then one without the field, ran:\n%s", b)
+		}
+		if len(notes) != 1 || !strings.Contains(notes[0], "upgrade") {
+			t.Errorf("the fallback must say how to get the speed back, got %q", notes)
+		}
+	})
 }

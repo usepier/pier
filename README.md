@@ -258,7 +258,7 @@ Pier uses one committed `.pier/` directory with three optional files:
 
 | File | Runs / read | Contains |
 |---|---|---|
-| `.pier/setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
+| `.pier/setup.sh` | Once at `pier bake` (prebuild), then every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds (must be safe to re-run) |
 | `.pier/include` | At create | Ignored files to carry (env files, local certs) |
 | `.pier/bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
 
@@ -378,18 +378,36 @@ proxy up — running sessions resolve as <session>.pier (http + https), ports mi
 - One sudo on first run. macOS only for now.
 - `pier port <session> 3000` is the manual, zero-sudo fallback everywhere.
 
-### `pier bake`: per-repo images
+### `pier bake`: per-repo prebuilt images
 
-A stock create installs the harnesses under cloud-init, which takes minutes.
-Baking pays that cost once:
+Most of a create's wait is the repo's own setup: dependency installs,
+container image builds, seeds. A toolchain-only image can't help with any of
+that, so a bake prebuilds the repo:
 
 ```
-pier bake    # one throwaway instance + your .pier/bake.sh, snapshotted as an image
+pier bake    # one throwaway instance: harnesses + .pier/bake.sh, then your
+             # checkout (HEAD) with .pier/setup.sh run to completion, imaged
 ```
 
-Creates from a baked image drop to a minute or two. Images are keyed to
-the repo, so one project's toolchain never bleeds into another's. Re-baking
-supersedes the old image, and `pier teardown` sweeps them all by tag.
+Sessions launched from the image find the checkout and everything setup
+left around it (installed dependencies, virtualenvs, the docker build cache,
+built images, volumes) already on disk. The bootstrap fetches only what
+changed, moves the checkout to your branch, and `.pier/setup.sh` re-runs
+warm: cache hits instead of a cold install. On AWS the restored volume
+is also hydrated at a provisioned rate right after launch, a few cents per
+create, so the first commands don't stall on lazily-loaded snapshot blocks.
+
+Before imaging, the bake scrubs everything the create cargo delivered:
+harness auth, tokens, the MCP seed, untracked and `.pier/include` files,
+containers (their config holds `env_file` values), setup logs. Every create
+pushes those fresh, so scrubbing costs no speed. What setup *derives* from
+secrets, such as an env value compiled into a build or a seeded database, is
+the repo's to keep out. Anyone who can launch the image can read its disk.
+
+Freshness is manual: re-run `pier bake` when dependencies drift enough that
+the warm re-run gets slow. Images are keyed to the repo, so one project's
+toolchain never bleeds into another's. Re-baking supersedes the old image,
+and `pier teardown` sweeps them all by tag.
 
 ### Warm pools: the create is already done
 
@@ -543,8 +561,10 @@ The choices contributors should know before proposing changes
 - **Guarded cloud-init, identical on stock and baked images.** Every
   install step is a no-op when the image already has it. Baking is an
   optimization, never a requirement.
-- **Images are toolchains, sessions are state.** `pier bake` installs
-  tools. Deps, migrations, and env belong to `.pier/setup.sh` at boot.
+- **Images are prebuilt, secrets are per-session.** `pier bake` images a
+  setup-complete checkout so creates skip the repo's cold setup. Anything
+  pier pushed is scrubbed before imaging and re-pushed per session, and
+  `.pier/setup.sh` must stay safe to re-run on a warm disk.
 - **Dirty state travels as a git patch,** not rsync. Binary-safe,
   reviewable, applied atomically after checkout.
 - **Truth over optimism in states.** The ready tag, the setup status file,

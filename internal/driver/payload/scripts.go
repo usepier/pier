@@ -174,9 +174,14 @@ set -a; . "$HOME/.config/pier/env" 2>/dev/null || true; set +a
 
 mkdir -p "$HOME/work/{{REPO}}"
 cd "$HOME/work/{{REPO}}"
-git init -q -b '{{BRANCH}}'
+# A prebuilt image already holds the checkout with setup's artifacts around it
+# (node_modules, venvs, build caches — the warmth pier bake paid for), so the
+# fetch below is incremental and the branch moves onto it instead of a fresh
+# init. Untracked artifacts survive the checkout; tracked state is reset.
+prebuilt=
+if [ -d .git ]; then prebuilt=1; else git init -q -b '{{BRANCH}}'; fi
 {{GITCONFIG}}
-if [ -n '{{ORIGIN}}' ]; then git remote add origin '{{ORIGIN}}'; fi
+if [ -n '{{ORIGIN}}' ]; then git remote set-url origin '{{ORIGIN}}' 2>/dev/null || git remote add origin '{{ORIGIN}}'; fi
 # ssh origin = fetch rides the laptop's forwarded agent; pre-trust github.
 case '{{ORIGIN}}' in git@*|ssh://*) mkdir -p "$HOME/.ssh" && ssh-keyscan github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true ;; esac
 # gh brokers git credentials for https origin fetches; on a stock image it may
@@ -188,7 +193,9 @@ case '{{MODE}}' in
   thin)   git fetch -q --no-tags origin && git fetch -q /tmp/pier.bundle {{EXPORTREF}} ;;
   *)      git fetch -q /tmp/pier.bundle {{EXPORTREF}} ;;
 esac
+if [ -n "$prebuilt" ]; then git checkout -qf -B '{{BRANCH}}' {{SHA}}; fi
 git reset -q --hard {{SHA}}
+if [ -n "$prebuilt" ] && [ '{{BRANCH}}' != '` + PrebuildBranch + `' ]; then git branch -qD '` + PrebuildBranch + `' 2>/dev/null || true; fi
 # Uncommitted edits to tracked files, exactly as the laptop had them (a
 # failed apply fails the create — better than silently missing work).
 if [ -f /tmp/pier-dirty.patch ]; then git apply /tmp/pier-dirty.patch; fi
@@ -217,6 +224,16 @@ touch "$HOME/.pier-bootstrapped"
 rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-supervisor /tmp/pier-bootstrap.sh
 echo bootstrapped
 `
+
+// BootstrapNote is the progress line for the bootstrap step: on a stock image
+// it waits out cloud-init's harness install; on a baked one it reuses the
+// prebuilt checkout when the image carries one.
+func BootstrapNote(image string) string {
+	if image == "" {
+		return "bootstrapping (a stock image waits for cloud-init here — `pier bake` skips that)"
+	}
+	return "bootstrapping (baked image: harnesses installed, prebuilt checkout reused when present)"
+}
 
 func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
 	return strings.NewReplacer(

@@ -13,7 +13,7 @@ directory control the rest:
 | File | When it runs / travels | What belongs in it |
 |---|---|---|
 | `.pier/bake.sh` | Once, during `pier bake`, on a throwaway instance that becomes the repo's AMI | **Toolchains** — language runtimes, package managers |
-| `.pier/setup.sh` | On every session's first boot, async, after the repo lands | **Repo state** — dependency install, services, migrations, seeds |
+| `.pier/setup.sh` | Once during `pier bake` (the prebuild), then on every session's first boot, async, after the repo lands | **Repo state** — dependency install, services, migrations, seeds |
 | `.pier/include` | List read at create time; matching files ride to the VM | **Ignored files** dev needs — env files, local certs |
 
 Your job: inspect this repo, write the files that apply, protect loose local
@@ -75,6 +75,13 @@ secrets env (`~/.config/pier/env`) is loaded. Output logs to
 nonzero exit shows as `(setup failed)` in `pier ls`, so **let failures
 fail** — start with `set -euo pipefail`, don't swallow errors.
 
+**It must be safe to re-run on a warm disk.** `pier bake` runs it once on a
+checkout and images the result. Every session from that image, and every
+warm pool claim, runs it again over the dependencies, build caches and
+volumes the earlier run left. Use installs that are incremental when
+nothing changed (`pnpm install`, `poetry sync`, `docker compose build`,
+`docker compose up -d`), and never fail on "already exists".
+
 Prefer the repo's own entry point (`make install`, `make dev-setup`) over
 duplicating its steps. Typical shape:
 
@@ -123,8 +130,11 @@ committed (but a new, not-yet-committed `.pier/setup.sh` still travels).
 
 - The `.pier/` files and any `.gitignore` updates are meant to be committed.
   Pier runs both scripts with bash, so the exec bit is optional.
-- Tell the user: if you wrote or changed `.pier/bake.sh`, run `pier bake`
-  in the repo (~8 min, once per hook change). Then create a session and
+- Tell the user to run `pier bake` in the repo: it installs the bake hook's
+  toolchains and prebuilds the repo by running `.pier/setup.sh` once, so
+  sessions start with dependencies already installed. Re-run it after
+  changing `.pier/bake.sh`, or when dependencies have drifted enough that
+  session setup gets slow. Then create a session and
   watch `pier ls` — `(setup running)` should clear; if it shows
   `(setup failed)`, attach and read `~/.pier-setup.log`.
 - If `.pier/setup.sh` is heavy (long installs, docker pulls, migrations),

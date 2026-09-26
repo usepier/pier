@@ -101,9 +101,12 @@ type ClaimSpec struct {
 
 // BakeSpec describes one repo's image bake. Images are repo-specific: the
 // default install serves pier and the harnesses; whatever a repo's toolchain
-// needs on top (pnpm, python, ...) comes from its .pier/bake.sh.
+// needs on top (pnpm, python, ...) comes from its .pier/bake.sh; and with
+// RepoRoot set, the bake is a prebuild — the repo checked out and its
+// .pier/setup.sh run to completion, so sessions start from the result.
 type BakeSpec struct {
 	RepoName string   // repo basename; keys the image to its repo
+	RepoRoot string   // local repo root to prebuild from; "" = toolchains only
 	HookPath string   // local path to the repo's .pier/bake.sh; "" = none
 	Replaces []string // images this bake supersedes (previous bake, legacy shared image)
 }
@@ -196,8 +199,9 @@ type Driver interface {
 	// Exec runs a one-shot command (status reads, push bootstrap) without a TTY.
 	Exec(ctx context.Context, id string, command string) (string, error)
 
-	// Bake builds one repo's prebaked session image (harnesses + the repo's
-	// .pier/bake.sh toolchains), cutting that repo's cold create to ~60-90s.
+	// Bake builds one repo's prebaked session image: harnesses, the repo's
+	// .pier/bake.sh toolchains, and (prebuild) its checkout with
+	// .pier/setup.sh already run, so creates skip the repo's own setup cost.
 	Bake(ctx context.Context, spec BakeSpec) (imageID string, err error)
 
 	// Headroom reports account capacity (vCPU quota) for the create-time
