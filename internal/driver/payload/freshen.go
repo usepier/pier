@@ -14,7 +14,8 @@ import (
 // the repo's history, a completed .pier/setup.sh. Claiming it means making
 // what's cheap-but-stale current again — this script is that step. It runs on
 // the just-resumed member (a boot: /tmp is clean, and any tmux server is the
-// restore of the member's own fill-time layout, which the script discards) after the same cargo pushes as create, minus supervisor + user-data.
+// restore of the member's own fill-time layout, which the script discards)
+// after the same cargo pushes as create, minus supervisor + user-data.
 
 const freshenTmpl = `#!/usr/bin/env bash
 # pier freshen — runs at claim, as agent, on a just-resumed warm pool member.
