@@ -216,7 +216,11 @@ KillMode=process
 WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
-sudo systemctl enable --now pier-supervisor.service
+# restart, not enable --now: a baked image boots its own (older) supervisor
+# before this runs, and --now leaves a running unit alone — the session
+# would spend its first boot on the image's binary.
+sudo systemctl enable pier-supervisor.service
+sudo systemctl restart pier-supervisor.service
 # --now on a fresh instance finds no saved layout and just writes the marker.
 sudo systemctl enable --now pier-restore.service
 

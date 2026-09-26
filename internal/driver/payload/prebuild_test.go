@@ -186,8 +186,14 @@ func TestRenderBootstrapReusesPrebuiltCheckout(t *testing.T) {
 // containers come back by themselves on the claim's boot.
 func TestSetupRunsOnceNotOnClaim(t *testing.T) {
 	spec := driver.CreateSpec{Name: "x", Repo: "/tmp/r", Branch: "feat"}
-	if !strings.Contains(renderBootstrap(spec, "origin", "abc", ""), "tmux new-window -d -t main -n setup") {
+	boot := renderBootstrap(spec, "origin", "abc", "")
+	if !strings.Contains(boot, "tmux new-window -d -t main -n setup") {
 		t.Error("the bootstrap must run setup")
+	}
+	// A baked image boots its own older supervisor before the bootstrap
+	// installs the new one; only a restart puts the new binary in charge.
+	if !strings.Contains(boot, "systemctl restart pier-supervisor.service") {
+		t.Error("the bootstrap must restart the supervisor it just installed")
 	}
 	fr := strings.NewReplacer("{{REPO}}", "r").Replace(freshenTmpl)
 	fr = strings.ReplaceAll(fr, "the setup window below", "")
