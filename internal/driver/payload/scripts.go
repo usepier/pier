@@ -161,6 +161,10 @@ tmux new-window -d -t main -n "$name" "bash -c 'set -a; . ~/.config/pier/env 2>/
 // bootstrap and the freshen share.
 func sessionUp(mode string) string {
 	return `mkdir -p "$HOME/.pier"
+# The shell rc must only move a login into the repo when it starts in $HOME
+# (user-data rewrites older rcs too, but on a baked image cloud-init is still
+# running when this does, and tmux must not start with the old line).
+sed -i 's#^cd ~/work/\* 2>/dev/null || true$#if [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi#' "$HOME/.bashrc" 2>/dev/null || true
 cat > "$HOME/.pier/session-up.sh" <<'PIER_SESSION_UP'
 ` + sessionUpTmpl + `PIER_SESSION_UP
 rm -f "$HOME/.pier/no-wake-start"
