@@ -105,7 +105,8 @@ func DurConf(d time.Duration) string {
 // --- bootstrap ----------------------------------------------------------------
 // The tmux-server start and the async setup window are shared with the pool
 // freshen script (freshen.go): a claimed member resumes from parked — a boot,
-// so the tmux server is always gone — and re-runs setup to catch drift.
+// so the only tmux server is the member's restored fill-time layout, which
+// freshen kills first — and re-runs setup to catch drift.
 
 const tmuxEnsure = `# SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
 # first attach forwards an agent; harmless when it never does).
@@ -160,14 +161,46 @@ After=multi-user.target
 [Service]
 User=agent
 RuntimeDirectory=pier
+# /run/pier is shared with pier-restore.service; a supervisor restart must
+# not wipe the restore marker attach waits on (/run is tmpfs: a boot still
+# clears it).
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/local/bin/pier-supervisor
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 UNIT
+# Parking is a shutdown, so a wake finds every process gone. This rebuilds
+# the tmux layout the supervisor snapshotted (windows, cwds, scrollback,
+# agents resumed on their conversations) once per boot, before anyone
+# attaches; attach waits for its /run/pier/restored marker.
+sudo tee /etc/systemd/system/pier-restore.service >/dev/null <<'UNIT'
+[Unit]
+Description=pier tmux restore (brings a parked session's layout back on wake)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=agent
+RuntimeDirectory=pier
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/local/bin/pier-supervisor restore
+TimeoutStartSec=60
+# The tmux server this starts is the user's whole session, and it lives in
+# this unit's cgroup. RemainAfterExit keeps the unit active once restore
+# exits (an inactive oneshot's leftover processes are killed); KillMode=process
+# keeps a stop or restart of the unit from taking the server down with it.
+RemainAfterExit=yes
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable --now pier-supervisor.service
+# --now on a fresh instance finds no saved layout and just writes the marker.
+sudo systemctl enable --now pier-restore.service
 
 tar -xf /tmp/pier-files.tar -C "$HOME" --strip-components=1 home 2>/dev/null || true
 set -a; . "$HOME/.config/pier/env" 2>/dev/null || true; set +a

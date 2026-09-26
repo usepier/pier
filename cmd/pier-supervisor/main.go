@@ -20,6 +20,10 @@
 // runaway brake). Config is re-read every tick so `pier keep` edits apply
 // live. State beacon: /run/pier/status.json (read by ls/TUI via ssh) — also
 // carries the listening TCP ports so `pier proxy` knows what to mirror.
+//
+// Every ~30s, and once more right before parking, it also snapshots the tmux
+// layout to ~/.pier/tmux; `pier-supervisor restore` rebuilds it on the next
+// boot (tmux.go).
 package main
 
 import (
@@ -67,9 +71,14 @@ type status struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "restore" {
+		os.Exit(restoreMain())
+	}
+
 	idleSince := time.Now()
 	detachedBusySince := time.Time{}
 	last := status{}
+	lastSnap := time.Time{}
 
 	for {
 		idleTimeout, cap_ := readConf()
@@ -104,6 +113,11 @@ func main() {
 		last.Strained = strained()
 		last.Setup = setup
 		writeStatus(last)
+
+		if now.Sub(lastSnap) >= snapEvery && !restoring() {
+			snapshotNow()
+			lastSnap = now
+		}
 
 		if idleTimeout > 0 && !attached && !busy && now.Sub(idleSince) > idleTimeout {
 			park("idle for " + idleTimeout.String())
@@ -333,6 +347,9 @@ func writeStatus(s status) {
 
 func park(reason string) {
 	writeStatus(status{State: "parking", Since: time.Now(), Reason: reason})
+	// The last word on the layout: up to 30s of window and scrollback changes
+	// since the previous snapshot would otherwise not come back on wake.
+	snapshotNow()
 	fmt.Println("pier-supervisor: parking:", reason)
 	_ = exec.Command("sudo", "shutdown", "-h", "now").Run()
 	os.Exit(0)

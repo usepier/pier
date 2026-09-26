@@ -57,6 +57,11 @@ the container services for this product:
 
 Honest seam: in v1 a park loses running processes (including the tmux server
 and any in-flight agent run) — files, git state, and installed tools survive.
+What a wake brings back is the arrangement (§6 restore-on-wake): the tmux
+layout, cwds and scrollback, with agents relaunched on their conversations
+from the transcripts on disk. What it can't bring back is anything that was
+mid-flight: an agent turn stops at its last saved message, and a dev server
+returns as its command typed at the prompt, not running.
 v1.1 upgrade: EC2 hibernate / GCE suspend to preserve RAM across park.
 
 ## 3. Drivers
@@ -180,6 +185,36 @@ footgun. The human is the trigger; the fix is one command.
 The beacon additionally lists the session's listening TCP ports (one
 `sudo ss -Htnap` pass; sshd and systemd-resolved excluded) — this is how
 `pier proxy` knows what to mirror without the user declaring anything.
+
+**Restore-on-wake.** Parking stays a plain shutdown; the supervisor makes it
+cheap to come back from. Every ~30s, and once more right before `shutdown`,
+it snapshots the agent user's tmux to `~/.pier/tmux/state.json` (atomic
+write) from one `tmux list-panes -a` call: every session, window (index,
+name, layout string, active) and pane (cwd, active, and the foreground
+process's argv read from `/proc` via the pane pid's terminal foreground
+group), plus each pane's last 2000 lines of scrollback beside it. No tmux
+server leaves the last snapshot alone, so a boot nobody attached to is still
+restorable after its next park. Each pane is classified: `agent-claude`
+(recording a `--resume`/`-r`/`--session-id` conversation id when argv names
+one), `agent-codex`, `setup` (the setup window), `shell`, or `other`.
+
+`pier-restore.service` (installed next to the supervisor unit; oneshot,
+`RemainAfterExit=yes`, `KillMode=process`, because the tmux server it starts
+lives in its cgroup) runs `pier-supervisor restore` once per boot, before
+anyone attaches. When no tmux server runs and a snapshot exists, it rebuilds
+every session (`main` first, with the attach-refreshed `SSH_AUTH_SOCK`
+symlink), window and pane at its saved cwd and layout. Each pane's shell
+replays its scrollback, then: claude relaunches with `claude --resume <id>`,
+or `claude --continue` (the newest conversation in that cwd) when no id was
+recorded; codex with `codex resume --last`; `other` panes get the old
+command typed at the prompt but not executed; setup windows come back as a
+plain shell with their log, and setup never re-runs. It always ends by
+writing `/run/pier/restored`. Attach waits up to ~15s for that marker, but
+only when the unit and a snapshot both exist, so older sessions never wait.
+A pool claim is a wake too: freshen drops the restored server and
+`~/.pier/tmux` before its own setup window, and the prebuild scrub deletes
+`~/.pier/tmux` so an image never carries a layout. No cloud API or
+credential is involved, so it works the same on every cloud.
 
 A session either exists fully set up or not at all — no half-states:
 

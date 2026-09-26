@@ -97,6 +97,15 @@ func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
 	if !strings.Contains(remote, `infocmp "$TERM"`) || !strings.Contains(remote, "export TERM=xterm-256color") {
 		t.Errorf("attach must fall back when the VM lacks the client's terminfo entry, got %q", remote)
 	}
+	// The wait for the boot-time tmux restore is gated on the unit and a
+	// saved layout (sessions from before restore existed must never hang)
+	// and happens before tmux starts.
+	gate := strings.Index(remote, `[ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]`)
+	wait := strings.Index(remote, `[ -e /run/pier/restored ] && break`)
+	exec := strings.Index(remote, "exec tmux new-session -A -s main")
+	if gate < 0 || wait < gate || exec < wait {
+		t.Errorf("attach must wait for the restore marker, gated, before tmux; got %q", remote)
+	}
 }
 
 func TestMachinesCatalog(t *testing.T) {

@@ -373,7 +373,9 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 // It also refuses on a missing bootstrap marker: attaching mid-create would
 // land in an empty $HOME (no repo yet) and steal the `main` tmux session
 // away from its workdir. The ready label stops pier's own commands well
-// before this, so it's a backstop for races and raw ssh users.
+// before this, so it's a backstop for races and raw ssh users. The one wait
+// it does make is short and bounded: for the boot-time tmux restore of a
+// woken session to finish (see cmd/pier-supervisor/tmux.go).
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
 	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
 [ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
@@ -381,6 +383,13 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 # may not exist in the VM image's terminfo database yet. Keep the richer entry
 # when it is installed and otherwise use the portable 256-colour baseline.
 if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
+# A woken session rebuilds its saved tmux layout at boot (pier-restore.service);
+# give that a moment so this attach lands in the restored windows instead of
+# racing it to an empty main. Sessions without the unit or a saved layout
+# never wait.
+if [ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]; then
+  for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
+fi
 exec tmux new-session -A -s main`
 	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
 	cmd := execCommandContext(ctx, "ssh", args...)

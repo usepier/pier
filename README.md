@@ -74,7 +74,8 @@ inside it, with:
 Detach and forget it. An in-VM supervisor parks the VM once the agent goes
 quiet: the instance stops, the disk persists. Attach again and it resumes in
 about 20 seconds on AWS and about a minute on GCP, with files, branches, and
-credentials exactly as you left them. If the session outgrows its hardware,
+credentials exactly as you left them, and your tmux windows back with the
+agents reopened on their conversations. If the session outgrows its hardware,
 `pier resize` swaps the machine type in one park and resume cycle, disk
 intact. And to see what the agent built,
 `pier proxy` turns every running session into a hostname:
@@ -485,8 +486,11 @@ The cloud says "running" long before a session is usable, so pier doesn't:
   minutes, once per create). The create output says which transfer mode you
   got and why.
 - **Parking loses processes.** Files, git state, and installed tools
-  survive. The tmux server and an in-flight agent run don't. Hibernate
-  (park with RAM) is on the roadmap.
+  survive, and on wake your tmux layout comes back: windows, panes, cwds,
+  scrollback, and claude/codex relaunched on their conversations. What was
+  running doesn't survive. An agent mid-turn stops at its last saved message,
+  and a dev server comes back as its command typed at the prompt, one Enter
+  away. Hibernate (park with RAM) is on the roadmap.
 - **OAuth MCPs need a browser approval per session.** Keychain-held tokens
   can't be copied safely. This floor is real.
 - **ssh-key-only GitHub auth pushes while attached.** The forwarded agent
@@ -538,6 +542,16 @@ Parking is the VM running `shutdown -h now`, with the instance configured
 to stop rather than terminate. The supervisor holds no credentials and calls
 no APIs. It beacons state to `/run/pier/status.json`, which `ls`, the TUI,
 and `pier proxy` read.
+
+A shutdown ends every process, so every 30 seconds, and once more right
+before it parks, the supervisor also snapshots the tmux layout to
+`~/.pier/tmux`: sessions, windows, pane layouts and cwds, each pane's last
+2000 lines of scrollback, and what each pane was running. On the next boot
+`pier-restore.service` rebuilds it before you attach. Scrollback is replayed,
+claude comes back with `--resume <id>` (or `--continue`) and codex with
+`codex resume --last`, and any other command is typed at the prompt but not
+run. It is the same on every cloud: no hibernation, no cloud APIs. Pool
+claims and baked images start clean and never inherit a layout.
 
 Full design, including the settled trade-offs and measured spike numbers:
 [docs/SPEC.md](docs/SPEC.md).

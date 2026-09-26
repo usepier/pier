@@ -78,7 +78,7 @@ func TestScrubScriptRemovesCargoAndKeepsWarmth(t *testing.T) {
 	write(filepath.Join(repo, "node_modules", "dep", "index.js"), "warm")
 	write(filepath.Join(repo, "tracked.txt"), "dirty edit\n")
 	write(filepath.Join(home, ".cache", "pnpm", "store"), "warm")
-	for _, p := range []string{".pier-setup.status", ".pier-setup.log", ".pier-bootstrapped", ".docker/config.json", ".git-credentials"} {
+	for _, p := range []string{".pier-setup.status", ".pier-setup.log", ".pier-bootstrapped", ".docker/config.json", ".git-credentials", ".pier/tmux/state.json", ".pier/tmux/main.0.0.txt"} {
 		write(filepath.Join(home, p), "x")
 	}
 
@@ -110,7 +110,7 @@ func TestScrubScriptRemovesCargoAndKeepsWarmth(t *testing.T) {
 			t.Errorf("%s survived the scrub", name)
 		}
 	}
-	for _, p := range []string{".pier-setup.status", ".pier-setup.log", ".pier-bootstrapped", ".docker/config.json", ".git-credentials"} {
+	for _, p := range []string{".pier-setup.status", ".pier-setup.log", ".pier-bootstrapped", ".docker/config.json", ".git-credentials", ".pier/tmux/state.json", ".pier/tmux/main.0.0.txt"} {
 		if _, err := os.Stat(filepath.Join(home, p)); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("~/%s survived the scrub", p)
 		}

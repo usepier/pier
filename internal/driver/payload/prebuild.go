@@ -203,8 +203,10 @@ git reset -q --hard
 		b.WriteString("rm -f -- " + shQuote(p) + "\n")
 	}
 	b.WriteString(`# Credentials setup or the harnesses may have written from the pushed ones,
-# and first-boot state a session must create for itself.
-rm -rf ~/.config/pier ~/.pier-setup.d
+# and first-boot state a session must create for itself — the supervisor's
+# tmux snapshot included, or a session booted from this image would wake into
+# the bake instance's windows and scrollback.
+rm -rf ~/.config/pier ~/.pier-setup.d ~/.pier/tmux
 rm -f ~/.pier-bootstrapped ~/.pier-setup.status ~/.pier-setup.log ~/.bash_history \
   ~/.config/gh/hosts.yml ~/.docker/config.json ~/.git-credentials ~/.ssh/agent.sock
 rm -f /tmp/pier-scrub.sh
