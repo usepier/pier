@@ -77,7 +77,7 @@ fail** — start with `set -euo pipefail`, don't swallow errors.
 
 **It must be safe to re-run on a warm disk.** `pier bake` runs it once on a
 checkout and images the result. Every session from that image, and every
-warm pool claim, runs it again over the dependencies, build caches and
+ready-session claim, runs it again over the dependencies, build caches and
 volumes the earlier run left. Use installs that are incremental when
 nothing changed (`pnpm install`, `poetry sync`, `docker compose build`,
 `docker compose up -d`), and never fail on "already exists".
@@ -138,7 +138,8 @@ committed (but a new, not-yet-committed `.pier/setup.sh` still travels).
   watch `pier ls` — `(setup running)` should clear; if it shows
   `(setup failed)`, attach and read `~/.pier-setup.log`.
 - If `.pier/setup.sh` is heavy (long installs, docker pulls, migrations),
-  mention `pier pool set <n>`: it keeps n parked, setup-complete sessions
-  ready to claim, so new sessions skip the wait entirely (~$3-4/mo per
-  warm member, disk only). Changing `.pier/setup.sh` later is safe — warm
-  members notice and recycle on the next claim or fill.
+  mention ready sessions: once the repo is baked, pier keeps parked,
+  setup-complete sessions to claim (one by default; `pier ready <n>` or the
+  app's Repos tab changes it), so new sessions skip the wait (~$3-4/mo each,
+  disk only). Changing `.pier/setup.sh` later is safe — ready sessions
+  notice and recycle on the next claim or refill.

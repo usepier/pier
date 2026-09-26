@@ -391,8 +391,10 @@ protected by the repository's `.gitignore`.
    files it is *not* carrying so a missing one fails loud at create, not deep
    in `make dev`.
 
-4. **Warm pools (opt-in, per repo)** — `pier pool set <size>` (or the TUI's
-   w page) keeps N parked, **setup-complete** members ready; `pier <branch>`
+4. **Ready sessions (per repo; formerly warm pools)** — baked repos keep
+   `speed.ready_sessions` (default 1, the Fast profile) parked,
+   **setup-complete** members ready, overridable per repo with
+   `pier ready <n>` or the app's Repos tab; `pier <branch>`
    then claims one — resume + freshen (secrets re-push, branch at base,
    dirty patch, supervisor conf reset, async setup re-run for drift) instead
    of create + boot + full setup — and refills the pool detached in the
@@ -476,13 +478,19 @@ minutes:
    IAM rights. `pier teardown` reverses it.
 4. **Doctor** — quota headroom, connectivity, plugin; writes
    `~/.config/pier/config.toml`; prints `cd <repo> && pier <branch>`.
-5. **Skills** — one confirm per detected agent (claude, codex — same
-   SKILL.md format), then the bundled pier-onboard skill (embedded in the
-   binary) is installed/refreshed under `~/.<agent>/skills`. A dir
-   confirmed here postdates manifest detection, so it's appended to the
-   session manifest — only when the manifest was accepted at all. Runs
-   before the bake offer so no question hides behind the build.
-   `pier skills` is the same install standalone, no questions.
+5. **Skills** — the pier-onboard skill (embedded in the binary) is one row
+   of the confirmed defaults block: accepting installs it for every
+   detected agent (claude, codex — same SKILL.md format) under
+   `~/.<agent>/skills`; editing asks per agent. An installed dir is
+   appended to the session manifest — only when the manifest was accepted
+   at all. `pier setup --skills` is the same install standalone.
+
+**Revised flow (2026-09).** Setup now asks only for the cloud and account,
+then shows every default in one block — machine, disk, park-after, runaway
+cap, speed profile, copied-in config, the skill — with its cost, for enter
+(accept) or `e` (walk each). Nothing is applied silently. Inside a repo it
+ends by offering the repo's bake, and always by pointing at the app's
+settings page (`pier`, then `s`).
 
 Second dev on a prepared account: detect finds groundwork (`Existed`),
 creates nothing, done in ~90s.
@@ -496,8 +504,14 @@ shows headroom (e.g. `12/32 vCPU`).
 
 ## 11. CLI
 
+Every frontend — this CLI, the app (`pier` with no arguments), and the
+coming Mac app — runs on `pkg/pier`, which owns the capabilities and never
+prints, exits or reads stdin. The Mac app will reach it through a
+`pier api` JSON-RPC server over stdio (the LSP model: a child process, no
+daemon, no port).
+
 ```
-pier                    TUI: list / attach / new / delete / pin (new = background create,
+pier                    the app: Sessions · Repos · Settings tabs (new = background create,
                         listed as "creating" until the create writes its ready tag)
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
 pier ls                 list own sessions
@@ -511,13 +525,11 @@ pier port <match> <p> [p...]  manual port forwards, zero-sudo any-OS fallback (3
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
 pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)
-pier pool               warm pool status + cost (TUI: the w page)
-pier pool set <size>    keep <size> warm sessions ready for the cwd repo (0 = off)
-pier pool fill [--detach]  top the cwd repo's pool up to size now
-pier pool drain [repo]  destroy a repo's warm members
-pier setup              wizard (--print-admin for the no-IAM-rights path)
-pier skills             install/refresh the bundled agent skills standalone
-pier bake               build/refresh the prebaked image
+pier repos [--json]     every repo: session image, ready sessions, idle cost, reminders
+pier ready [n]          show / set the cwd repo's ready sessions (0 = off, removes them)
+pier setup              wizard (--print-admin for the no-IAM-rights path,
+                        --skills to refresh the bundled agent skill only)
+pier bake               build/refresh the repo's session image (--toolchain-only)
 pier doctor             checks
 pier teardown           remove account groundwork
 ```
@@ -548,10 +560,19 @@ disk_gib     = 40
 manifest = [".codex/auth.json", ".codex/config.toml", ".claude/settings.json", ".claude/CLAUDE.md"]
 # claude_oauth_token = "..."  # from `claude setup-token` (macOS Keychain path)
 
-[pool]                         # warm pools (§7.4); strictly opt-in
+[speed]                        # what a speed profile presets (fast/lean/minimal)
+ready_sessions = 1             # per baked repo; parked, disk-only cost
+bake_reminders = true          # suggest `pier bake`; never automatic
+image_repo     = true          # bake prebuilds the repo (false = toolchains only)
+reminder_age   = "30d"         # remind when an image gets this old
+
+[pool]                         # ready sessions (§7.4)
 # max_age = "14d"              # member recycle age
-# [pool.sizes]                 # written by `pier pool set`, keyed by repo
+# [pool.sizes]                 # per-repo overrides, written by `pier ready`
 # shop = 2
+
+# [images.<repo>]              # written by `pier bake`: baked_at, setup_sha,
+#                              # bake_sha, repo_included — feeds the reminders
 ```
 
 ## 13. v1 cut line
