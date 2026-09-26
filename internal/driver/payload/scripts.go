@@ -79,7 +79,12 @@ runcmd:
     # Headless chromium for browser MCPs/skills (playwright cache + shared libs).
     [ -e /home/agent/.cache/ms-playwright ] || { npx -y playwright install-deps chromium && sudo -Hu agent npx -y playwright install chromium; }
     getent group docker >/dev/null && usermod -aG docker agent
-    grep -q 'pier/env' /home/agent/.bashrc || printf '\n[ -f ~/.config/pier/env ] && set -a && . ~/.config/pier/env && set +a\n[ -S ~/.ssh/agent.sock ] && export SSH_AUTH_SOCK=~/.ssh/agent.sock\ncd ~/work/* 2>/dev/null || true\n' >> /home/agent/.bashrc
+    # Land new logins in the repo — but only a shell starting in $HOME: an
+    # unconditional cd dragged every new tmux window and split (and the
+    # restored panes) out of the folder it was opened in.
+    grep -q 'pier/env' /home/agent/.bashrc || printf '\n[ -f ~/.config/pier/env ] && set -a && . ~/.config/pier/env && set +a\n[ -S ~/.ssh/agent.sock ] && export SSH_AUTH_SOCK=~/.ssh/agent.sock\nif [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi\n' >> /home/agent/.bashrc
+    # Images and sessions made before that fix carry the unconditional line.
+    sed -i 's#^cd ~/work/\* 2>/dev/null || true$#if [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi#' /home/agent/.bashrc
 `
 
 // RenderUserData fills the shared cloud-init template with this session's
@@ -120,28 +125,50 @@ const tmuxEnsure = `# SSH_AUTH_SOCK points at the attach-refreshed symlink (dang
 tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
 `
 
-const setupWindow = `# Background setup, after checkout + patch + .pier/include extras are all in
-# place: the repo's .pier/setup.sh, unless a PIER_SETUP_SCRIPT override rode
-# the tar into ~/.config/pier (outer double quotes expand $setup now, into the single-quoted
-# bash -c; \$ defers the rest to run time). The outcome must be impossible to
-# miss — a failed setup used to vanish with its window: ~/.pier-setup.status
-# holds "running" then the exit code (the supervisor beacons it to ls/TUI),
-# the log's last line says done/FAILED, and a failed window renames to
-# setup-failed and stays open instead of closing. The rename targets its own
-# pane id: with a client attached, a bare rename-window can resolve "current
-# window" to the attached client's window and mislabel the user's shell.
-setup=./.pier/setup.sh
-if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
-# Presence is the signal, not the exec bit: git only carries +x when the
-# author remembered chmod, and gating on -x skipped a committed 0644
-# .pier/setup.sh with no trace — the one silent failure setup promises not
-# to have. bash runs it either way.
-if [ -f "$setup" ]; then
-  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; bash $setup 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE setup-failed; exec sleep infinity; fi'"
-fi
+// sessionUpTmpl is written to ~/.pier/session-up.sh by the bootstrap and the
+// claim freshen, and run in one of three modes. setup builds the environment
+// with .pier/setup.sh. warm means the environment is already built (a
+// prebuilt image, a claimed ready session): run .pier/start.sh when the repo
+// has one — bringing services up takes seconds where a full setup takes
+// minutes — and fall back to setup otherwise. wake is a parked session's boot
+// (pier-restore.service runs it): start.sh when there is one, else nothing.
+//
+// The outcome must be impossible to miss — a failed setup used to vanish with
+// its window: ~/.pier-setup.status holds "running" then the exit code (the
+// supervisor beacons it to ls and the app), the log's last line says
+// done/FAILED, and a failed window renames itself and stays open. The rename
+// targets its own pane id: with a client attached, a bare rename-window can
+// resolve "current window" to the attached client's window.
+const sessionUpTmpl = `#!/usr/bin/env bash
+# pier session-up — brings this session's tmux and environment up (setup|warm|wake).
+mode=${1:-setup}
+` + tmuxEnsure + `cd "$HOME/work/{{REPO}}" || exit 1
+# A PIER_SETUP_SCRIPT override rides the tar into ~/.config/pier. Presence is
+# the signal, not the exec bit: git only carries +x when the author
+# remembered chmod. bash runs it either way.
+script=./.pier/setup.sh
+if [ -f "$HOME/.config/pier/setup.sh" ]; then script="$HOME/.config/pier/setup.sh"; fi
+name=setup
+case "$mode" in
+  warm) if [ -f ./.pier/start.sh ]; then script=./.pier/start.sh; name=start; fi ;;
+  wake) [ -f ./.pier/start.sh ] || exit 0; script=./.pier/start.sh; name=start ;;
+esac
+[ -f "$script" ] || exit 0
+tmux new-window -d -t main -n "$name" "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; bash $script 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier $name: done\" >> ~/.pier-setup.log; else echo \"pier $name: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE $name-failed; exec sleep infinity; fi'"
 `
 
-const bootstrapTmpl = `#!/usr/bin/env bash
+// sessionUp writes the session-up script and runs it in mode — the tail the
+// bootstrap and the freshen share.
+func sessionUp(mode string) string {
+	return `mkdir -p "$HOME/.pier"
+cat > "$HOME/.pier/session-up.sh" <<'PIER_SESSION_UP'
+` + sessionUpTmpl + `PIER_SESSION_UP
+rm -f "$HOME/.pier/no-wake-start"
+bash "$HOME/.pier/session-up.sh" ` + mode + `
+`
+}
+
+var bootstrapTmpl = `#!/usr/bin/env bash
 # pier bootstrap — runs once, as agent, on the fresh instance.
 set -euo pipefail
 
@@ -248,7 +275,7 @@ if [ ! -f "$HOME/.tmux.conf" ]; then
   printf 'set -g mouse on\nset -g history-limit 50000\nset -g focus-events on\n' > "$HOME/.tmux.conf"
 fi
 
-` + tmuxEnsure + setupWindow + `
+` + sessionUp(`"$([ -n "$prebuilt" ] && echo warm || echo setup)"`) + `
 # Attach gates on this marker: nobody lands in a half-set-up session. Written
 # after the repo checkout and tmux session exist; deliberately NOT after
 # .pier/setup.sh, which runs async in its tmux window.

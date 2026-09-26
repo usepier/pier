@@ -340,6 +340,18 @@ protected by the repository's `.gitignore`.
    warm disk. Freshness is manual (`pier bake` again); there is no control
    plane to schedule rebakes.
 
+   **setup vs start (2026-09).** Measured on the same monorepo, a fully warm
+   re-run of `.pier/setup.sh` still took 197s — its own reset-and-reseed and
+   stack start, on every session. A laptop runs install once and `up` after
+   each reboot; pier now has the same split. `.pier/start.sh` (optional)
+   runs instead of setup when the environment is already built — a
+   prebuilt-image session (the bootstrap found a checkout), a ready-session
+   claim — and on every wake: pier-restore.service runs it after rebuilding
+   the tmux layout, so a parked session comes back with its services
+   running. All three go through one script the bootstrap writes to
+   `~/.pier/session-up.sh` (modes setup|warm|wake). Ready sessions carry
+   `~/.pier/no-wake-start` while parked, since their claim runs start itself.
+
    EBS restores snapshots lazily from S3, and a prebuilt image is gigabytes.
    AWS launches from a baked image therefore set `VolumeInitializationRate`
    (300 MiB/s, billed per GiB of snapshot data) on the root mapping. A CLI

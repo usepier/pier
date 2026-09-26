@@ -189,8 +189,6 @@ func TestBuildRestorePlan(t *testing.T) {
 	claude := "env PIER_RESTORE_CWD=/home/agent/work/shop PIER_RESTORE_SCROLLBACK=/home/agent/.pier/tmux/main.0.0.txt 'PIER_RESTORE_RUN=claude --resume " + convID + " --dangerously-skip-permissions || claude --dangerously-skip-permissions'" + rc
 	// The dev server does not run on restore: it is typed at the prompt.
 	dev := "env PIER_RESTORE_CWD=/home/agent/work/shop/web PIER_RESTORE_SCROLLBACK=/home/agent/.pier/tmux/main.0.1.txt" + rc
-	// Setup never re-runs: a shell with its scrollback.
-	setup := "env PIER_RESTORE_CWD=/home/agent/work/shop PIER_RESTORE_SCROLLBACK=/home/agent/.pier/tmux/main.1.0.txt" + rc
 	codex := "env PIER_RESTORE_CWD=/home/agent 'PIER_RESTORE_RUN=codex resume --last || codex'" + rc
 	sock := "SSH_AUTH_SOCK=/home/agent/.ssh/agent.sock"
 
@@ -200,7 +198,8 @@ func TestBuildRestorePlan(t *testing.T) {
 		{Args: []string{"split-window", "-t", "main:0", "-c", "/home/agent/work/shop/web", dev}},
 		{Args: []string{"select-layout", "-t", "main:0", "b25f,200x50,0,0{100x50,0,0,0,99x50,101,0,1}"}},
 		{Args: []string{"select-pane", "-t", "main:0.0"}},
-		{Args: []string{"new-window", "-d", "-t", "main:1", "-n", "setup", "-c", "/home/agent/work/shop", setup}},
+		// pier's setup window is not restored: its run is over, and a wake
+		// starts a fresh one.
 		{Args: []string{"select-window", "-t", "main:0"}},
 		{Args: []string{"send-keys", "-t", "main:0.1", "-l", "pnpm dev"}, AwaitPrompt: "main:0.1"},
 		// automatic-rename windows stay unnamed so they keep following their program.
@@ -403,5 +402,24 @@ func TestForegroundKeepsAProgramRootOverItsChildren(t *testing.T) {
 	})
 	if got := foreground(20); len(got) != 1 || got[0] != "claude" {
 		t.Errorf("want the shell's program, got %q", got)
+	}
+}
+
+// A boot brings services back only for a session that has been bootstrapped
+// and isn't a ready session awaiting its claim.
+func TestWakeStartOnlyForBootstrappedSessions(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".pier"), 0o755)
+	if wakeStart(home) != nil {
+		t.Error("a first boot (nothing bootstrapped) must not start anything")
+	}
+	os.WriteFile(filepath.Join(home, ".pier-bootstrapped"), nil, 0o644)
+	os.WriteFile(filepath.Join(home, ".pier", "session-up.sh"), []byte("true"), 0o644)
+	if wakeStart(home) == nil {
+		t.Error("a bootstrapped session's wake must bring the environment up")
+	}
+	os.WriteFile(filepath.Join(home, ".pier", "no-wake-start"), nil, 0o644)
+	if wakeStart(home) != nil {
+		t.Error("a ready session's wake is its claim, which starts things itself")
 	}
 }

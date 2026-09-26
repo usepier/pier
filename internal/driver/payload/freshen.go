@@ -17,7 +17,7 @@ import (
 // restore of the member's own fill-time layout, which the script discards)
 // after the same cargo pushes as create, minus supervisor + user-data.
 
-const freshenTmpl = `#!/usr/bin/env bash
+var freshenTmpl = `#!/usr/bin/env bash
 # pier freshen — runs at claim, as agent, on a just-resumed warm pool member.
 set -euo pipefail
 
@@ -62,7 +62,7 @@ tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
 # Cosmetic: prompts show the session, not the pool placeholder.
 sudo hostnamectl set-hostname '{{HOSTNAME}}' 2>/dev/null || true
 
-` + tmuxEnsure + setupWindow + `
+` + sessionUp("warm") + `
 rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-freshen.sh
 echo freshened
 `

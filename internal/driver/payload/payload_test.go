@@ -163,24 +163,24 @@ func TestRenderBootstrapModes(t *testing.T) {
 		`echo running > ~/.pier-setup.status`,
 		// Runs on presence via bash: a 0644 .pier/setup.sh must not skip
 		// silently.
-		`if [ -f "$setup" ]; then`,
-		`bash $setup 2>&1`,
+		`[ -f "$script" ] || exit 0`,
+		`bash $script 2>&1`,
 		// The cloud-init wait must guard on binaries the stock image LACKS
 		// (Ubuntu ships git/tmux, so those never triggered the wait and
 		// setup raced the installs it depends on).
 		`command -v docker >/dev/null && command -v node >/dev/null && command -v claude >/dev/null || sudo cloud-init status --wait`,
 		`c=\${PIPESTATUS[0]}`,
-		`pier setup: FAILED (exit \$c)`,
+		`pier $name: FAILED (exit \$c)`,
 		// The failure rename must target its own pane: a bare rename-window
 		// resolved to the attached client's current window and mislabeled
 		// the user's shell as setup-failed.
-		`tmux rename-window -t \$TMUX_PANE setup-failed`,
+		`tmux rename-window -t \$TMUX_PANE $name-failed`,
 		// The tmux server must start through sudo, which re-runs initgroups:
 		// the bootstrap's own login predates cloud-init's usermod -aG docker
 		// on stock images, and every window inherits groups from the server
 		// (docker.sock denied in .pier/setup.sh otherwise).
 		`sudo -u agent tmux new-session -d -s main`,
-		`setup=./.pier/setup.sh`,
+		`script=./.pier/setup.sh`,
 		// Restore-on-wake: a oneshot that leaves the tmux server it starts
 		// running (it lives in the unit's cgroup), enabled for every boot.
 		`ExecStart=/usr/local/bin/pier-supervisor restore`,

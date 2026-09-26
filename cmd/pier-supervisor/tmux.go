@@ -36,7 +36,7 @@ const (
 const (
 	kindClaude = "agent-claude" // relaunched on its conversation
 	kindCodex  = "agent-codex"  // relaunched on its most recent conversation
-	kindSetup  = "setup"        // plain shell with scrollback; setup never re-runs
+	kindSetup  = "setup"        // pier's own setup/start window: not restored; a wake starts afresh
 	kindShell  = "shell"        // login shell in the saved cwd
 	kindOther  = "other"        // shell with the old command typed, not run
 )
@@ -329,7 +329,11 @@ var (
 // and foreground argv. For claude it also returns the conversation id the
 // command line resumed or pinned, if any.
 func classifyPane(window string, argv []string) (kind, resume string) {
-	if window == "setup" || window == "setup-failed" || strings.Contains(strings.Join(argv, " "), ".pier-setup") {
+	switch window {
+	case "setup", "setup-failed", "start", "start-failed":
+		return kindSetup, ""
+	}
+	if strings.Contains(strings.Join(argv, " "), ".pier-setup") {
 		return kindSetup, ""
 	}
 	if len(argv) == 0 || isShell(argv) {
@@ -582,6 +586,15 @@ func layoutSize(layout string) (w, h string, ok bool) {
 // captured at, so splits have room and select-layout reproduces the geometry
 // before a client ever attaches. Panes are split off the newest pane, which
 // keeps their indices in snapshot order for select-layout and targeting.
+func allSetup(panes []savedPane) bool {
+	for _, p := range panes {
+		if p.Kind != kindSetup {
+			return false
+		}
+	}
+	return true
+}
+
 func buildRestorePlan(st tmuxState, home string) []planStep {
 	dir := stateDir(home)
 	sessions := make([]savedSession, 0, len(st.Sessions))
@@ -598,7 +611,11 @@ func buildRestorePlan(st tmuxState, home string) []planStep {
 		var typed []planStep
 		first, activeWin := true, ""
 		for _, w := range s.Windows {
-			if len(w.Panes) == 0 {
+			// pier's own setup/start windows are logs of a run that's over —
+			// `pier logs` keeps the output and the status file keeps the
+			// outcome — and a wake starts a fresh one. Bringing them back
+			// only stacks stale windows beside the new one.
+			if len(w.Panes) == 0 || allSetup(w.Panes) {
 				continue
 			}
 			win := fmt.Sprintf("%s:%d", s.Name, w.Index)
@@ -669,7 +686,33 @@ func restoreMain() int {
 		return 0
 	}
 	fmt.Println("pier-restore:", restoreTmux(defaultTmux, home))
+	if cmd := wakeStart(home); cmd != nil {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("pier-restore: start.sh window: %v %s\n", err, strings.TrimSpace(string(out)))
+		} else {
+			fmt.Println("pier-restore: started .pier/start.sh (if the repo has one) to bring services back up")
+		}
+	}
 	return 0
+}
+
+// wakeStart is the command that brings a woken session's environment back
+// up — the repo's .pier/start.sh, in its own tmux window, via the
+// session-up script the bootstrap left — or nil when this boot isn't a
+// session's wake: before the bootstrap has run (a first boot, or a boot from
+// a baked image), or on a ready session, whose claim runs start itself.
+func wakeStart(home string) *exec.Cmd {
+	up := filepath.Join(home, ".pier", "session-up.sh")
+	for _, need := range []string{filepath.Join(home, ".pier-bootstrapped"), up} {
+		if _, err := os.Stat(need); err != nil {
+			return nil
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".pier", "no-wake-start")); err == nil {
+		return nil
+	}
+	return exec.Command("bash", up, "wake")
 }
 
 // restoreTmux rebuilds the saved layout unless a tmux server already runs

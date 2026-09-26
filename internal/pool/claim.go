@@ -136,7 +136,7 @@ func freshen(ctx context.Context, p Params, member *driver.Session, name, branch
 			}
 		}
 	}
-	progress("freshening: branch, secrets, setup re-run")
+	progress("switching to your branch, refreshing secrets, starting the environment")
 	var extra []string
 	if pl.ForwardAgent {
 		extra = []string{"-A"}
