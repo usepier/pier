@@ -686,33 +686,7 @@ func restoreMain() int {
 		return 0
 	}
 	fmt.Println("pier-restore:", restoreTmux(defaultTmux, home))
-	if cmd := wakeStart(home); cmd != nil {
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Printf("pier-restore: start.sh window: %v %s\n", err, strings.TrimSpace(string(out)))
-		} else {
-			fmt.Println("pier-restore: started .pier/start.sh (if the repo has one) to bring services back up")
-		}
-	}
 	return 0
-}
-
-// wakeStart is the command that brings a woken session's environment back
-// up — the repo's .pier/start.sh, in its own tmux window, via the
-// session-up script the bootstrap left — or nil when this boot isn't a
-// session's wake: before the bootstrap has run (a first boot, or a boot from
-// a baked image), or on a ready session, whose claim runs start itself.
-func wakeStart(home string) *exec.Cmd {
-	up := filepath.Join(home, ".pier", "session-up.sh")
-	for _, need := range []string{filepath.Join(home, ".pier-bootstrapped"), up} {
-		if _, err := os.Stat(need); err != nil {
-			return nil
-		}
-	}
-	if _, err := os.Stat(filepath.Join(home, ".pier", "no-wake-start")); err == nil {
-		return nil
-	}
-	return exec.Command("bash", up, "wake")
 }
 
 // restoreTmux rebuilds the saved layout unless a tmux server already runs
@@ -807,6 +781,7 @@ func snapshotNow() {
 	if err := snapshotTmux(defaultTmux, stateDir(home), foreground); err != nil {
 		fmt.Println("pier-supervisor: tmux snapshot:", err)
 	}
+	snapshotContainers(home)
 }
 
 // restoring reports a boot-time restore still in flight. A snapshot taken

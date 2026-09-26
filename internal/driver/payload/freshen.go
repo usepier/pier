@@ -25,8 +25,8 @@ set -euo pipefail
 # member's fill-time tmux layout (its setup window, a shell) — none of it is
 # this session's. Let that restore finish first (a server it started after
 # the kill below would outlive it), then drop the server and the saved layout
-# so the setup window below starts clean and the next park snapshots this
-# session's own.
+# so the next park snapshots this session's own. Setup does not run: the
+# ready session ran it at fill, and its containers came back at this boot.
 if [ -f /etc/systemd/system/pier-restore.service ]; then
   for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
 fi
@@ -62,7 +62,7 @@ tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
 # Cosmetic: prompts show the session, not the pool placeholder.
 sudo hostnamectl set-hostname '{{HOSTNAME}}' 2>/dev/null || true
 
-` + sessionUp("warm") + `
+` + sessionUp(false) + `
 rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-freshen.sh
 echo freshened
 `

@@ -75,6 +75,19 @@ func main() {
 		os.Exit(restoreMain())
 	}
 
+	// Bring back the containers the session had running before it parked,
+	// alongside the loop: docker may still be starting.
+	go func() {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			restartedThisBoot.Store(true)
+			return
+		}
+		if msg := restartContainers(home, 3*time.Minute); msg != "" {
+			fmt.Println("pier-supervisor:", msg)
+		}
+	}()
+
 	idleSince := time.Now()
 	detachedBusySince := time.Time{}
 	last := status{}

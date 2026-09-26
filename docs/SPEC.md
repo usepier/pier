@@ -340,17 +340,16 @@ protected by the repository's `.gitignore`.
    warm disk. Freshness is manual (`pier bake` again); there is no control
    plane to schedule rebakes.
 
-   **setup vs start (2026-09).** Measured on the same monorepo, a fully warm
-   re-run of `.pier/setup.sh` still took 197s — its own reset-and-reseed and
-   stack start, on every session. A laptop runs install once and `up` after
-   each reboot; pier now has the same split. `.pier/start.sh` (optional)
-   runs instead of setup when the environment is already built — a
-   prebuilt-image session (the bootstrap found a checkout), a ready-session
-   claim — and on every wake: pier-restore.service runs it after rebuilding
-   the tmux layout, so a parked session comes back with its services
-   running. All three go through one script the bootstrap writes to
-   `~/.pier/session-up.sh` (modes setup|warm|wake). Ready sessions carry
-   `~/.pier/no-wake-start` while parked, since their claim runs start itself.
+   **Setup runs once per session (2026-09).** Setup runs when a session
+   is built — the bootstrap, a ready-session fill, the bake — and never
+   again: a ready-session claim resumes, checks out the branch and re-pushes
+   secrets without it, and a wake re-runs nothing. What a wake needs is what
+   was running: the supervisor records the running Docker containers with
+   each tmux snapshot (and once more before it parks) in
+   `~/.pier/containers.json`, and the first supervisor of each boot waits for
+   the daemon and `docker start`s exactly those — any repo, nothing to
+   configure. Processes outside Docker come back as the tmux restore types
+   them at the prompt.
 
    EBS restores snapshots lazily from S3, and a prebuilt image is gigabytes.
    AWS launches from a baked image therefore set `VolumeInitializationRate`

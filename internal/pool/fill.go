@@ -86,12 +86,6 @@ func fillOne(ctx context.Context, p Params, hasSetup bool) error {
 			return err
 		}
 	}
-	// A ready session's next boot is its claim, and the claim brings the
-	// environment up itself (freshen, warm mode): the wake start would only
-	// race it.
-	if _, err := p.Driver.Exec(ctx, sess.ID, "mkdir -p ~/.pier && touch ~/.pier/no-wake-start"); err != nil {
-		return err
-	}
 	p.progress()("parking " + name)
 	return p.Driver.Park(ctx, sess.ID)
 }

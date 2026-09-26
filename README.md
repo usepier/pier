@@ -276,8 +276,7 @@ Pier uses one committed `.pier/` directory with three optional files:
 
 | File | Runs / read | Contains |
 |---|---|---|
-| `.pier/setup.sh` | Once at `pier bake` (prebuild), then every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds (must be safe to re-run) |
-| `.pier/start.sh` | Instead of setup.sh when the environment is already built (image sessions, ready-session claims), and on every wake | Bring it up: quick incremental installs, start services |
+| `.pier/setup.sh` | Once at `pier bake` (prebuild), then once per new session, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds (must be safe to re-run) |
 | `.pier/include` | At create | Ignored files to carry (env files, local certs) |
 | `.pier/bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
 
@@ -292,18 +291,11 @@ docker compose up -d
 pnpm db:migrate
 ```
 
-`.pier/setup.sh` builds the environment; `.pier/start.sh` brings a built one
-up, the way a laptop runs `docker compose up` after a reboot rather than a
-fresh install. Sessions from the repo's image, claimed ready sessions, and
-parked sessions waking up run start.sh when the repo has one, so it decides
-how fast services are back. Without it, those sessions re-run setup.sh.
-
-```bash
-# .pier/start.sh (never reset or reseed here: data survives parking)
-set -euo pipefail
-pnpm install
-docker compose up -d
-```
+Setup runs **once per session**, when the session is built: a ready session
+ran it before you claimed it, and a parked session never runs it again.
+Waking a parked session brings back its tmux windows and agent
+conversations, and restarts the Docker containers that were running when it
+parked, so the stack comes back without setup.
 
 Prefer `docker compose up -d` for services. A bare background process must
 fully detach with `setsid cmd </dev/null >log 2>&1 &` or it dies when the

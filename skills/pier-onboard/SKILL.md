@@ -13,8 +13,7 @@ directory control the rest:
 | File | When it runs / travels | What belongs in it |
 |---|---|---|
 | `.pier/bake.sh` | Once, during `pier bake`, on a throwaway instance that becomes the repo's AMI | **Toolchains** — language runtimes, package managers |
-| `.pier/setup.sh` | Once during `pier bake` (the prebuild), then on every session's first boot, async, after the repo lands | **Repo state** — dependency install, services, migrations, seeds |
-| `.pier/start.sh` | Instead of setup.sh whenever the environment is already built (a session from the repo's image, a claimed ready session), and on every wake from parking | **Bring it up** — quick incremental installs, start services. No resets, no reseeds |
+| `.pier/setup.sh` | Once during `pier bake` (the prebuild), then once per new session, async, after the repo lands | **Repo state** — dependency install, services, migrations, seeds |
 | `.pier/include` | List read at create time; matching files ride to the VM | **Ignored files** dev needs — env files, local certs |
 
 Your job: inspect this repo, write the files that apply, protect loose local
@@ -77,9 +76,10 @@ nonzero exit shows as `(setup failed)` in `pier ls`, so **let failures
 fail** — start with `set -euo pipefail`, don't swallow errors.
 
 **It must be safe to re-run on a warm disk.** `pier bake` runs it once on a
-checkout and images the result, and a repo without `.pier/start.sh` runs it
-again in every session from that image and every ready-session claim, over
-the dependencies, build caches and volumes the earlier run left. Use installs that are incremental when
+checkout and images the result, and every new session from that image runs
+it again, over the dependencies, build caches and volumes the earlier run
+left. A claimed ready session and a woken parked session never re-run it:
+their containers and data are already there. Use installs that are incremental when
 nothing changed (`pnpm install`, `poetry sync`, `docker compose build`,
 `docker compose up -d`), and never fail on "already exists".
 
@@ -103,34 +103,9 @@ where possible. A bare background process must fully detach —
 when the script ends and SIGHUPs its process group (`nohup` alone does not
 detach it).
 
-## Step 3b — write `.pier/start.sh` (whenever setup.sh starts services)
-
-setup.sh builds an environment; start.sh brings an already-built one up —
-what a developer does after rebooting their laptop, not after cloning.
-Sessions from the repo's image, claimed ready sessions, and parked
-sessions waking up all run start.sh instead of setup.sh, so it is what
-decides how long a new session takes to have its services back. Keep it to:
-
-- incremental installs that take seconds when nothing changed and pick up
-  the branch's dependency changes (`pnpm install`, `poetry sync`), plus
-  cheap codegen the app needs (a Prisma client, an OpenAPI client);
-- starting services (`docker compose up -d`, or the repo's `make dev`).
-
-Never reset or reseed data here: databases and volumes survive parking,
-and a start that wipes them destroys the session's state on every wake.
-
-```bash
-#!/usr/bin/env bash
-# pier start: bring the built environment up (image sessions, ready-session
-# claims, every wake). Logs to ~/.pier-setup.log like setup.
-set -euo pipefail
-pnpm install
-docker compose up -d
-```
-
 While you're in the compose file, check what makes it slow to come up. A
 one-shot job that other services wait on (`service_completed_successfully`)
-runs on every start, so it must talk to the services already running, not
+runs on every `up`, so it must talk to the services already running, not
 boot its own (a CLI without its server URL often starts a throwaway local
 server per command).
 

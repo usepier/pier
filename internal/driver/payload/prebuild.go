@@ -206,7 +206,7 @@ git reset -q --hard
 # and first-boot state a session must create for itself — the supervisor's
 # tmux snapshot included, or a session booted from this image would wake into
 # the bake instance's windows and scrollback.
-rm -rf ~/.config/pier ~/.pier-setup.d ~/.pier/session-up.sh ~/.pier/no-wake-start ~/.pier/tmux
+rm -rf ~/.config/pier ~/.pier-setup.d ~/.pier/containers.json ~/.pier/tmux
 rm -f ~/.pier-bootstrapped ~/.pier-setup.status ~/.pier-setup.log ~/.bash_history \
   ~/.config/gh/hosts.yml ~/.docker/config.json ~/.git-credentials ~/.ssh/agent.sock
 rm -f /tmp/pier-scrub.sh

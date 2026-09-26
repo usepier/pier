@@ -181,54 +181,20 @@ func TestRenderBootstrapReusesPrebuiltCheckout(t *testing.T) {
 	}
 }
 
-// session-up picks the script by mode: a fresh environment builds with
-// setup.sh; a warm one (prebuilt image, claimed ready session) only needs
-// start.sh when the repo has one; a wake runs start.sh or nothing.
-func TestSessionUpPicksTheScriptByMode(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash not available")
+// Setup runs once, when a session is built: the bootstrap starts it, and a
+// ready-session claim never does — its setup already ran at fill, and its
+// containers come back by themselves on the claim's boot.
+func TestSetupRunsOnceNotOnClaim(t *testing.T) {
+	spec := driver.CreateSpec{Name: "x", Repo: "/tmp/r", Branch: "feat"}
+	if !strings.Contains(renderBootstrap(spec, "origin", "abc", ""), "tmux new-window -d -t main -n setup") {
+		t.Error("the bootstrap must run setup")
 	}
-	script := strings.NewReplacer("{{REPO}}", "r").Replace(sessionUpTmpl)
-	run := func(t *testing.T, mode string, withStart bool) string {
-		t.Helper()
-		home := t.TempDir()
-		repo := filepath.Join(home, "work", "r", ".pier")
-		os.MkdirAll(repo, 0o755)
-		os.WriteFile(filepath.Join(repo, "setup.sh"), []byte("true"), 0o644)
-		if withStart {
-			os.WriteFile(filepath.Join(repo, "start.sh"), []byte("true"), 0o644)
-		}
-		stubs := t.TempDir()
-		log := filepath.Join(stubs, "calls")
-		for _, name := range []string{"tmux", "sudo"} {
-			os.WriteFile(filepath.Join(stubs, name), []byte("#!/bin/sh\necho "+name+" \"$@\" >> "+log+"\n"), 0o755)
-		}
-		cmd := exec.Command("bash", "-c", script, "session-up", mode)
-		cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+stubs+":"+os.Getenv("PATH"))
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("session-up %s: %v\n%s", mode, err, out)
-		}
-		b, _ := os.ReadFile(log)
-		return string(b)
+	fr := strings.NewReplacer("{{REPO}}", "r").Replace(freshenTmpl)
+	fr = strings.ReplaceAll(fr, "the setup window below", "")
+	if strings.Contains(fr, "tmux new-window -d -t main -n setup") || strings.Contains(fr, "bash $setup") {
+		t.Error("a claim must not re-run setup")
 	}
-	for _, c := range []struct {
-		mode      string
-		withStart bool
-		want      string // "" = no window at all
-	}{
-		{"setup", true, "bash ./.pier/setup.sh"},
-		{"warm", true, "bash ./.pier/start.sh"},
-		{"warm", false, "bash ./.pier/setup.sh"},
-		{"wake", true, "bash ./.pier/start.sh"},
-		{"wake", false, ""},
-	} {
-		calls := run(t, c.mode, c.withStart)
-		window := strings.Contains(calls, "new-window")
-		switch {
-		case c.want == "" && window:
-			t.Errorf("%s without start.sh must open no window, got:\n%s", c.mode, calls)
-		case c.want != "" && !strings.Contains(calls, c.want):
-			t.Errorf("%s (start.sh=%v) must run %q, got:\n%s", c.mode, c.withStart, c.want, calls)
-		}
+	if !strings.Contains(fr, "tmux new-session -d -s main") {
+		t.Error("a claim still needs its tmux session")
 	}
 }

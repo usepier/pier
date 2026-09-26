@@ -405,21 +405,73 @@ func TestForegroundKeepsAProgramRootOverItsChildren(t *testing.T) {
 	}
 }
 
-// A boot brings services back only for a session that has been bootstrapped
-// and isn't a ready session awaiting its claim.
-func TestWakeStartOnlyForBootstrappedSessions(t *testing.T) {
+// A wake gets back exactly the containers that were running at the park,
+// once per boot, after docker answers; an empty or missing list starts
+// nothing.
+func TestRestartContainers(t *testing.T) {
 	home := t.TempDir()
-	os.MkdirAll(filepath.Join(home, ".pier"), 0o755)
-	if wakeStart(home) != nil {
-		t.Error("a first boot (nothing bootstrapped) must not start anything")
+	os.MkdirAll(filepath.Join(home, ".pier"), 0o700)
+	marker := filepath.Join(t.TempDir(), "restarted")
+	oldDocker := docker
+	t.Cleanup(func() { docker = oldDocker })
+	var calls [][]string
+	up := false
+	docker = func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		switch args[0] {
+		case "info":
+			if !up {
+				up = true
+				return nil, fmt.Errorf("daemon starting")
+			}
+			return []byte("id"), nil
+		case "start":
+			return []byte(strings.Join(args[1:], "\n")), nil
+		case "ps":
+			return []byte("c1\nc2\n"), nil
+		}
+		return nil, nil
 	}
-	os.WriteFile(filepath.Join(home, ".pier-bootstrapped"), nil, 0o644)
-	os.WriteFile(filepath.Join(home, ".pier", "session-up.sh"), []byte("true"), 0o644)
-	if wakeStart(home) == nil {
-		t.Error("a bootstrapped session's wake must bring the environment up")
+	withMarker(t, marker)
+
+	restartedThisBoot.Store(true)
+	snapshotContainers(home)
+	restartedThisBoot.Store(false)
+	msg := restartContainers(home, time.Minute)
+	if !strings.Contains(msg, "restarted 2") {
+		t.Fatalf("want both containers restarted, got %q (calls %v)", msg, calls)
 	}
-	os.WriteFile(filepath.Join(home, ".pier", "no-wake-start"), nil, 0o644)
-	if wakeStart(home) != nil {
-		t.Error("a ready session's wake is its claim, which starts things itself")
+	last := calls[len(calls)-1]
+	if last[0] != "start" || strings.Join(last[1:], ",") != "c1,c2" {
+		t.Errorf("want `docker start c1 c2`, got %v", last)
 	}
+	if !restartedThisBoot.Load() {
+		t.Error("snapshots must resume once the restart ran")
+	}
+	calls = nil
+	if msg := restartContainers(home, time.Minute); msg != "" || len(calls) != 0 {
+		t.Errorf("a second supervisor start in the same boot must not restart again, got %q %v", msg, calls)
+	}
+}
+
+// A snapshot taken before the boot's restart ran must not overwrite the
+// list with the (still empty) set of running containers.
+func TestSnapshotWaitsForTheRestart(t *testing.T) {
+	home := t.TempDir()
+	oldDocker := docker
+	t.Cleanup(func() { docker = oldDocker })
+	docker = func(args ...string) ([]byte, error) { return []byte(""), nil }
+	os.MkdirAll(filepath.Join(home, ".pier"), 0o700)
+	os.WriteFile(containersFile(home), []byte(`["c1"]`), 0o600)
+	restartedThisBoot.Store(false)
+	snapshotContainers(home)
+	if b, _ := os.ReadFile(containersFile(home)); string(b) != `["c1"]` {
+		t.Errorf("the saved list must survive until the restart, got %s", b)
+	}
+}
+
+func withMarker(t *testing.T, path string) {
+	old := containersRestarted
+	containersRestarted = path
+	t.Cleanup(func() { containersRestarted = old })
 }
