@@ -501,7 +501,7 @@ resize` fixes it without losing anything:
 ```
 $ pier ls
 NAME           REPO  STATE               AGE  COST
-checkout-flow  shop  working (strained)  2h   ~$0.04/h
+checkout-flow  shop  running (strained)  2h   ~$0.04/h
 
 $ pier resize checkout-flow t4g.xlarge
 ```
