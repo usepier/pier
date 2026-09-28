@@ -146,6 +146,11 @@ type model struct {
 
 func newModel(opts Options, be Backend) model {
 	m := model{opts: opts, be: be, loading: true, settings: be.Settings()}
+	for _, f := range m.settings {
+		if f.Key == "theme" {
+			applyTheme(f.Value)
+		}
+	}
 	if opts.RepoRoot != "" {
 		m.repo = filepath.Base(opts.RepoRoot)
 	}
@@ -867,6 +872,10 @@ func (m model) save(val string) (tea.Model, tea.Cmd) {
 	m.settings = m.be.Settings()
 	m.setIdx = clamp(m.setIdx, len(m.settings))
 	m.note(f.Label + " saved — applies to new sessions")
+	if f.Key == "theme" {
+		applyTheme(val)
+		m.note("accent color saved")
+	}
 	switch {
 	case f.Key == "driver", strings.HasPrefix(f.Key, "aws."), strings.HasPrefix(f.Key, "gcp."):
 		return m, func() tea.Msg {

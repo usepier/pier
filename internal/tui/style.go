@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/usepier/pier/internal/ui"
 	"github.com/usepier/pier/pkg/pier"
 )
 
@@ -15,14 +16,14 @@ import (
 // a soft highlight bar for the selected row (opencode); a colored state dot
 // per session (herdr). Everything else stays quiet.
 var (
-	cAccent = lipgloss.Color("6")
-	cDim    = lipgloss.Color("8")
-	cFaint  = lipgloss.Color("7")
-	cOK     = lipgloss.Color("2")
-	cWarn   = lipgloss.Color("3")
-	cBad    = lipgloss.Color("1")
-	cStrain = lipgloss.Color("208")
-	cSelBg  = lipgloss.AdaptiveColor{Light: "254", Dark: "236"}
+	cAccent lipgloss.TerminalColor = lipgloss.Color("6")
+	cDim                           = lipgloss.Color("8")
+	cFaint                         = lipgloss.Color("7")
+	cOK                            = lipgloss.Color("2")
+	cWarn                          = lipgloss.Color("3")
+	cBad                           = lipgloss.Color("1")
+	cStrain                        = lipgloss.Color("208")
+	cSelBg                         = lipgloss.AdaptiveColor{Light: "254", Dark: "236"}
 
 	sAccent = lipgloss.NewStyle().Foreground(cAccent)
 	sBold   = lipgloss.NewStyle().Bold(true)
@@ -39,6 +40,16 @@ var (
 	sSel    = lipgloss.NewStyle().Background(cSelBg).Bold(true)
 	sKey    = lipgloss.NewStyle().Foreground(cAccent).Bold(true)
 )
+
+// applyTheme recolors every accent style for a theme name (ui.Themes).
+func applyTheme(theme string) {
+	ui.SetAccent(theme)
+	cAccent = ui.AccentColor
+	sAccent = lipgloss.NewStyle().Foreground(cAccent)
+	sBrand = lipgloss.NewStyle().Foreground(cAccent).Bold(true)
+	sTabOn = lipgloss.NewStyle().Foreground(ui.OnAccent).Background(cAccent).Bold(true).Padding(0, 1)
+	sKey = lipgloss.NewStyle().Foreground(cAccent).Bold(true)
+}
 
 // panel draws a rounded box w wide and h tall with title set into the top
 // border and an optional right-aligned note beside it. Lines are clipped to

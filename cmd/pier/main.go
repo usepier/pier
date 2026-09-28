@@ -192,6 +192,7 @@ func open() *pier.Client {
 	if err != nil {
 		fatal(err)
 	}
+	ui.SetAccent(c.Config().Theme)
 	return c
 }
 

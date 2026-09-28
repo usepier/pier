@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/ui"
 	"github.com/usepier/pier/pkg/pier"
 )
 
@@ -443,5 +444,41 @@ func TestAttachConnectsBeforeHandingOverTheTerminal(t *testing.T) {
 	}
 	if _, ok := cmd().(reachableMsg); !ok {
 		t.Error("the terminal must only be handed over once the VM answers")
+	}
+}
+
+// The accent color is one setting: picking it saves it and recolors the app
+// right away.
+func TestAccentColorSetting(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 120, 40)
+	m, _ = press(t, m, "s")
+	if !strings.Contains(m.View(), "Appearance") {
+		t.Fatal("settings must have the Appearance group")
+	}
+	for i, s := range m.settings {
+		if s.Key == "theme" {
+			m.setIdx = i
+		}
+	}
+	m, _ = press(t, m, "enter")
+	if m.ov != ovPick || len(m.pickOpts) != len(ui.ThemeNames) {
+		t.Fatalf("the accent color must offer every color, got ov=%v %d", m.ov, len(m.pickOpts))
+	}
+	m, _ = press(t, m, "down", "enter") // teal → navy
+	if f.cfg.Theme != "navy" {
+		t.Errorf("want the navy theme saved, got %q", f.cfg.Theme)
+	}
+	if cAccent != ui.Themes["navy"] {
+		t.Error("the app must recolor at once")
+	}
+	applyTheme("teal")
+}
+
+// Settings validates theme names; the UI owns their colors. They must list
+// the same names in the same order.
+func TestThemeNamesAgree(t *testing.T) {
+	if strings.Join(config.Themes, ",") != strings.Join(ui.ThemeNames, ",") {
+		t.Errorf("config themes %v != ui themes %v", config.Themes, ui.ThemeNames)
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/tombstone"
+	"github.com/usepier/pier/internal/ui"
 	"github.com/usepier/pier/pkg/pier"
 )
 
@@ -596,9 +597,12 @@ func (m model) pickView() string {
 		if l == "" {
 			l = o.Value
 		}
-		row := fit(l, labelW) + "   " + sDim.Render(o.Desc)
+		if f.Key == "theme" {
+			l = lipgloss.NewStyle().Foreground(ui.Themes[o.Value]).Render("■") + " " + l
+		}
+		row := fit(l, labelW+2) + "   " + sDim.Render(o.Desc)
 		if o.Value == f.Value {
-			row = fit(l, labelW) + "   " + sDim.Render(o.Desc) + sAccent.Render("  ✓")
+			row = fit(l, labelW+2) + "   " + sDim.Render(o.Desc) + sAccent.Render("  ✓")
 		}
 		if i == m.pickIdx {
 			row = selected(row, w)

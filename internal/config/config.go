@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ type Config struct {
 	GCP           GCP     `toml:"gcp"`
 	Pool          Pool    `toml:"pool"`
 	Speed         Speed   `toml:"speed"`
+	Theme         string  `toml:"theme,omitempty"` // accent color; see Themes
 	Secrets       Secrets `toml:"secrets"`
 	// Images records what each repo's session image was baked from — when,
 	// and from which .pier scripts — so pier can remind (never decide) when a
@@ -492,12 +494,25 @@ var (
 	diskOpts = []Option{{Value: "20", Label: "20 GiB"}, {Value: "40", Label: "40 GiB"}, {Value: "80", Label: "80 GiB"}, {Value: "160", Label: "160 GiB"}}
 )
 
+// Themes are the accent color names, in picker order. The colors live with
+// the UI (internal/ui); config only validates the name.
+var Themes = []string{"teal", "navy", "violet", "emerald", "orange", "crimson", "pink", "amber", "graphite"}
+
+func themeOptions() []Option {
+	opts := make([]Option, len(Themes))
+	for i, t := range Themes {
+		opts[i] = Option{Value: t}
+	}
+	return opts
+}
+
 // Groups orders the settings page's sections. Every field belongs to one.
 var Groups = []struct{ Key, Title string }{
 	{"cloud", "Cloud"},
 	{"sessions", "New sessions"},
 	{"idle", "Idle & cost"},
 	{"speed", "Speed"},
+	{"app", "Appearance"},
 }
 
 // Settings lists the settable fields in display order, grouped by what the
@@ -641,6 +656,12 @@ var Settings = []Field{
 		Options: []Option{{Value: "14d"}, {Value: "30d"}, {Value: "60d"}, {Value: "never"}},
 		Detail:  "Once a repo's image is this old, pier suggests a rebake so new sessions start with current dependencies.",
 	},
+	{
+		Key: "theme", Group: "app", Label: "accent color", Hint: "the app's highlight color",
+		Kind: KindChoice, NoCustom: true, Default: "teal", Empty: "teal",
+		Options: themeOptions(),
+		Detail:  "The color pier uses for its borders, tabs, keys and highlights, in the app and the CLI.",
+	},
 }
 
 // Get returns the current value of a settable key ("" for unknown keys).
@@ -672,6 +693,11 @@ func Get(c Config, key string) string {
 		return c.GCP.MachineType
 	case "gcp.disk_gib":
 		return strconv.Itoa(c.GCP.DiskGiB)
+	case "theme":
+		if c.Theme == "" {
+			return "teal"
+		}
+		return c.Theme
 	case "speed.profile":
 		return c.Profile()
 	case "speed.pool_size":
@@ -786,6 +812,12 @@ func Set(c *Config, key, val string) error {
 		default:
 			return fmt.Errorf("aws.direct: want true or false (got %q)", val)
 		}
+	case "theme":
+		v := strings.ToLower(strings.TrimSpace(val))
+		if !slices.Contains(Themes, v) {
+			return fmt.Errorf("theme: want one of %s (got %q)", strings.Join(Themes, ", "), val)
+		}
+		c.Theme = v
 	case "speed.profile":
 		return c.ApplyProfile(strings.ToLower(strings.TrimSpace(val)))
 	case "speed.pool_size":
