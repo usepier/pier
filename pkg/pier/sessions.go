@@ -368,6 +368,7 @@ func ParsePortPair(s string) ([2]int, error) {
 	}
 	return p, nil
 }
+
 // Label is the one word a session's row shows: starting, running, parked,
 // deleting or create failed. The supervisor's finer activity reading
 // (attached, working, idle) changes every few seconds and is detail, not
@@ -401,4 +402,3 @@ func Activity(s Session) string {
 	}
 	return ""
 }
-
