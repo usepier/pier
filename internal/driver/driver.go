@@ -205,11 +205,6 @@ type Driver interface {
 	// session-manager-plugin, or `gcloud compute ssh --tunnel-through-iap`.
 	AttachCommand(ctx context.Context, id string) (*exec.Cmd, error)
 
-	// MCPLoginCommand runs `claude mcp login <server>` inside the session
-	// with the OAuth callback port tunneled back to the laptop, so
-	// browser-based MCP auth completes with one approval — no URL copying.
-	MCPLoginCommand(ctx context.Context, id, server string, port int) (*exec.Cmd, error)
-
 	// PortForwardCommand holds local→session port forwards open until the
 	// process is interrupted: the app in the session on your laptop's
 	// browser, its database in your local psql. pairs are {local, remote}.

@@ -72,8 +72,8 @@ func (f *fake) Resize(context.Context, pier.Session, string) error { return nil 
 func (f *fake) Machines(pier.Session) []pier.Machine {
 	return []pier.Machine{{Type: "t4g.medium", CPU: "2", Mem: "4", Cost: "~$0.03/h"}, {Type: "t4g.xlarge", CPU: "4", Mem: "16", Cost: "~$0.13/h"}}
 }
-func (f *fake) AttachCommand(context.Context, pier.Session) (*exec.Cmd, error) {
-	return exec.Command("true"), nil
+func (f *fake) Attach(context.Context, pier.Session) (*exec.Cmd, func(), error) {
+	return exec.Command("true"), func() {}, nil
 }
 func (f *fake) WaitReachable(context.Context, pier.Session, time.Duration) error { return nil }
 func (f *fake) SetupLog(context.Context, pier.Session, int) (string, error) {

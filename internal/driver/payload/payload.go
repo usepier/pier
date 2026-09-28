@@ -167,7 +167,7 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 	}
 	home, _ := os.UserHomeDir()
 	if names := OAuthRemotes(home, spec.Repo); len(names) > 0 {
-		p.Notes = append(p.Notes, "mcp "+strings.Join(names, ", ")+": one-time oauth — `pier mcp login "+spec.Name+"` when it's up")
+		p.Notes = append(p.Notes, "mcp "+strings.Join(names, ", ")+": log in from inside the session (e.g. claude's /mcp) — while you're attached it opens in your browser here")
 	}
 	return p, mode, sha, origin, nil
 }

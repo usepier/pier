@@ -74,6 +74,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "restore" {
 		os.Exit(restoreMain())
 	}
+	if len(os.Args) > 1 && os.Args[1] == "open" {
+		os.Exit(openMain(os.Args[2:]))
+	}
 
 	// Bring back the containers the session had running before it parked,
 	// alongside the loop: docker may still be starting.

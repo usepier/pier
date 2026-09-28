@@ -31,7 +31,7 @@ type Backend interface {
 	Resume(ctx context.Context, s pier.Session) error
 	Resize(ctx context.Context, s pier.Session, machineType string) error
 	Machines(s pier.Session) []pier.Machine
-	AttachCommand(ctx context.Context, s pier.Session) (*exec.Cmd, error)
+	Attach(ctx context.Context, s pier.Session) (*exec.Cmd, func(), error)
 	WaitReachable(ctx context.Context, s pier.Session, timeout time.Duration) error
 	SetupLog(ctx context.Context, s pier.Session, lines int) (string, error)
 	SpawnCreate(repoRoot, branch string) (string, error)
@@ -603,7 +603,7 @@ func (m model) startAttach(s pier.Session) (tea.Model, tea.Cmd) {
 }
 
 func (m model) execAttach(s pier.Session) (tea.Model, tea.Cmd) {
-	cmd, err := m.be.AttachCommand(context.Background(), s)
+	cmd, stop, err := m.be.Attach(context.Background(), s)
 	if err != nil {
 		m.attaching = ""
 		m.fail(err)
@@ -611,7 +611,10 @@ func (m model) execAttach(s pier.Session) (tea.Model, tea.Cmd) {
 	}
 	m.attachStart = time.Now()
 	cmd = pier.ConnectingScreen(cmd, s.Name, false)
-	return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return attachDoneMsg{s, err} })
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		stop() // the browser opener and port mirror end with the attach
+		return attachDoneMsg{s, err}
+	})
 }
 
 func (m model) confirm(q string, do func() tea.Cmd) model {

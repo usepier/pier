@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +14,6 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
-	"github.com/usepier/pier/internal/driver/payload"
 	"github.com/usepier/pier/internal/tombstone"
 )
 
@@ -349,64 +346,6 @@ func (c *Client) FollowLogCommand(ctx context.Context, s Session) (*exec.Cmd, er
 	return exec.Command("ssh", append(opts, dest, remote)...), nil
 }
 
-var mcpServerName = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
-
-// PendingMCP asks the session which OAuth-backed MCP servers still lack a
-// token (seeded ~/.claude.json minus ~/.claude/.credentials.json).
-func (c *Client) PendingMCP(ctx context.Context, s Session) ([]string, error) {
-	out, err := c.drv.Exec(ctx, s.ID,
-		"cat ~/.claude.json 2>/dev/null; printf '\\n---PIER-SPLIT---\\n'; cat ~/.claude/.credentials.json 2>/dev/null")
-	if err != nil {
-		return nil, err
-	}
-	cfgRaw, credRaw, _ := strings.Cut(out, "---PIER-SPLIT---")
-	var pending []string
-	for _, n := range payload.OAuthRemoteNames([]byte(cfgRaw), payload.Workspace+"/"+s.Repo) {
-		if !mcpAuthed(credRaw, n) {
-			pending = append(pending, n)
-		}
-	}
-	return pending, nil
-}
-
-// OAuthMCPServers names the laptop's OAuth-backed MCP servers that a new
-// session of repoRoot would need one browser approval for.
-func OAuthMCPServers(repoRoot string) []string {
-	home, _ := os.UserHomeDir()
-	return payload.OAuthRemotes(home, repoRoot)
-}
-
-// MCPLoginCommand prepares the browser OAuth flow for one MCP server, with
-// the callback port tunneled into the session.
-func (c *Client) MCPLoginCommand(ctx context.Context, s Session, server string) (*exec.Cmd, error) {
-	if !mcpServerName.MatchString(server) {
-		return nil, fmt.Errorf("implausible server name %q", server)
-	}
-	port, err := freePort()
-	if err != nil {
-		return nil, err
-	}
-	return c.drv.MCPLoginCommand(ctx, s.ID, server, port)
-}
-
-// mcpAuthed checks the session's credential store for a token under this
-// server. Claude keys mcpOAuth by server name (possibly suffixed); an
-// unrecognized format fails open — worst case one redundant approval.
-func mcpAuthed(credJSON, server string) bool {
-	var c struct {
-		McpOAuth map[string]json.RawMessage `json:"mcpOAuth"`
-	}
-	if json.Unmarshal([]byte(credJSON), &c) != nil {
-		return false
-	}
-	for k := range c.McpOAuth {
-		if k == server || strings.HasPrefix(k, server+"|") || strings.HasPrefix(k, server+":") {
-			return true
-		}
-	}
-	return false
-}
-
 // PortForwardCommand prepares ssh -L forwards held open until interrupted.
 // pairs are {local, remote}.
 func (c *Client) PortForwardCommand(ctx context.Context, s Session, pairs [][2]int) (*exec.Cmd, error) {
@@ -429,18 +368,6 @@ func ParsePortPair(s string) ([2]int, error) {
 	}
 	return p, nil
 }
-
-// freePort grabs an OS-assigned port. Local and remote must match: the OAuth
-// redirect URL embeds the one port claude registers inside the VM.
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
-}
-
 // Label is the one word a session's row shows: starting, running, parked,
 // deleting or create failed. The supervisor's finer activity reading
 // (attached, working, idle) changes every few seconds and is detail, not
@@ -474,3 +401,4 @@ func Activity(s Session) string {
 	}
 	return ""
 }
+

@@ -104,7 +104,6 @@ var helpSections = []helpSection{
 		items: []helpItem{
 			{"pier proxy", "sessions as <session>.pier, ports mirrored to localhost (macOS)"},
 			{"pier port <session> <port...>", "forward ports by hand (8080:3000 = local:session)"},
-			{"pier mcp login <session> [server]", "one-time browser approval for OAuth MCP servers"},
 		},
 	},
 	{
@@ -133,8 +132,6 @@ func main() {
 		cmdAttach(args[1:])
 	case "logs":
 		cmdLogs(args[1:])
-	case "mcp":
-		cmdMCP(args[1:])
 	case "proxy":
 		cmdProxy()
 	case "port":
@@ -304,15 +301,6 @@ func cmdNew(args []string) {
 		fmt.Println(ui.Dim.Render("attach with: pier attach " + sess.Name))
 		return
 	}
-	// OAuth-backed MCPs need one browser approval each (tokens can't be
-	// copied — they rotate); offer the sweep now, while a human is present.
-	if names := pier.OAuthMCPServers(req.RepoRoot); len(names) > 0 && stdinIsTTY() {
-		if confirm(fmt.Sprintf("mcp %s: run the one-time browser logins now?", strings.Join(names, ", ")), true) {
-			loginAll(c, sess)
-		} else {
-			fmt.Println(ui.Dim.Render("later: pier mcp login " + sess.Name))
-		}
-	}
 	attach(c, sess)
 }
 
@@ -359,7 +347,7 @@ func attach(c *pier.Client, s pier.Session) {
 	fmt.Println(ui.Dim.Render("attaching — detach with C-b d (the session keeps running)"))
 	retried := false
 	for {
-		cmd, err := c.AttachCommand(context.Background(), s)
+		cmd, stopCompanion, err := c.Attach(context.Background(), s)
 		if err != nil {
 			fatal(err)
 		}
@@ -367,6 +355,7 @@ func attach(c *pier.Client, s pier.Session) {
 		cmd = pier.ConnectingScreen(cmd, s.Name, true)
 		start := time.Now()
 		runErr := cmd.Run()
+		stopCompanion()
 		if runErr == nil {
 			return
 		}
@@ -582,61 +571,6 @@ func cmdLogs(args []string) {
 		fatal(fmt.Errorf("logs: %w", err))
 	}
 	fmt.Println(out)
-}
-
-// cmdMCP: `pier mcp login <session> [server]` — one-time OAuth for MCP
-// servers whose tokens live in the laptop's keychain and can't be copied
-// (they rotate; two machines sharing one revoke each other). The callback
-// port rides the session's tunnel, so the browser approval on the laptop
-// completes the flow inside the VM. Without a server name it sweeps
-// everything still unauthenticated.
-func cmdMCP(args []string) {
-	if len(args) < 2 || args[0] != "login" {
-		fatal(fmt.Errorf("usage: pier mcp login <session> [server]"))
-	}
-	c := open()
-	s := match(c, args[1])
-	requireReady(s)
-	resumeIfParked(c, s)
-	if len(args) == 2 {
-		loginAll(c, s)
-		return
-	}
-	if err := loginOne(c, s, args[2]); err != nil {
-		fatal(fmt.Errorf("mcp login: %w", err))
-	}
-}
-
-// loginAll runs the browser flow for every OAuth-backed MCP server still
-// lacking a token, sequentially — one command, N approvals, and re-running
-// it is free: already-authenticated servers are skipped.
-func loginAll(c *pier.Client, s pier.Session) {
-	pending, err := c.PendingMCP(context.Background(), s)
-	if err != nil {
-		fatal(err)
-	}
-	if len(pending) == 0 {
-		fmt.Println(ui.OK.Render("✓") + " every MCP server in " + s.Name + " is authenticated")
-		return
-	}
-	fmt.Printf("%s %s\n", ui.Bold.Render(fmt.Sprintf("%d server(s) need a one-time browser approval:", len(pending))),
-		strings.Join(pending, ", "))
-	for i, server := range pending {
-		fmt.Printf("\n%s %s\n", ui.Accent.Render(fmt.Sprintf("[%d/%d]", i+1, len(pending))), ui.Bold.Render(server))
-		if err := loginOne(c, s, server); err != nil {
-			fmt.Fprintln(os.Stderr, ui.Warn.Render("  ! "+server+" didn't finish — retry later with `pier mcp login "+s.Name+" "+server+"`"))
-		}
-	}
-}
-
-func loginOne(c *pier.Client, s pier.Session, server string) error {
-	fmt.Println(ui.Dim.Render("  open the URL below and approve — the callback tunnels into the session; the token survives parking"))
-	cmd, err := c.MCPLoginCommand(context.Background(), s, server)
-	if err != nil {
-		return err
-	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
 }
 
 // cmdProxy: `pier proxy` — every running session gets a hostname

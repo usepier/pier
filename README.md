@@ -227,7 +227,6 @@ pier repos [--json]       every repo: session image, pool, idle cost, tips
 pier bake                 build this repo's session image (repo prebuilt by default)
     --toolchain-only      keep repo state out of the image for this bake
 pier pool                 this repo's pool (set <n> | fill | drain [repo])
-pier mcp login <session>  one-time browser approvals for OAuth MCP servers
 pier proxy                every running session as <session>.pier (macOS)
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
 pier setup [--skills]     first-time setup; --skills only refreshes the agent skill
@@ -371,11 +370,20 @@ all.
 
 MCP servers travel with their config, including auth when it's static (env
 vars, API-key headers). OAuth-backed remotes keep rotating tokens in the OS
-keychain and can't be copied, so they need one browser approval per session:
+keychain and can't be copied — two holders of one refresh token revoke each
+other — so they log in once per session, from inside it, the normal way
+(for example claude's `/mcp`). While you're attached, the session uses your
+browser:
 
-```
-pier mcp login <session>    # sweeps whatever still needs auth
-```
+- anything in the session that opens a URL (an agent's OAuth login, `gh auth
+  login`, "open in browser") opens it in your laptop's browser;
+- ports the session listens on (an OAuth callback, a dev server) are
+  reachable at the same port on your laptop.
+
+That makes every in-session browser login work, for any agent or CLI. The
+token lands on the session's disk and survives parking. Where a provider
+offers a personal API key, declaring the server with it skips the login
+entirely: it travels into every session.
 
 Headless Chromium ships in the default image, so browser MCPs and skills
 (screenshots, web automation) work out of the box.
@@ -538,8 +546,8 @@ The cloud says "running" long before a session is usable, so pier doesn't:
   running doesn't survive. An agent mid-turn stops at its last saved message,
   and a dev server comes back as its command typed at the prompt, one Enter
   away. Hibernate (park with RAM) is on the roadmap.
-- **OAuth MCPs need a browser approval per session.** Keychain-held tokens
-  can't be copied safely. This floor is real.
+- **OAuth MCPs log in once per session,** from inside it while attached.
+  Keychain-held tokens can't be copied safely.
 - **ssh-key-only GitHub auth pushes while attached.** The forwarded agent
   disconnects with you. Any token lifts this.
 - **`pier proxy` is macOS-only** for now. `pier port` works everywhere.

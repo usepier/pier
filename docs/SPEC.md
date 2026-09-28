@@ -461,13 +461,13 @@ written back. Sources:
   stay home. MCP servers whose auth lives in the macOS Keychain (OAuth-based
   remotes) carry their declaration but not their tokens — they rotate on
   refresh, so copying them would let two machines revoke each other. Instead:
-  `pier mcp login <session>` asks the session which servers still lack a
-  token (seeded config minus its credential store) and runs `claude mcp
-  login` for each, sequentially, with the OAuth callback port forwarded
-  through the SSM tunnel — one browser approval per server on the laptop
-  completes each flow inside the session; tokens persist on its disk across
-  park/resume, and re-runs skip what's done. The interactive create offers
-  this sweep right before the first attach. (Remotes that accept static keys
+  they log in from inside the session instead: while someone is attached,
+  the attach connection forwards a unix socket the session's `xdg-open` and
+  `$BROWSER` (pier-supervisor open) hand URLs to, so they open in the
+  laptop's browser, and a side connection mirrors the session's listening
+  ports to the same localhost ports, so OAuth callbacks land. Any agent,
+  any CLI — nothing agent-specific. Tokens persist on the session disk
+  across park/resume. (Remotes that accept static keys
   can be declared locally with an `Authorization` header, which travels
   whole — zero approvals.)
 
@@ -527,8 +527,6 @@ pier                    the app: Sessions · Repos · Settings tabs (new = backg
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
-pier mcp login <match> [server]  browser-auth every MCP server that still needs it, sequentially
-                        (callback rides the tunnel; server arg = redo just that one)
 pier proxy              every running session as <session>.pier, listening ports mirrored
                         live onto a per-session loopback IP and onto localhost, HTTP
                         accelerated (§6.1; macOS, one sudo)

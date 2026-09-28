@@ -67,13 +67,15 @@ func (p *Params) progress() func(string) {
 }
 
 // Generation fingerprints everything that makes a warm member equivalent to
-// a fresh create: a member built under a different driver, image, shape, or
+// a fresh create — including build, the pier that fills it (its in-VM
+// supervisor): a claim doesn't reinstall anything, so a member filled by an
+// older pier would bring its older VM-side behavior into the session: a member built under a different driver, image, shape, or
 // setup script is stale and gets recycled rather than claimed. 12 hex chars —
 // lowercase, so it is valid as an EC2 tag value and a GCE label value alike.
-func Generation(driverName, image, instanceType string, diskGiB int, setupScript []byte) string {
+func Generation(driverName, image, instanceType string, diskGiB int, setupScript []byte, build string) string {
 	setup := sha256.Sum256(setupScript)
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%s|%d|%x", driverName, image, instanceType, diskGiB, setup)
+	fmt.Fprintf(h, "%s|%s|%s|%d|%x|%s", driverName, image, instanceType, diskGiB, setup, build)
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 

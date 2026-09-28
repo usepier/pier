@@ -47,7 +47,10 @@ runcmd:
     # (a laptop sleeping, a VPN reconnecting) left a phantom tmux client:
     # the session read as attached and could never park. Drop dead
     # connections after ~1 min of silence.
-    printf 'ClientAliveInterval 15\nClientAliveCountMax 4\n' > /etc/ssh/sshd_config.d/10-pier.conf
+    # StreamLocalBindUnlink: an attach forwards the laptop's browser opener
+    # as a unix socket; a reconnecting attach must be able to replace the
+    # previous connection's socket.
+    printf 'ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\n' > /etc/ssh/sshd_config.d/10-pier.conf
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
     install -d -m 700 -o agent -g agent /home/agent/.ssh
     grep -qxF '{{PUBKEY}}' /home/agent/.ssh/authorized_keys 2>/dev/null || echo '{{PUBKEY}}' >> /home/agent/.ssh/authorized_keys
@@ -72,7 +75,7 @@ runcmd:
     # across every launch. This also keeps sessions from baked images current —
     # they update themselves instead of pinning the bake-time version. The
     # /usr/local/bin symlink keeps claude on PATH for non-login shells (ssh
-    # exec channels, like pier mcp login rides).
+    # exec channels).
     if ! command -v claude >/dev/null; then
       sudo -Hu agent bash -c 'curl -fsSL --retry 3 https://claude.ai/install.sh | bash'
       ln -sf /home/agent/.local/bin/claude /usr/local/bin/claude
@@ -158,8 +161,20 @@ func sessionUp(runSetup bool) string {
 # (user-data rewrites older rcs too, but on a baked image cloud-init is still
 # running when this does, and tmux must not start with the old line).
 sed -i 's#^cd ~/work/\* 2>/dev/null || true$#if [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi#' "$HOME/.bashrc" 2>/dev/null || true
-# Sessions and pooled sessions made before sshd dropped dead connections.
-[ -f /etc/ssh/sshd_config.d/10-pier.conf ] || { printf 'ClientAliveInterval 15\nClientAliveCountMax 4\n' | sudo tee /etc/ssh/sshd_config.d/10-pier.conf >/dev/null && { sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true; }; }
+# sshd: drop dead connections (a dropped attach must not leave a phantom
+# tmux client), and let an attach replace the browser-opener socket a
+# previous connection forwarded. Written here too so sessions from older
+# images and pooled sessions get it.
+if ! grep -q StreamLocalBindUnlink /etc/ssh/sshd_config.d/10-pier.conf 2>/dev/null; then
+  printf 'ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\n' | sudo tee /etc/ssh/sshd_config.d/10-pier.conf >/dev/null
+  sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true
+fi
+mkdir -p "$HOME/.pier" # where an attach forwards the browser opener
+# The session's browser is the attached laptop's: xdg-open and $BROWSER hand
+# URLs to the supervisor, which sends them back over the attach connection.
+printf '#!/bin/sh\nexec /usr/local/bin/pier-supervisor open "$@"\n' | sudo tee /usr/local/bin/xdg-open >/dev/null
+sudo chmod 755 /usr/local/bin/xdg-open
+grep -q 'BROWSER=/usr/local/bin/xdg-open' "$HOME/.bashrc" 2>/dev/null || echo 'export BROWSER=/usr/local/bin/xdg-open' >> "$HOME/.bashrc"
 ` + tmuxEnsure
 	if runSetup {
 		s += setupWindow

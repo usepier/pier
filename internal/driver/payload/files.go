@@ -60,7 +60,8 @@ func claudeSeed(home, srcRepo, workdir string) []byte {
 // OAuthRemotes names the seeded remote MCP servers with no static auth
 // header. Their OAuth tokens live in the OS keychain and rotate on refresh,
 // so copying them would let two machines revoke each other — each session
-// instead needs one `pier mcp login <name>` round. Static-auth servers (env
+// instead needs one login from inside the session (the attach carries the
+// browser round trip). Static-auth servers (env
 // blocks, Authorization headers) travel whole and never appear here.
 func OAuthRemotes(home, srcRepo string) []string {
 	b, err := os.ReadFile(filepath.Join(home, ".claude.json"))
