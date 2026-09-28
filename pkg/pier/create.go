@@ -22,7 +22,7 @@ type CreateRequest struct {
 	// (nil = config; 0 = never).
 	Idle, Cap *time.Duration
 	// NoPool skips claiming one of the repo's pooled sessions.
-	NoPool  bool
+	NoPool   bool
 	Progress Progress
 }
 

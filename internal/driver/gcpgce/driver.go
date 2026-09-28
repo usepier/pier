@@ -232,6 +232,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Created = ts
 			}
 		}
+		// A claimed session is stopped, unlabeled-ready and fresh while its
+		// claim resumes it: it's starting, not parked.
+		if s.State == driver.StateParked && in.Labels[LabelReady] != "1" && s.PoolGen == "" &&
+			!s.Created.IsZero() && time.Since(s.Created) < driver.ClaimWindow {
+			s.State = driver.StateCreating
+		}
 		s.CostNote = costNote(s.State, s.InstanceType)
 		sessions = append(sessions, s)
 	}

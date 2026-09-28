@@ -53,8 +53,15 @@ func (d *Driver) Claim(ctx context.Context, id string, spec driver.ClaimSpec) er
 		return err
 	}
 	// Deleting the pool tag is the commit point: the member now lists as a
-	// regular session.
+	// regular session — starting, since the ready tag goes with it until the
+	// claim's MarkReady.
 	_, err = d.aws(ctx, "ec2", "delete-tags", "--resources", id,
-		"--tags", "Key="+TagPool, "Key="+TagClaim)
+		"--tags", "Key="+TagPool, "Key="+TagClaim, "Key="+TagReady)
+	return err
+}
+
+func (d *Driver) MarkReady(ctx context.Context, id string) error {
+	_, err := d.aws(ctx, "ec2", "create-tags", "--resources", id,
+		"--tags", "Key="+TagReady+",Value=1")
 	return err
 }

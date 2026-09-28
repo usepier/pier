@@ -517,8 +517,9 @@ and auto-scaling is a surprise-cost footgun.
 
 The cloud says "running" long before a session is usable, so pier doesn't:
 
-- A session lists as `creating` until the bootstrap's last act marks the
-  instance ready (a tag on AWS, a label on GCP).
+- A session lists as `starting` until the bootstrap's last act marks the
+  instance ready (a tag on AWS, a label on GCP). A session claimed from the
+  pool reads `starting` too, until it's resumed and on your branch.
 - Attaching early gets a plain "still setting up", not a raw connection error.
 - Creates from the app run in the background and the row flips when ready.
 - A deleted session lists as `deleting` until the cloud actually removes it.

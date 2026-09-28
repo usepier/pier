@@ -17,7 +17,7 @@ func TestStateLabelDistinguishesCreateFromSetupFailure(t *testing.T) {
 		t.Errorf(`want "create failed", got %q`, failed)
 	}
 	setup := stateLabel(driver.Session{State: driver.StateIdle, Setup: "failed"})
-	if !strings.Contains(setup, "idle") || !strings.Contains(setup, "setup failed") {
+	if !strings.Contains(setup, "running") || !strings.Contains(setup, "setup failed") {
 		t.Errorf("a live session with a dead setup script must still read as running, got %q", setup)
 	}
 }

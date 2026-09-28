@@ -489,15 +489,10 @@ func cmdLS(args []string) {
 	}
 }
 
-// stateLabel renders the state plus the supervisor's strain and setup flags.
+// stateLabel renders the row's state plus the supervisor's strain and setup
+// flags.
 func stateLabel(s pier.Session) string {
-	if s.State == pier.StateFailed {
-		// "create failed", never a bare "failed": the neighbouring rows say
-		// "setup failed" for a live session whose setup script died, and the
-		// two mean very different things — one has a VM, this one does not.
-		return "create failed"
-	}
-	l := string(s.State)
+	l := pier.Label(s)
 	if s.Strained {
 		l += " (strained)"
 	}
@@ -753,15 +748,15 @@ func cmdResize(args []string) {
 // --- repos ------------------------------------------------------------------------
 
 type repoJSON struct {
-	Name        string          `json:"name"`
-	Image       string          `json:"image"`
-	BakedAt     *time.Time      `json:"baked_at"`
-	PoolSize int             `json:"ready_target"`
-	Ready       int             `json:"ready"`
-	Filling     int             `json:"filling"`
-	Sessions    int             `json:"sessions"`
-	MonthlyUSD  float64         `json:"monthly_usd"`
-	Reminders   []pier.Reminder `json:"reminders"`
+	Name       string          `json:"name"`
+	Image      string          `json:"image"`
+	BakedAt    *time.Time      `json:"baked_at"`
+	PoolSize   int             `json:"ready_target"`
+	Ready      int             `json:"ready"`
+	Filling    int             `json:"filling"`
+	Sessions   int             `json:"sessions"`
+	MonthlyUSD float64         `json:"monthly_usd"`
+	Reminders  []pier.Reminder `json:"reminders"`
 }
 
 func cmdRepos(args []string) {

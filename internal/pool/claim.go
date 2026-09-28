@@ -60,7 +60,11 @@ func Claim(ctx context.Context, p Params, sessions []driver.Session, name, branc
 		return nil, nil
 	}
 	progress(fmt.Sprintf("claimed pooled session %s — resuming", member.Name))
-	if err := freshen(ctx, p, member, name, branch, baseRef); err != nil {
+	err = freshen(ctx, p, member, name, branch, baseRef)
+	if err == nil {
+		err = p.Driver.MarkReady(ctx, member.ID)
+	}
+	if err != nil {
 		progress("freshen failed (" + err.Error() + ")")
 		progress("destroying that pooled session — its state is untrusted — and creating fresh")
 		if derr := p.Driver.Destroy(context.WithoutCancel(ctx), member.ID); derr != nil {

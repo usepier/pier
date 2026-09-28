@@ -114,18 +114,16 @@ func keys(pairs ...string) string {
 
 var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// badge is a session's state as a colored dot and word, with the
-// supervisor's strain and setup flags appended.
+// badge is a session's state as a colored dot and word — one of starting,
+// running, parked, deleting, create failed — with the supervisor's strain
+// and setup flags appended. The finer activity reading lives in the detail
+// pane: it changes every few seconds and would make rows flicker.
 func badge(s pier.Session, frame int) (dot, word string) {
 	switch s.State {
-	case pier.StateWorking:
-		dot, word = sOK.Render("●"), sOK.Render("working")
-	case pier.StateRunning:
-		dot, word = sAccent.Render("●"), sAccent.Render("attached")
-	case pier.StateIdle:
-		dot, word = sWarn.Render("●"), sWarn.Render("idle")
+	case pier.StateRunning, pier.StateWorking, pier.StateIdle:
+		dot, word = sOK.Render("●"), sOK.Render("running")
 	case pier.StateCreating:
-		dot, word = sAccent.Render(spinFrames[frame%len(spinFrames)]), sAccent.Render("creating")
+		dot, word = sAccent.Render(spinFrames[frame%len(spinFrames)]), sAccent.Render("starting")
 	case pier.StateParked:
 		dot, word = sDim.Render("○"), sDim.Render("parked")
 	case pier.StateDeleting:

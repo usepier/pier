@@ -407,3 +407,26 @@ func TestWrapLines(t *testing.T) {
 		}
 	}
 }
+
+// Rows show one stable word per session; the supervisor's activity reading
+// (attached/working/idle) is detail, and a background poll shows no spinner.
+func TestRowsDontFlicker(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 140, 32)
+	v := m.View()
+	for _, line := range strings.Split(v, "\n") {
+		list, _, _ := strings.Cut(line, "││") // the list panel is the left one
+		for _, word := range []string{"working", "idle", "attached"} {
+			if strings.Contains(list, " "+word) {
+				t.Errorf("the session list must not show the activity word %q: %q", word, list)
+			}
+		}
+	}
+	if !strings.Contains(v, "running") {
+		t.Error("running sessions must read running")
+	}
+	next, _ := m.Update(pollMsg{})
+	if next.(model).loading {
+		t.Error("a background poll must not show the spinner")
+	}
+}

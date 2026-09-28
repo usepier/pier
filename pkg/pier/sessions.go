@@ -97,6 +97,8 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 				s.State = driver.StateWorking
 			case "idle":
 				s.State = driver.StateIdle
+			case "attached":
+				s.Attached = true
 			}
 			s.Strained = st.Strained
 			s.Setup = st.Setup
@@ -395,4 +397,38 @@ func freePort() (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// Label is the one word a session's row shows: starting, running, parked,
+// deleting or create failed. The supervisor's finer activity reading
+// (attached, working, idle) changes every few seconds and is detail, not
+// state — Activity has it.
+func Label(s Session) string {
+	switch s.State {
+	case driver.StateCreating:
+		return "starting"
+	case driver.StateRunning, driver.StateWorking, driver.StateIdle:
+		return "running"
+	case driver.StateFailed:
+		// "create failed", never a bare "failed": a running session whose
+		// setup script died reads "setup failed", and the two mean very
+		// different things — one has a VM, this one does not.
+		return "create failed"
+	}
+	return string(s.State)
+}
+
+// Activity describes what a running session is doing, when the supervisor
+// has said: "you're attached", "agent working, you're detached", "quiet,
+// parks itself when the idle timer runs out". "" when unknown.
+func Activity(s Session) string {
+	switch {
+	case s.Attached:
+		return "you're attached"
+	case s.State == driver.StateWorking:
+		return "agent working, you're detached"
+	case s.State == driver.StateIdle:
+		return "quiet — parks itself when the idle timer runs out"
+	}
+	return ""
 }

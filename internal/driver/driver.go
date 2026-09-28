@@ -45,6 +45,7 @@ type Session struct {
 	Driver       string
 	State        State
 	Strained     bool      // sustained cpu/mem pressure (supervisor beacon) — resize hint
+	Attached     bool      // a terminal is attached right now (supervisor beacon; false when unknown)
 	Setup        string    // repo setup script: "" | "running" | "failed" (supervisor beacon)
 	InstanceType string    // provider machine type; feeds the TUI resize picker
 	Created      time.Time // session creation, not last boot — AGE must never go backward
@@ -81,6 +82,11 @@ type CreateSpec struct {
 	PoolGen       string        // non-empty: create a warm pool member (drivers add the pool tag/label; Name is the placeholder)
 	Progress      func(step string)
 }
+
+// ClaimWindow bounds how long a claimed-but-not-ready session lists as
+// starting. A claim that died before MarkReady (the laptop went away) must
+// not leave a parked session reading "starting" forever.
+const ClaimWindow = 15 * time.Minute
 
 // ErrClaimLost: another claimer won this pool member — move on to the next
 // candidate.
@@ -169,6 +175,12 @@ type Driver interface {
 	// a regular session. Tags/labels only — the caller Resumes and freshens
 	// the instance itself.
 	Claim(ctx context.Context, id string, spec ClaimSpec) error
+
+	// MarkReady writes the ready tag/label: the session is attachable. It's
+	// a create's last act, and a claim's — Claim clears it at its commit
+	// point, so a claimed session lists as starting, not parked, while it
+	// resumes and freshens.
+	MarkReady(ctx context.Context, id string) error
 
 	// Resize changes the instance size (vertical scaling). Providers only
 	// allow this on stopped instances, and park is exactly a stop — so a

@@ -32,10 +32,10 @@ type Repo struct {
 	// PoolSize is how many pooled sessions pier keeps; Ready are parked and
 	// claimable, Filling are being set up, Stale will recycle.
 	PoolSize, Ready, Filling, Stale int
-	PoolAges                          []string
-	Sessions                           int     // live sessions of this repo
-	MonthlyUSD                         float64 // idle cost estimate: ready disks + image storage
-	Reminders                          []Reminder
+	PoolAges                        []string
+	Sessions                        int     // live sessions of this repo
+	MonthlyUSD                      float64 // idle cost estimate: ready disks + image storage
+	Reminders                       []Reminder
 }
 
 // Reminder is one piece of rebake guidance. pier never acts on it.
@@ -80,9 +80,9 @@ func (c *Client) Repos(sessions []Session, curRoot string) []Repo {
 		st := FoldPool(sessions, name, cur, curGen, maxAge, now)
 		r := Repo{
 			Name: name, Current: name == cur,
-			Image:       c.cfg.BakedImage(name),
+			Image:    c.cfg.BakedImage(name),
 			PoolSize: c.cfg.PoolSize(name),
-			Ready:       st.Ready, Filling: st.Filling, Stale: st.Stale, PoolAges: st.Ages,
+			Ready:    st.Ready, Filling: st.Filling, Stale: st.Stale, PoolAges: st.Ages,
 		}
 		if info, ok := c.cfg.Images[name]; ok && r.Image != "" {
 			r.Baked = &info
@@ -396,7 +396,6 @@ func (c *Client) SpawnFill(repoRoot string) (string, error) {
 	// both runs into confetti. Refills are rare enough that growth is noise.
 	return logPath, spawnDetached(repoRoot, logPath, true, "pool", "fill")
 }
-
 
 // BakeLogPath is where a background bake of repo writes.
 func BakeLogPath(repo string) string {

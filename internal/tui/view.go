@@ -238,12 +238,10 @@ func (m model) sessionDetail(w, h int) string {
 }
 
 func stateNote(s pier.Session) string {
-	switch s.State {
-	case pier.StateWorking:
-		return sDim.Render(" · agent busy, you're detached")
-	case pier.StateIdle:
-		return sDim.Render(" · parks when the idle timer runs out")
-	case pier.StateParked:
+	if a := pier.Activity(s); a != "" {
+		return sDim.Render(" · " + a)
+	}
+	if s.State == pier.StateParked {
 		return sDim.Render(" · disk only, nothing running")
 	}
 	return ""

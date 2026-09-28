@@ -174,6 +174,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 		default:
 			s.State = driver.StateDead
 		}
+		// A claimed session is stopped, untagged-ready and fresh while its
+		// claim resumes it: it's starting, not parked.
+		if s.State == driver.StateParked && !ready && s.PoolGen == "" &&
+			!s.Created.IsZero() && time.Since(s.Created) < driver.ClaimWindow {
+			s.State = driver.StateCreating
+		}
 		// Launch time is the fallback for pre-tag sessions; it resets on
 		// every resume, so the created tag wins whenever present.
 		if s.Created.IsZero() {

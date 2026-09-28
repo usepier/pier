@@ -289,8 +289,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case pollMsg:
+		// Background refreshes stay quiet: the spinner is for the first load
+		// and for refreshes the user asked for.
 		m.polling = false
-		m.loading = true
 		return m, m.fetch
 
 	case doneMsg:

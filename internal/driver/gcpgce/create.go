@@ -114,8 +114,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	// without it reads as still-creating everywhere. A failed label write
 	// fails the create (defer cleans up) rather than leave a session that
 	// looks stuck forever.
-	if _, err := d.gcloud(ctx, "compute", "instances", "add-labels", id,
-		"--zone", d.Zone, "--labels", LabelReady+"=1"); err != nil {
+	if err := d.MarkReady(ctx, id); err != nil {
 		return nil, fmt.Errorf("marking session ready: %w", err)
 	}
 
