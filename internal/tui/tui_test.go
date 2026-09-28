@@ -38,7 +38,7 @@ func newFake() *fake {
 			{ID: "i-1", Name: "checkout-flow", Repo: "shop", Branch: "checkout-flow", State: pier.StateWorking, InstanceType: "t4g.medium", CostNote: "~$0.04/h", Created: now.Add(-2 * time.Hour)},
 			{ID: "i-2", Name: "fix-login", Repo: "flb-estimation", Branch: "fix-login", State: pier.StateParked, InstanceType: "t4g.xlarge", CostNote: "~$7/mo", Created: now.Add(-26 * time.Hour)},
 			{ID: "i-3", Name: "perf-test", Repo: "flb-estimation", State: pier.StateIdle, Setup: "running", InstanceType: "t4g.xlarge", CostNote: "~$0.13/h", Created: now.Add(-3 * time.Minute)},
-			{Name: "broken", Repo: "shop", State: pier.StateFailed, FailReason: "scp: Connection closed", Created: now.Add(-time.Hour)},
+			{Name: "zz-broken", Repo: "shop", State: pier.StateFailed, FailReason: "scp: Connection closed", Created: now.Add(-time.Hour)},
 			{ID: "i-4", Name: "pool-flb-1", Repo: "flb-estimation", State: pier.StateParked, PoolGen: "abc", Created: now.Add(-time.Hour)},
 		},
 		repos: []pier.Repo{
@@ -225,7 +225,7 @@ func TestDeleteAsksFirst(t *testing.T) {
 func TestFailedCreateClearsInsteadOfDestroying(t *testing.T) {
 	m := loaded(t, newFake(), 120, 30)
 	m, _ = press(t, m, "down", "down", "down", "d")
-	if !strings.Contains(m.confirmQ, "clear the failed create broken") {
+	if !strings.Contains(m.confirmQ, "clear the failed create zz-broken") {
 		t.Errorf("a failed create has nothing to destroy; got %q", m.confirmQ)
 	}
 }
@@ -480,5 +480,17 @@ func TestAccentColorSetting(t *testing.T) {
 func TestThemeNamesAgree(t *testing.T) {
 	if strings.Join(config.Themes, ",") != strings.Join(ui.ThemeNames, ",") {
 		t.Errorf("config themes %v != ui themes %v", config.Themes, ui.ThemeNames)
+	}
+}
+
+// Rows keep one order however the cloud returns instances.
+func TestSessionsSortByName(t *testing.T) {
+	f := newFake()
+	f.sessions[0], f.sessions[2] = f.sessions[2], f.sessions[0]
+	m := loaded(t, f, 120, 30)
+	for i := 1; i < len(m.sessions); i++ {
+		if m.sessions[i-1].Name > m.sessions[i].Name {
+			t.Fatalf("rows out of order: %s before %s", m.sessions[i-1].Name, m.sessions[i].Name)
+		}
 	}
 }

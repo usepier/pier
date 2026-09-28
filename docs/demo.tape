@@ -1,18 +1,18 @@
 # pier demo — render with: cd /tmp/pier-demo/shop && vhs ~/pier/docs/demo.tape
 # The gif lands at ./demo.gif in the staged repo — copy it to pier's docs/.
-# Run from the staged repo: the TUI create picks the repo up from the cwd.
+# Run from the staged repo: the app's create picks the repo up from the cwd.
 #
 # vhs drives a real terminal, so this records against real sessions.
 # Stage before recording: a throwaway repo (e.g. /tmp/pier-demo/shop) whose
 # .pier/setup.sh starts a dev server on :3000, then
 #   pier checkout-flow -d --no-park
 #   pier search-index  -d --no-park
-# Both must be past creating (harness installed, claude authenticated —
-# secrets manifest or claude_oauth_token) when recording starts. The TUI
-# sorts by name, so rows are: checkout-flow, payments-retry (created live),
-# search-index. The default instance type should be t4g.medium so the
-# resize beat grows to t4g.xlarge two picker rows down. All real waiting
-# hides inside Hide/Show — never guess AWS round-trips with visible sleeps.
+# Both must be running (harness installed, claude authenticated — secrets
+# manifest or claude_oauth_token) when recording starts. The app sorts rows
+# by name: checkout-flow, payments-retry (created live), search-index. The
+# default machine should be t4g.medium so the resize beat grows it to
+# t4g.xlarge two picker rows down. All real waiting hides inside Hide/Show —
+# never guess cloud round-trips with visible sleeps.
 
 Output demo.gif
 
@@ -23,7 +23,7 @@ Set Padding 12
 Set TypingSpeed 55ms
 Set Framerate 24
 
-# --- open the TUI: the hero shot -------------------------------------------
+# --- open the app: the hero shot -------------------------------------------
 Type "pier"
 Enter
 Sleep 800ms
@@ -32,22 +32,23 @@ Wait+Screen@60s /checkout-flow\s+shop/
 Show
 Sleep 900ms
 
-# --- create a session from the TUI ------------------------------------------
+# --- create a session from the app ------------------------------------------
 Type "n"
 Sleep 500ms
 Type "payments-retry"
 Sleep 400ms
 Enter
-# the status line + creating row register, then the real create (minutes on
-# a stock image) hides until the row flips ready (● replaces the ◐)
+# the status line + starting row register, then the real create (minutes on
+# a stock image) hides until the row reads running (● replaces the spinner)
 Sleep 1.8s
 Hide
-Wait+Screen@900s /payments-retry\s+shop\s+●/
+Wait+Screen@900s /● payments-retry\s+shop/
 Show
 Sleep 800ms
 
 # --- attach and talk to the agent -------------------------------------------
-# cursor sits on checkout-flow (row 1); Enter hands off to ssh + tmux
+# cursor sits on checkout-flow (row 1); Enter connects, then hands the
+# terminal to ssh + tmux
 Enter
 Sleep 600ms
 Hide
@@ -77,12 +78,15 @@ Show
 Sleep 3s
 
 # --- detach: claude keeps running in the session's tmux ----------------------
+# the detach lands back in the app
 Ctrl+B
 Type "d"
-Sleep 500ms
+Sleep 1.2s
 
 # --- pier proxy: every session as a hostname --------------------------------
 Hide
+Type "q"
+Sleep 500ms
 Type "clear"
 Enter
 Show
@@ -99,13 +103,13 @@ Sleep 2s
 Ctrl+C
 Sleep 600ms
 
-# --- back to the TUI for resize ---------------------------------------------
+# --- back to the app for resize ---------------------------------------------
 Hide
 Type "clear"
 Enter
 Type "pier"
 Enter
-Wait+Screen@60s /search-index\s+shop\s+●/
+Wait+Screen@60s /● search-index\s+shop/
 Show
 Sleep 800ms
 
@@ -118,7 +122,7 @@ Down
 Sleep 500ms
 Enter
 # the resize status line lands, then the real park+resume cycle (~40-60s)
-# hides; the TUI stays open so the resize it drives runs to completion
+# hides; the app stays open so the resize it drives runs to completion
 Sleep 1.5s
 Hide
 Sleep 180s

@@ -164,7 +164,7 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// Runs on presence via bash: a 0644 .pier/setup.sh must not skip
 		// silently.
 		`if [ -f "$setup" ]; then`,
-		`bash $setup 2>&1`,
+		`setsid -w bash $setup </dev/null 2>&1`,
 		// The cloud-init wait must guard on binaries the stock image LACKS
 		// (Ubuntu ships git/tmux, so those never triggered the wait and
 		// setup raced the installs it depends on).
