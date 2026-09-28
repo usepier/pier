@@ -131,7 +131,7 @@ func (d *Driver) probeDirect(ctx context.Context, id string) (string, time.Durat
 		if booting || strings.Contains(err.Error(), "refused") {
 			return "", directBootTTL
 		}
-		d.directNotice(id, "direct connect: "+ip+":22 does not answer from this network — using the slower ssm tunnel (a VPN such as Cloudflare WARP changes the address AWS sees; turning it off restores the direct path)")
+		d.directNotice(id, "direct connect: "+ip+":22 does not answer from this network — using the slower ssm tunnel (a VPN or secure gateway can change the address the VM sees)")
 		return "", directTTL
 	}
 	c.Close()
