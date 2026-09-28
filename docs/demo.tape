@@ -60,7 +60,7 @@ Enter
 # let the handoff register, then skip the splash settling
 Sleep 800ms
 Hide
-Wait+Screen@60s /shortcuts/
+Wait+Screen@60s /shift\+tab to cycle|shortcuts/
 Show
 Sleep 300ms
 # a file-scoped question on purpose: Read is auto-allowed, so the answer
