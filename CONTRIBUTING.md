@@ -35,19 +35,31 @@ open decisions — TODOs in code point there. The short version:
 - **Guarded cloud-init.** The same user-data runs on stock and baked images;
   every install step is guarded so it no-ops when the image already has it.
   Guards must test something the stock image *lacks*.
-- **Images are toolchains, sessions are state.** `pier bake` and
-  `.pier/bake.sh` install tools; repo state (deps, migrations, env) belongs
-  in `.pier/setup.sh` at session boot. pier does not chase language
-  ecosystems in its default image.
+- **Images are prebuilt, secrets are per session.** `pier bake` installs
+  `.pier/bake.sh`'s tools and runs `.pier/setup.sh` on a checkout, scrubs
+  everything pier pushed, and images the result. Setup then runs once per
+  new session, on warm caches; a pooled session's claim and a wake never
+  re-run it. pier does not chase language ecosystems in its default image.
+- **General, not specific.** Every change works for any repo, any network
+  and both clouds: no fixes shaped around one repo's setup, no product
+  names in code or messages, and a fix in one driver needs the other's too
+  (or a stated reason it doesn't have the problem).
+- **One API, many frontends.** Capabilities live in `pkg/pier`, which never
+  prints, exits or reads stdin; the CLI (`cmd/pier`), the app
+  (`internal/tui`) and the coming Mac app render what it returns. Drivers
+  don't write to the terminal either.
 - **Failures are loud.** Setup outcomes, bake failures, unreachable
   sessions — every failure names itself and says where to look next.
 
 ## Code conventions
 
-- Command output goes through `internal/ui` (one accent color, ANSI palette,
-  lots of dim). Long-running commands print a bold header, `ui.Step` lines,
-  and a green completion. `pier ls` output stays plain so it pipes cleanly;
-  the TUI is the pretty view.
+- CLI output goes through `internal/ui` (one accent color, the user's pick
+  under Settings → Appearance; ANSI palette; lots of dim). Long-running
+  commands print a bold header, step lines with elapsed time, and a green
+  completion. `pier ls` output stays plain so it pipes cleanly; the app is
+  the pretty view.
+- Test-only code stays in `_test.go` files; nothing ships just to make
+  something testable.
 - Comments explain *why*, not *what*. Match the density already there.
 - `go vet ./...` and `gofmt` clean before sending a PR. Some `modernize`
   suggestions (e.g. `SplitSeq`) are deliberately not applied.
