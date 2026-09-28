@@ -610,6 +610,7 @@ func (m model) execAttach(s pier.Session) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.attachStart = time.Now()
+	cmd = pier.ConnectingScreen(cmd, s.Name, false)
 	return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return attachDoneMsg{s, err} })
 }
 

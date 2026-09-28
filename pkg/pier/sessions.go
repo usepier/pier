@@ -257,6 +257,27 @@ func (c *Client) AttachCommand(ctx context.Context, s Session) (*exec.Cmd, error
 	return c.drv.AttachCommand(ctx, s.ID)
 }
 
+// ConnectingScreen wraps an attach command so the handover shows a blank
+// screen reading "connecting to <name>…" until the session draws, instead
+// of revealing the user's own shell while ssh connects — that gap reads as
+// if pier quit. The screen is the terminal's alternate buffer, which tmux
+// draws into anyway. restore leaves it after ssh exits, for a CLI returning
+// to its prompt; a full-screen frontend that redraws itself passes false.
+// The command's exit status is preserved.
+func ConnectingScreen(cmd *exec.Cmd, name string, restore bool) *exec.Cmd {
+	script := `printf '\033[?1049h\033[H\033[2J\n  connecting to %s…\n' "$1"; shift; `
+	if restore {
+		script += `"$@"; c=$?; printf '\033[?1049l'; exit $c`
+	} else {
+		script += `exec "$@"`
+	}
+	args := append([]string{"-c", script, "sh", name, cmd.Path}, cmd.Args[1:]...)
+	w := exec.Command("/bin/sh", args...)
+	w.Env, w.Dir = cmd.Env, cmd.Dir
+	w.Stdin, w.Stdout, w.Stderr = cmd.Stdin, cmd.Stdout, cmd.Stderr
+	return w
+}
+
 // RetryAttach reports whether a finished attach attempt deserves one
 // bounded wait-for-reachability and retry: a fresh or just-resumed VM
 // reports cloud-running before its transport answers, so ssh exits 255

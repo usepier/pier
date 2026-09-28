@@ -364,6 +364,7 @@ func attach(c *pier.Client, s pier.Session) {
 			fatal(err)
 		}
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		cmd = pier.ConnectingScreen(cmd, s.Name, true)
 		start := time.Now()
 		runErr := cmd.Run()
 		if runErr == nil {

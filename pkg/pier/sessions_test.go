@@ -1,7 +1,9 @@
 package pier
 
 import (
+	"errors"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,5 +93,22 @@ func TestFoldPool(t *testing.T) {
 	}
 	if st := FoldPool(old[:1], "tools", "", "", 0, now); st.Ready != 1 {
 		t.Errorf("maxAge 0 = %+v, want the age check skipped", st)
+	}
+}
+
+// The connecting screen must not change what the attach exits with: the
+// one bounded retry keys off ssh's 255.
+func TestConnectingScreenKeepsTheExitStatus(t *testing.T) {
+	for _, restore := range []bool{true, false} {
+		cmd := ConnectingScreen(exec.Command("sh", "-c", "exit 255"), "s", restore)
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 255 {
+			t.Errorf("restore=%v: want exit 255 through the wrapper, got %v", restore, err)
+		}
+	}
+	out, err := ConnectingScreen(exec.Command("echo", "hi"), "demo", true).Output()
+	if err != nil || !strings.Contains(string(out), "connecting to demo") || !strings.Contains(string(out), "hi") {
+		t.Errorf("want the connecting line then the command's output, got %q %v", out, err)
 	}
 }
