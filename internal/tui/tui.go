@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -300,6 +301,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.all = msg.all
 		m.sessions, m.ready = pier.SplitPool(msg.all)
+		// Stable order: the cloud returns instances in no particular order,
+		// and rows that swap places between refreshes move the cursor off
+		// what the user was looking at.
+		sort.SliceStable(m.sessions, func(i, j int) bool { return m.sessions[i].Name < m.sessions[j].Name })
 		m.repos = m.be.Repos(msg.all, m.opts.RepoRoot)
 		m.sessIdx = clamp(m.sessIdx, len(m.sessions))
 		m.repoIdx = clamp(m.repoIdx, len(m.repos))

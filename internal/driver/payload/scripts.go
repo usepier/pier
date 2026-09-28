@@ -142,6 +142,11 @@ tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s mai
 // says done/FAILED, and a failed window renames itself setup-failed and stays
 // open. The rename targets its own pane id: with a client attached, a bare
 // rename-window can resolve "current window" to the attached client's.
+// The script runs in its own session with no terminal (setsid -w, stdin
+// from /dev/null): when the window closes, the terminal hangs up on its
+// session, and a server the script started in the background last — with
+// or without its own setsid, which races the script's exit — must not go
+// with it. -w keeps the script's exit status for the outcome file.
 const setupWindow = `cd "$HOME/work/{{REPO}}"
 # A PIER_SETUP_SCRIPT override rides the tar into ~/.config/pier. Presence is
 # the signal, not the exec bit: git only carries +x when the author
@@ -149,7 +154,7 @@ const setupWindow = `cd "$HOME/work/{{REPO}}"
 setup=./.pier/setup.sh
 if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
 if [ -f "$setup" ]; then
-  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; bash $setup 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE setup-failed; exec sleep infinity; fi'"
+  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; setsid -w bash $setup </dev/null 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE setup-failed; exec sleep infinity; fi'"
 fi
 `
 

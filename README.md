@@ -296,9 +296,9 @@ Waking a parked session brings back its tmux windows and agent
 conversations, and restarts the Docker containers that were running when it
 parked, so the stack comes back without setup.
 
-Prefer `docker compose up -d` for services. A bare background process must
-fully detach with `setsid cmd </dev/null >log 2>&1 &` or it dies when the
-setup window closes.
+Prefer `docker compose up -d` for services. A server the script starts in
+the background (`cmd >log 2>&1 &`) keeps running after the setup window
+closes.
 
 ```
 # .pier/include: one path or glob per line (no **), a directory carries its subtree

@@ -98,10 +98,8 @@ pnpm db:migrate
 
 Everything must be non-interactive — no prompts, no `sudo` that asks, no
 watch-mode/foreground processes. Run services with `docker compose up -d`
-where possible. A bare background process must fully detach —
-`setsid cmd </dev/null >log 2>&1 &` — because the setup tmux window closes
-when the script ends and SIGHUPs its process group (`nohup` alone does not
-detach it).
+where possible. A server the script starts in the background
+(`cmd >log 2>&1 &`) keeps running after the setup window closes.
 
 While you're in the compose file, check what makes it slow to come up. A
 one-shot job that other services wait on (`service_completed_successfully`)

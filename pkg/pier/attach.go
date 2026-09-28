@@ -134,13 +134,31 @@ var openCommand = exec.Command
 // session's, a local server's) are left alone; privileged ports are skipped.
 func mirrorPorts(ctx context.Context, opts []string, dest string) {
 	ctl := filepath.Join(os.TempDir(), "pier-mux-"+randHex(6))
-	master := exec.CommandContext(ctx, "ssh", slices.Concat(opts, []string{"-M", "-S", ctl, "-N", dest})...)
-	if err := master.Start(); err != nil {
+	// The master's session reads a pipe only this process holds, so however
+	// pier ends — even killed — the pipe closes, the session ends, and the
+	// master and every port it forwards go with it.
+	life, hold, err := os.Pipe()
+	if err != nil {
 		return
 	}
+	master := exec.Command("ssh", slices.Concat(opts, []string{"-M", "-S", ctl, dest, "cat >/dev/null"})...)
+	master.Stdin = life
+	if err := master.Start(); err != nil {
+		life.Close()
+		hold.Close()
+		return
+	}
+	life.Close()
 	defer func() {
-		_ = exec.Command("ssh", "-S", ctl, "-O", "exit", dest).Run()
-		_ = master.Wait()
+		hold.Close()
+		exited := make(chan struct{})
+		go func() { _ = master.Wait(); close(exited) }()
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			_ = master.Process.Kill()
+			<-exited
+		}
 		os.Remove(ctl)
 	}()
 	for waited := time.Duration(0); ; waited += 200 * time.Millisecond {
