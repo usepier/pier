@@ -59,10 +59,15 @@ Honest seam: in v1 a park loses running processes (including the tmux server
 and any in-flight agent run) — files, git state, and installed tools survive.
 What a wake brings back is the arrangement (§6 restore-on-wake): the tmux
 layout, cwds and scrollback, with agents relaunched on their conversations
-from the transcripts on disk. What it can't bring back is anything that was
+from the transcripts on disk, plus the Docker containers that were running
+at the park. What it can't bring back is a process outside Docker that was
 mid-flight: an agent turn stops at its last saved message, and a dev server
-returns as its command typed at the prompt, not running.
-v1.1 upgrade: EC2 hibernate / GCE suspend to preserve RAM across park.
+started in a pane returns as its command typed at the prompt, not running.
+Hibernate/suspend was weighed and dropped: it differs per cloud and per
+machine family (encrypted roots, launch-time flags, a 60-day cap) and has
+no supported guest-initiated trigger. Instead a wake restores the tmux
+layout, relaunches agents on their conversations, and restarts the Docker
+containers that were running (§6, §7.4).
 
 ## 3. Drivers
 
@@ -549,6 +554,7 @@ pier teardown           remove account groundwork
 driver         = "aws-ec2"
 idle_timeout   = "30m"        # or "never"
 unattended_cap = "8h"
+theme          = "teal"       # accent color: teal navy violet emerald orange crimson pink amber graphite
 
 [aws]
 profile       = "default"
@@ -589,7 +595,7 @@ reminder_age   = "30d"         # remind when an image gets this old
 In: AWS + GCP drivers, TUI, wizard (+print-admin, teardown), bake,
 overlapped create, supervisor parking (+keep/pin), one-way secrets copy,
 doctor, quota UX, warm pools (opt-in, added post-cut — §7.4).
-Out (v1.1+): hibernate/suspend park, k8s driver, `ls --all`, Windows.
+Out (v1.1+): k8s driver, `ls --all`, Windows.
 
 ## 14. Load-bearing bets → spikes
 

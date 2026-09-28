@@ -480,9 +480,12 @@ per repo), as a dot on the Repos tab, and in `pier repos`.
 with a state dot, a detail pane, attach, logs, resize, keep, delete), a
 **Repos** tab (session image, pool, idle cost and reminders per
 repo), and **Settings**, one page grouped into Cloud, New sessions, Idle &
-cost, and Speed, showing only the active cloud's fields with a line on what
-each changes. The header keeps running and parked counts and the live
-hourly cost in view; `?` lists the keys.
+cost, Speed, and Appearance (the accent color: teal, navy, violet, emerald,
+orange, crimson, pink, amber or graphite), showing only the active cloud's
+fields with a line on what each changes. The header keeps running and
+parked counts and the live hourly cost in view; `?` lists the keys.
+Attaching stays in the app until the session answers, then hands over to
+it.
 
 Every frontend runs on the same API (`pkg/pier`): the CLI, the app, and the
 coming Mac app.
@@ -540,12 +543,13 @@ The cloud says "running" long before a session is usable, so pier doesn't:
   GitHub push their history through it (a 300 MB history takes about 5
   minutes, once per create). The create output says which transfer mode you
   got and why.
-- **Parking loses processes.** Files, git state, and installed tools
-  survive, and on wake your tmux layout comes back: windows, panes, cwds,
-  scrollback, and claude/codex relaunched on their conversations. What was
-  running doesn't survive. An agent mid-turn stops at its last saved message,
-  and a dev server comes back as its command typed at the prompt, one Enter
-  away. Hibernate (park with RAM) is on the roadmap.
+- **Parking stops processes.** Files, git state, and installed tools
+  survive, and on wake your tmux layout comes back (windows, panes, cwds,
+  scrollback, claude/codex relaunched on their conversations) along with the
+  Docker containers that were running. Processes outside Docker don't
+  survive: an agent mid-turn stops at its last saved message, and a dev
+  server started in a pane comes back as its command typed at the prompt,
+  one Enter away.
 - **OAuth MCPs log in once per session,** from inside it while attached.
   Keychain-held tokens can't be copied safely.
 - **ssh-key-only GitHub auth pushes while attached.** The forwarded agent
@@ -662,7 +666,6 @@ with your code, at storage prices when you're not using them.
 
 ## Roadmap
 
-- **Hibernate/suspend parking.** Keep RAM, resume mid-agent-run.
 - **Linux `pier proxy`.**
 - **Custom base images.** Bring your own golden image under pier's harness
   layer.
