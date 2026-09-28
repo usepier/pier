@@ -29,10 +29,10 @@ type Repo struct {
 	// Baked is what the image was baked from; nil for images baked before
 	// pier recorded it (or no image).
 	Baked *config.ImageInfo
-	// ReadyTarget is how many ready sessions pier keeps; Ready are parked and
+	// PoolSize is how many pooled sessions pier keeps; Ready are parked and
 	// claimable, Filling are being set up, Stale will recycle.
-	ReadyTarget, Ready, Filling, Stale int
-	ReadyAges                          []string
+	PoolSize, Ready, Filling, Stale int
+	PoolAges                          []string
 	Sessions                           int     // live sessions of this repo
 	MonthlyUSD                         float64 // idle cost estimate: ready disks + image storage
 	Reminders                          []Reminder
@@ -44,8 +44,8 @@ type Reminder struct {
 	Action  string `json:"action"` // the command that addresses it
 }
 
-// Repos returns every repo pier knows about — baked, with ready sessions or
-// ready-session settings, with live sessions, or the one this process runs
+// Repos returns every repo pier knows about — baked, with pooled sessions or
+// pool settings, with live sessions, or the one this process runs
 // from — sorted by name. sessions is a Sessions() result, so the page and
 // the census never disagree.
 func (c *Client) Repos(sessions []Session, curRoot string) []Repo {
@@ -77,12 +77,12 @@ func (c *Client) Repos(sessions []Session, curRoot string) []Repo {
 	now := time.Now()
 	var out []Repo
 	for name := range names {
-		st := FoldReady(sessions, name, cur, curGen, maxAge, now)
+		st := FoldPool(sessions, name, cur, curGen, maxAge, now)
 		r := Repo{
 			Name: name, Current: name == cur,
 			Image:       c.cfg.BakedImage(name),
-			ReadyTarget: c.cfg.PoolSize(name),
-			Ready:       st.Ready, Filling: st.Filling, Stale: st.Stale, ReadyAges: st.Ages,
+			PoolSize: c.cfg.PoolSize(name),
+			Ready:       st.Ready, Filling: st.Filling, Stale: st.Stale, PoolAges: st.Ages,
 		}
 		if info, ok := c.cfg.Images[name]; ok && r.Image != "" {
 			r.Baked = &info
@@ -123,20 +123,20 @@ func imageMonthlyUSD(image string) float64 {
 	return 2
 }
 
-// ReadyStats is one repo's ready-session census.
-type ReadyStats struct {
+// PoolStats is one repo's pool census.
+type PoolStats struct {
 	Ready, Filling, Stale int
-	Ages                  []string // ready sessions' ages, as listed
+	Ages                  []string // pooled sessions' ages, as listed
 }
 
-// FoldReady folds one repo's unclaimed ready sessions out of a session list,
+// FoldPool folds one repo's unclaimed pooled sessions out of a session list,
 // judging them the way the pool's reconcile would: dead, wrong-generation,
 // over the recycle age, or unparked past the fill grace all count stale — a
 // member whose fill died hours ago must not read "filling" forever. curGen
 // gates the generation check: only the repo the process runs from can
 // compute its current generation. maxAge 0 skips the age check.
-func FoldReady(sessions []Session, repo, curRepo, curGen string, maxAge time.Duration, now time.Time) ReadyStats {
-	var st ReadyStats
+func FoldPool(sessions []Session, repo, curRepo, curGen string, maxAge time.Duration, now time.Time) PoolStats {
+	var st PoolStats
 	for _, s := range sessions {
 		if s.PoolGen == "" || s.Repo != repo {
 			continue
@@ -254,7 +254,7 @@ type BakeRequest struct {
 type BakeResult struct {
 	Image        string
 	RepoIncluded bool
-	// ReadyStale is set when the repo's ready sessions were built on the
+	// ReadyStale is set when the repo's pooled sessions were built on the
 	// previous image; they recycle on the next claim or refill.
 	ReadyStale bool
 }
@@ -343,10 +343,10 @@ func (c *Client) poolGen(repoRoot string) string {
 	return pp.Gen
 }
 
-// SetReady saves how many ready sessions to keep for the repo at repoRoot,
-// then reconciles: 0 destroys its ready sessions now, more starts a
+// SetReady saves how many pooled sessions to keep for the repo at repoRoot,
+// then reconciles: 0 destroys its pooled sessions now, more starts a
 // background refill. Returns the refill log path ("" for 0).
-func (c *Client) SetReady(ctx context.Context, repoRoot string, n int, progress Progress) (string, error) {
+func (c *Client) SetPoolSize(ctx context.Context, repoRoot string, n int, progress Progress) (string, error) {
 	repo := filepath.Base(repoRoot)
 	next, err := config.Update(func(cfg *config.Config) error {
 		cfg.SetPoolSize(repo, n)
@@ -357,15 +357,15 @@ func (c *Client) SetReady(ctx context.Context, repoRoot string, n int, progress 
 	}
 	c.cfg = next
 	if n == 0 {
-		_, err := c.DrainReady(ctx, repo, progress)
+		_, err := c.DrainPool(ctx, repo, progress)
 		return "", err
 	}
-	return c.SpawnRefill(repoRoot)
+	return c.SpawnFill(repoRoot)
 }
 
-// DrainReady destroys a repo's unclaimed ready sessions (any repo; no local
+// DrainReady destroys a repo's unclaimed pooled sessions (any repo; no local
 // checkout needed) and returns how many went down.
-func (c *Client) DrainReady(ctx context.Context, repo string, progress Progress) (int, error) {
+func (c *Client) DrainPool(ctx context.Context, repo string, progress Progress) (int, error) {
 	sessions, err := c.drv.List(ctx)
 	if err != nil {
 		return 0, err
@@ -373,8 +373,8 @@ func (c *Client) DrainReady(ctx context.Context, repo string, progress Progress)
 	return pool.Drain(ctx, c.drv, sessions, repo, progress.stepper(time.Now()))
 }
 
-// Refill tops the repo's ready sessions up to target, in the foreground.
-func (c *Client) Refill(ctx context.Context, repoRoot string, progress Progress) error {
+// Refill tops the repo's pooled sessions up to target, in the foreground.
+func (c *Client) FillPool(ctx context.Context, repoRoot string, progress Progress) error {
 	pp, err := c.poolParams(repoRoot, progress, time.Now())
 	if err != nil {
 		return err
@@ -382,23 +382,21 @@ func (c *Client) Refill(ctx context.Context, repoRoot string, progress Progress)
 	return pool.Fill(ctx, pp)
 }
 
-// RefillLogPath is where a background refill of repo writes.
-func RefillLogPath(repo string) string {
-	return filepath.Join(config.Dir(), "logs", "ready-"+repo+".log")
+// FillLogPath is where a background refill of repo writes.
+func PoolLogPath(repo string) string {
+	return filepath.Join(config.Dir(), "logs", "pool-"+repo+".log")
 }
 
 // SpawnRefill re-execs the binary's hidden refill command as a detached
 // child working in repoRoot, so a refill survives the frontend exiting.
-func (c *Client) SpawnRefill(repoRoot string) (string, error) {
-	logPath := RefillLogPath(filepath.Base(repoRoot))
+func (c *Client) SpawnFill(repoRoot string) (string, error) {
+	logPath := PoolLogPath(filepath.Base(repoRoot))
 	// Append, never truncate: a claim can spawn a refill while the previous
 	// one is still writing here, and clobbering a live writer's log turns
 	// both runs into confetti. Refills are rare enough that growth is noise.
-	return logPath, spawnDetached(repoRoot, logPath, true, RefillCommand)
+	return logPath, spawnDetached(repoRoot, logPath, true, "pool", "fill")
 }
 
-// RefillCommand is the hidden subcommand SpawnRefill re-execs.
-const RefillCommand = "__refill"
 
 // BakeLogPath is where a background bake of repo writes.
 func BakeLogPath(repo string) string {

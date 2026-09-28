@@ -35,8 +35,9 @@ type Backend interface {
 	SetupLog(ctx context.Context, s pier.Session, lines int) (string, error)
 	SpawnCreate(repoRoot, branch string) (string, error)
 	SpawnBake(repoRoot string) (string, error)
-	SetReady(ctx context.Context, repoRoot string, n int, progress pier.Progress) (string, error)
-	DrainReady(ctx context.Context, repo string, progress pier.Progress) (int, error)
+	SpawnFill(repoRoot string) (string, error)
+	SetPoolSize(ctx context.Context, repoRoot string, n int, progress pier.Progress) (string, error)
+	DrainPool(ctx context.Context, repo string, progress pier.Progress) (int, error)
 	Settings() []pier.SettingValue
 	Set(key, value string) error
 	MachineCatalog(currentType string) []pier.Machine
@@ -274,7 +275,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loaded, m.authRequired = true, false
 		m.all = msg.all
-		m.sessions, m.ready = pier.SplitReady(msg.all)
+		m.sessions, m.ready = pier.SplitPool(msg.all)
 		m.repos = m.be.Repos(msg.all, m.opts.RepoRoot)
 		m.sessIdx = clamp(m.sessIdx, len(m.sessions))
 		m.repoIdx = clamp(m.repoIdx, len(m.repos))
@@ -666,39 +667,49 @@ func (m model) keyRepos(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}), nil
 	case "+", "=":
 		if !r.Current {
-			m.fail(errors.New("refills need the repo's checkout — run pier from inside " + r.Name))
+			m.fail(errors.New("the pool fills from the repo's checkout — run pier from inside " + r.Name))
 			return m, nil
 		}
-		return m.setReady(r, r.ReadyTarget+1)
+		return m.setPoolSize(r, r.PoolSize+1)
 	case "-", "_":
-		if r.ReadyTarget == 0 {
+		if r.PoolSize == 0 {
 			return m, nil
 		}
-		if !r.Current && r.ReadyTarget > 1 {
-			m.fail(errors.New("change " + r.Name + "'s count from inside the repo; x removes them from anywhere"))
+		if !r.Current {
+			m.fail(errors.New("set " + r.Name + "'s pool size from inside the repo; x drains it from anywhere"))
 			return m, nil
 		}
-		return m.setReady(r, r.ReadyTarget-1)
+		return m.setPoolSize(r, r.PoolSize-1)
+	case "f":
+		if !r.Current {
+			m.fail(errors.New("the pool fills from the repo's checkout — run pier from inside " + r.Name))
+			return m, nil
+		}
+		if r.PoolSize == 0 {
+			m.note(r.Name + " has no pool — + sets its size")
+			return m, nil
+		}
+		root := m.opts.RepoRoot
+		return m, act(func() doneMsg {
+			log, err := m.be.SpawnFill(root)
+			return doneMsg{note: "filling " + r.Name + "'s pool · log " + tilde(log), err: err, refresh: true, watch: true}
+		})
 	case "x":
-		if r.Ready+r.Filling+r.Stale == 0 && r.ReadyTarget == 0 {
-			m.note(r.Name + " has no ready sessions")
+		if r.Ready+r.Filling+r.Stale == 0 {
+			m.note(r.Name + "'s pool is empty")
 			return m, nil
 		}
-		return m.confirm("stop keeping ready sessions for "+r.Name+" and remove the parked ones?", func() tea.Cmd {
-			root := r.Name
-			if r.Current {
-				root = m.opts.RepoRoot
-			}
+		return m.confirm("drain "+r.Name+"'s pool — destroy its parked sessions? (the pool size stays; the next create refills it)", func() tea.Cmd {
 			return act(func() doneMsg {
-				_, err := m.be.SetReady(context.Background(), root, 0, nil)
-				return doneMsg{note: "no ready sessions for " + r.Name, err: err, refresh: true}
+				n, err := m.be.DrainPool(context.Background(), r.Name, nil)
+				return doneMsg{note: "drained " + strconv.Itoa(n) + " from " + r.Name + "'s pool", err: err, refresh: true}
 			})
 		}), nil
 	}
 	return m, nil
 }
 
-func (m model) setReady(r pier.Repo, n int) (tea.Model, tea.Cmd) {
+func (m model) setPoolSize(r pier.Repo, n int) (tea.Model, tea.Cmd) {
 	if n > 8 {
 		return m, nil
 	}
@@ -708,10 +719,10 @@ func (m model) setReady(r pier.Repo, n int) (tea.Model, tea.Cmd) {
 	}
 	cost := m.be.DiskMonthlyUSD()
 	return m, act(func() doneMsg {
-		_, err := m.be.SetReady(context.Background(), root, n, nil)
-		note := "no ready sessions for " + r.Name
+		_, err := m.be.SetPoolSize(context.Background(), root, n, nil)
+		note := "pool off for " + r.Name
 		if n > 0 {
-			note = "keeping " + strconv.Itoa(n) + " ready for " + r.Name + " · each ~$" + strconv.Itoa(int(cost+0.5)) + "/mo parked · filling in the background"
+			note = "pool size " + strconv.Itoa(n) + " for " + r.Name + " · each ~$" + strconv.Itoa(int(cost+0.5)) + "/mo parked · filling in the background"
 		}
 		return doneMsg{note: note, err: err, refresh: true, watch: n > 0}
 	})
@@ -812,7 +823,7 @@ func (m model) save(val string) (tea.Model, tea.Cmd) {
 			return reopenedMsg{be, err}
 		}
 	case strings.HasPrefix(f.Key, "speed."):
-		// Ready-session targets derive from these: rebuild the Repos rows.
+		// Pool sizes derive from these: rebuild the Repos rows.
 		m.repos = m.be.Repos(m.all, m.opts.RepoRoot)
 	}
 	return m, nil

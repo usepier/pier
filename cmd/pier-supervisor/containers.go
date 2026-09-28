@@ -22,7 +22,7 @@ import (
 
 // containersFile holds the IDs of the containers running at the last
 // snapshot. Kept outside ~/.pier/tmux: a claim discards the saved tmux
-// layout, but its ready session's containers are exactly what it wants back.
+// layout, but its pooled session's containers are exactly what it wants back.
 func containersFile(home string) string { return filepath.Join(home, ".pier", "containers.json") }
 
 // containersRestarted marks, per boot (/run is tmpfs), that this boot's

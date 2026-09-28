@@ -23,6 +23,7 @@ type fake struct {
 	removed  []string
 	kept     []string
 	spawned  []string
+	filled   []string
 	ready    map[string]int
 	setErr   error
 }
@@ -41,7 +42,7 @@ func newFake() *fake {
 		},
 		repos: []pier.Repo{
 			{Name: "flb-estimation", Current: true, Image: "ami-1", Baked: &config.ImageInfo{BakedAt: now.Add(-62 * 24 * time.Hour), RepoIncluded: true},
-				ReadyTarget: 1, Ready: 1, Sessions: 2, MonthlyUSD: 9.6,
+				PoolSize: 1, Ready: 1, Sessions: 2, MonthlyUSD: 9.6,
 				Reminders: []pier.Reminder{{Message: "flb-estimation's session image is 62 days old. Rebake so new sessions start with current dependencies.", Action: "pier bake"}}},
 			{Name: "shop", Sessions: 1},
 		},
@@ -81,11 +82,15 @@ func (f *fake) SpawnCreate(root, branch string) (string, error) {
 	return "/tmp/create-" + branch + ".log", nil
 }
 func (f *fake) SpawnBake(string) (string, error) { return "/tmp/bake.log", nil }
-func (f *fake) SetReady(_ context.Context, root string, n int, _ pier.Progress) (string, error) {
+func (f *fake) SpawnFill(root string) (string, error) {
+	f.filled = append(f.filled, root)
+	return "/tmp/pool.log", nil
+}
+func (f *fake) SetPoolSize(_ context.Context, root string, n int, _ pier.Progress) (string, error) {
 	f.ready[root] = n
 	return "", nil
 }
-func (f *fake) DrainReady(context.Context, string, pier.Progress) (int, error) { return 0, nil }
+func (f *fake) DrainPool(context.Context, string, pier.Progress) (int, error) { return 0, nil }
 func (f *fake) Settings() []pier.SettingValue {
 	var out []pier.SettingValue
 	for _, fl := range config.Settings {
@@ -156,16 +161,16 @@ func settle(t *testing.T, m model, cmd tea.Cmd) model {
 	return m
 }
 
-// Ready sessions are inventory, not work: they never sit in the session
+// Pooled sessions are inventory, not work: they never sit in the session
 // table, but the header counts them.
-func TestReadySessionsStayOutOfTheTable(t *testing.T) {
+func TestPooledSessionsStayOutOfTheTable(t *testing.T) {
 	m := loaded(t, newFake(), 140, 32)
 	v := m.View()
 	if strings.Contains(v, "pool-flb-1") {
 		t.Error("a ready session must not render as a session row")
 	}
-	if !strings.Contains(v, "1 ready") || !strings.Contains(v, "checkout-flow") {
-		t.Errorf("header must count ready sessions and the table must list real ones:\n%s", v)
+	if !strings.Contains(v, "1 pooled") || !strings.Contains(v, "checkout-flow") {
+		t.Errorf("header must count pooled sessions and the table must list real ones:\n%s", v)
 	}
 }
 
@@ -254,14 +259,14 @@ func TestTabsAndRemindersBadge(t *testing.T) {
 		t.Fatal("tab must move to Repos")
 	}
 	v := m.View()
-	for _, want := range []string{"flb-estimation", "prebuilt", "62 days old", "1/1"} {
+	for _, want := range []string{"flb-estimation", "prebuilt", "62 days old", "1/1", "POOL"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("Repos tab missing %q:\n%s", want, v)
 		}
 	}
 }
 
-func TestReadyCountChangesOnlyFromTheRepo(t *testing.T) {
+func TestPoolKeys(t *testing.T) {
 	f := newFake()
 	m := loaded(t, f, 140, 32)
 	m, _ = press(t, m, "tab")
@@ -272,7 +277,18 @@ func TestReadyCountChangesOnlyFromTheRepo(t *testing.T) {
 	}
 	m, _ = press(t, m, "down", "+")
 	if !m.statusBad {
-		t.Error("+ on another repo must explain that refills need its checkout")
+		t.Error("+ on another repo must explain that fills need its checkout")
+	}
+	m, _ = press(t, m, "up", "f")
+	if _, cmd := press(t, m, "f"); cmd != nil {
+		settle(t, m, cmd)
+	}
+	if len(f.filled) == 0 {
+		t.Error("f on this repo must fill its pool now")
+	}
+	m, _ = press(t, m, "x")
+	if m.ov != ovConfirm || !strings.Contains(m.confirmQ, "drain flb-estimation") {
+		t.Errorf("x must ask before draining, got %q", m.confirmQ)
 	}
 }
 
@@ -281,7 +297,7 @@ func TestSettingsGroupedAndSavable(t *testing.T) {
 	m := loaded(t, f, 120, 40)
 	m, _ = press(t, m, "s")
 	v := m.View()
-	for _, want := range []string{"Cloud", "New sessions", "Idle & cost", "Speed", "park after", "ready sessions"} {
+	for _, want := range []string{"Cloud", "New sessions", "Idle & cost", "Speed", "park after", "pool size"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("settings missing %q:\n%s", want, v)
 		}
@@ -300,8 +316,8 @@ func TestSettingsGroupedAndSavable(t *testing.T) {
 		t.Fatal("enter on a choice must open the picker")
 	}
 	m, _ = press(t, m, "down", "enter")
-	if f.cfg.Profile() != "lean" || f.cfg.Speed.ReadySessions != 0 {
-		t.Errorf("choosing Lean must apply the preset, got %s ready=%d", f.cfg.Profile(), f.cfg.Speed.ReadySessions)
+	if f.cfg.Profile() != "lean" || f.cfg.Speed.PoolSize != 0 {
+		t.Errorf("choosing Lean must apply the preset, got %s ready=%d", f.cfg.Profile(), f.cfg.Speed.PoolSize)
 	}
 }
 

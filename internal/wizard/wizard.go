@@ -401,13 +401,13 @@ func profileLabel(p string) string {
 func profileNote(cfg config.Config, p string, disk int) string {
 	switch p {
 	case "fast":
-		return fmt.Sprintf("image + 1 ready session per repo · new sessions in ~25s · ~$%.0f/mo per repo idle", diskMonthly(cfg, disk)+2)
+		return fmt.Sprintf("image + a pool of 1 per repo · new sessions in ~25s · ~$%.0f/mo per repo idle", diskMonthly(cfg, disk)+2)
 	case "lean":
 		return "image per repo · new sessions in ~1-2 min · ~$2/mo per repo idle"
 	case "minimal":
 		return "nothing stored · every session runs the full setup · $0 idle"
 	}
-	return fmt.Sprintf("%d ready session(s) per repo, bake reminders %s", cfg.Speed.ReadySessions, onOff(cfg.Speed.BakeReminders))
+	return fmt.Sprintf("a pool of %d per repo, bake reminders %s", cfg.Speed.PoolSize, onOff(cfg.Speed.BakeReminders))
 }
 
 func onOff(b bool) string {

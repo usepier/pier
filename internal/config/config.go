@@ -28,13 +28,17 @@ type Config struct {
 	Images map[string]ImageInfo `toml:"images,omitempty"`
 }
 
-// Speed holds the two settings a speed profile presets, plus how images
+// Speed holds the two settings a speed profile presets (pool size and bake
+// reminders), plus how images
 // are built and when pier suggests rebuilding them.
 type Speed struct {
-	// ReadySessions is how many parked, setup-complete sessions pier keeps
-	// ready for each repo that has a session image (a repo's own entry in
-	// pool.sizes overrides it). Parked = disk-only cost while waiting.
-	ReadySessions int `toml:"ready_sessions"`
+	// PoolSize is how many parked, setup-complete sessions pier keeps in each
+	// baked repo's pool (a repo's own entry in pool.sizes overrides it).
+	// Parked = disk-only cost while waiting.
+	PoolSize int `toml:"pool_size"`
+	// LegacyReadySessions is pool_size's name in one pre-release build; read
+	// once at load so configs written by it keep their setting.
+	LegacyReadySessions *int `toml:"ready_sessions,omitempty"`
 	// BakeReminders: suggest `pier bake` when a repo has no image, its image
 	// gets old, or its .pier scripts changed since the bake. Never automatic.
 	BakeReminders bool `toml:"bake_reminders"`
@@ -87,7 +91,7 @@ type GCP struct {
 }
 
 // Pool configures repo-scoped warm session pools. Strictly opt-in: a pool
-// exists only for repos with a size entry. Managed by `pier ready`, not
+// exists only for repos with a size entry. Managed by `pier pool set`, not
 // the TUI settings — like baked images, a pool is a per-repo cost decision.
 type Pool struct {
 	// MaxAge recycles members older than this, bounding how far a warm
@@ -123,7 +127,7 @@ func Default() Config {
 			MachineType: "e2-medium",
 			DiskGiB:     40,
 		},
-		Speed: Speed{ReadySessions: 1, BakeReminders: true, ImageRepo: true, ReminderAge: "30d"},
+		Speed: Speed{PoolSize: 1, BakeReminders: true, ImageRepo: true, ReminderAge: "30d"},
 	}
 }
 
@@ -136,11 +140,18 @@ func Dir() string { return filepath.Dir(Path()) }
 
 func Load() (Config, error) {
 	c := Default()
-	if _, err := toml.DecodeFile(Path(), &c); err != nil {
+	md, err := toml.DecodeFile(Path(), &c)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return c, fmt.Errorf("no config at %s — run `pier setup` first", Path())
 		}
 		return c, err
+	}
+	if c.Speed.LegacyReadySessions != nil {
+		if !md.IsDefined("speed", "pool_size") {
+			c.Speed.PoolSize = *c.Speed.LegacyReadySessions
+		}
+		c.Speed.LegacyReadySessions = nil // the next write drops the old key
 	}
 	return c, nil
 }
@@ -252,9 +263,9 @@ func (c *Config) ClearBakes() {
 	c.Images = nil
 }
 
-// PoolSize is how many ready sessions pier keeps for repo: the repo's own
+// PoolSize is how many sessions pier keeps in repo's pool: the repo's own
 // entry when it has one, otherwise the speed default — but only for repos
-// with a session image. Without one a ready session would pay the full cold
+// with a session image. Without one a pooled session would pay the full cold
 // setup on every refill, which is the cost the reminder to bake points at.
 func (c Config) PoolSize(repo string) int {
 	if n, ok := c.Pool.Sizes[repo]; ok {
@@ -263,10 +274,10 @@ func (c Config) PoolSize(repo string) int {
 	if c.BakedImage(repo) == "" {
 		return 0
 	}
-	return c.Speed.ReadySessions
+	return c.Speed.PoolSize
 }
 
-// SetPoolSize records repo's ready-session count. A count equal to what the
+// SetPoolSize records repo's pool size. A count equal to what the
 // default would give removes the entry, so the repo follows later default
 // changes; anything else (0 included) is pinned for this repo.
 func (c *Config) SetPoolSize(repo string, n int) {
@@ -283,7 +294,7 @@ func (c *Config) SetPoolSize(repo string, n int) {
 	c.Pool.Sizes[repo] = n
 }
 
-// PoolRepos lists every repo with a nonzero ready-session target: explicit
+// PoolRepos lists every repo with a nonzero pool size: explicit
 // entries plus baked repos riding the default.
 func (c Config) PoolRepos() []string {
 	seen := map[string]bool{}
@@ -321,15 +332,15 @@ func (c Config) bakedRepos() map[string]bool {
 }
 
 // Profile names the speed preset the current settings match: "fast"
-// (reminders + 1 ready session), "lean" (reminders, none ready), "minimal"
+// (reminders + a pool of 1), "lean" (reminders, no pool), "minimal"
 // (neither), or "custom" for anything else.
 func (c Config) Profile() string {
 	switch {
-	case c.Speed.BakeReminders && c.Speed.ReadySessions == 1:
+	case c.Speed.BakeReminders && c.Speed.PoolSize == 1:
 		return "fast"
-	case c.Speed.BakeReminders && c.Speed.ReadySessions == 0:
+	case c.Speed.BakeReminders && c.Speed.PoolSize == 0:
 		return "lean"
-	case !c.Speed.BakeReminders && c.Speed.ReadySessions == 0:
+	case !c.Speed.BakeReminders && c.Speed.PoolSize == 0:
 		return "minimal"
 	}
 	return "custom"
@@ -339,11 +350,11 @@ func (c Config) Profile() string {
 func (c *Config) ApplyProfile(p string) error {
 	switch p {
 	case "fast":
-		c.Speed.BakeReminders, c.Speed.ReadySessions = true, 1
+		c.Speed.BakeReminders, c.Speed.PoolSize = true, 1
 	case "lean":
-		c.Speed.BakeReminders, c.Speed.ReadySessions = true, 0
+		c.Speed.BakeReminders, c.Speed.PoolSize = true, 0
 	case "minimal":
-		c.Speed.BakeReminders, c.Speed.ReadySessions = false, 0
+		c.Speed.BakeReminders, c.Speed.PoolSize = false, 0
 	default:
 		return fmt.Errorf("speed profile: want fast, lean or minimal (got %q)", p)
 	}
@@ -589,14 +600,14 @@ var Settings = []Field{
 		Key: "speed.profile", Group: "speed", Label: "profile", Hint: "preset for the two rows below",
 		Kind: KindChoice, NoCustom: true, Default: "fast",
 		Options: []Option{
-			{Value: "fast", Label: "Fast", Desc: "image + 1 ready session per repo · ~25s starts"},
+			{Value: "fast", Label: "Fast", Desc: "image + a pool of 1 per repo · ~25s starts"},
 			{Value: "lean", Label: "Lean", Desc: "image only · ~1-2 min starts, image storage only"},
 			{Value: "minimal", Label: "Minimal", Desc: "nothing stored · full setup every start, $0 idle"},
 		},
-		Detail: "A profile is a preset for bake reminders and ready sessions. Change either row and the profile reads custom.\nFast: new sessions claim a parked, set-up session (~25s); each ready session costs its parked disk.\nLean: new sessions boot from the repo's image and re-run setup warm.\nMinimal: nothing is stored; every session runs the full setup.",
+		Detail: "A profile is a preset for bake reminders and pool size. Change either row and the profile reads custom.\nFast: new sessions claim a parked, set-up session from the pool (~25s); each pooled session costs its parked disk.\nLean: new sessions boot from the repo's image and re-run setup warm.\nMinimal: nothing is stored; every session runs the full setup.",
 	},
 	{
-		Key: "speed.ready_sessions", Group: "speed", Label: "ready sessions", Hint: "parked and set up, per baked repo",
+		Key: "speed.pool_size", Group: "speed", Label: "pool size", Hint: "parked, set-up sessions per baked repo",
 		Kind: KindChoice, NoCustom: true, Default: "1",
 		Options: []Option{
 			{Value: "0", Label: "none"},
@@ -604,7 +615,7 @@ var Settings = []Field{
 			{Value: "2", Desc: "two quick starts back to back"},
 			{Value: "3"},
 		},
-		Detail: "How many parked, setup-complete sessions pier keeps for each repo that has a session image. They're stopped VMs: each costs only its disk while waiting, and runs only while being refilled.\nOverride one repo on the Repos tab.",
+		Detail: "How many parked, setup-complete sessions pier keeps in each baked repo's pool. A new session claims one instead of launching, so it's usable in ~25s with services up. They're stopped VMs: each costs only its disk while waiting, and runs only while being filled.\nOverride one repo on the Repos tab or with `pier pool set <n>`.",
 	},
 	{
 		Key: "speed.bake_reminders", Group: "speed", Label: "bake reminders", Hint: "suggest `pier bake` when it would help",
@@ -663,8 +674,8 @@ func Get(c Config, key string) string {
 		return strconv.Itoa(c.GCP.DiskGiB)
 	case "speed.profile":
 		return c.Profile()
-	case "speed.ready_sessions":
-		return strconv.Itoa(c.Speed.ReadySessions)
+	case "speed.pool_size":
+		return strconv.Itoa(c.Speed.PoolSize)
 	case "speed.bake_reminders":
 		return strconv.FormatBool(c.Speed.BakeReminders)
 	case "speed.image_repo":
@@ -777,12 +788,12 @@ func Set(c *Config, key, val string) error {
 		}
 	case "speed.profile":
 		return c.ApplyProfile(strings.ToLower(strings.TrimSpace(val)))
-	case "speed.ready_sessions":
+	case "speed.pool_size":
 		n, err := strconv.Atoi(strings.TrimSpace(val))
 		if err != nil || n < 0 || n > 8 {
-			return fmt.Errorf("speed.ready_sessions: want 0-8 (got %q)", val)
+			return fmt.Errorf("speed.pool_size: want 0-8 (got %q)", val)
 		}
-		c.Speed.ReadySessions = n
+		c.Speed.PoolSize = n
 	case "speed.bake_reminders", "speed.image_repo":
 		var b bool
 		switch strings.ToLower(strings.TrimSpace(val)) {

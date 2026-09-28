@@ -58,10 +58,10 @@ func TestRetryAttachOnlyForQuickSSHTransportFailure(t *testing.T) {
 	}
 }
 
-// FoldReady classifies members the way reconcile would; the generation check
+// FoldPool classifies members the way reconcile would; the generation check
 // applies only to the repo whose local checkout produced curGen — other
 // repos' gens are unknowable here.
-func TestFoldReady(t *testing.T) {
+func TestFoldPool(t *testing.T) {
 	now := time.Now()
 	ss := []Session{
 		{Repo: "shop", PoolGen: "aaa", State: StateParked, Created: now.Add(-time.Hour)},
@@ -72,10 +72,10 @@ func TestFoldReady(t *testing.T) {
 		{Repo: "shop", State: StateRunning, Created: now}, // a real session
 		{Repo: "tools", PoolGen: "zzz", State: StateParked, Created: now},
 	}
-	if st := FoldReady(ss, "shop", "shop", "aaa", 0, now); st.Ready != 1 || st.Filling != 1 || st.Stale != 2 {
+	if st := FoldPool(ss, "shop", "shop", "aaa", 0, now); st.Ready != 1 || st.Filling != 1 || st.Stale != 2 {
 		t.Errorf("shop = %+v, want 1 ready, 1 filling, 2 stale", st)
 	}
-	if st := FoldReady(ss, "tools", "shop", "aaa", 0, now); st.Ready != 1 || st.Stale != 0 {
+	if st := FoldPool(ss, "tools", "shop", "aaa", 0, now); st.Ready != 1 || st.Stale != 0 {
 		t.Errorf("tools = %+v, want its member ready (gen unknowable from here)", st)
 	}
 
@@ -86,10 +86,10 @@ func TestFoldReady(t *testing.T) {
 		{Repo: "tools", PoolGen: "zzz", State: StateParked, Created: now.Add(-30 * 24 * time.Hour)},
 		{Repo: "tools", PoolGen: "zzz", State: StateCreating, Created: now.Add(-3 * time.Hour)},
 	}
-	if st := FoldReady(old, "tools", "", "", 14*24*time.Hour, now); st.Ready != 0 || st.Filling != 0 || st.Stale != 2 {
+	if st := FoldPool(old, "tools", "", "", 14*24*time.Hour, now); st.Ready != 0 || st.Filling != 0 || st.Stale != 2 {
 		t.Errorf("old members = %+v, want both stale (over-age + grace-blown)", st)
 	}
-	if st := FoldReady(old[:1], "tools", "", "", 0, now); st.Ready != 1 {
+	if st := FoldPool(old[:1], "tools", "", "", 0, now); st.Ready != 1 {
 		t.Errorf("maxAge 0 = %+v, want the age check skipped", st)
 	}
 }

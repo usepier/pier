@@ -11,15 +11,15 @@ import (
 )
 
 // Doctor runs the cloud driver's environment and account checks, plus
-// pier's own: ready sessions nothing will claim, and ones stuck filling.
+// pier's own: pooled sessions nothing will claim, and ones stuck filling.
 func (c *Client) Doctor(ctx context.Context) []Check {
 	checks := c.drv.Doctor(ctx)
 	sessions, err := c.drv.List(ctx)
 	if err != nil {
 		return checks
 	}
-	// Orphans are parked money nothing will ever claim: repos whose ready
-	// sessions were turned off (or another machine's config). Members
+	// Orphans are parked money nothing will ever claim: repos whose pool
+	// was turned off (or another machine's config). Members
 	// unparked past the fill grace are worse — a refill died before its
 	// member parked, and it bills at full rate until the next refill
 	// reconciles it away.
@@ -36,21 +36,21 @@ func (c *Client) Doctor(ctx context.Context) []Check {
 	}
 	for repo, n := range orphans {
 		checks = append(checks, Check{
-			Name:   "ready sessions " + repo,
-			Detail: fmt.Sprintf("%d ready session(s) but none configured — `pier ready 0` in %s removes them", n, repo),
+			Name:   "pool " + repo,
+			Detail: fmt.Sprintf("%d pooled session(s) but no pool configured — `pier pool drain %s` removes them", n, repo),
 		})
 	}
 	for repo, n := range stuck {
 		checks = append(checks, Check{
-			Name:   "ready sessions " + repo,
-			Detail: fmt.Sprintf("%d stuck filling for 2h+ — running at full price; `pier ready 0` in %s removes them", n, repo),
+			Name:   "pool " + repo,
+			Detail: fmt.Sprintf("%d stuck filling for 2h+ — running at full price; `pier pool drain %s` removes them", n, repo),
 		})
 	}
 	return checks
 }
 
-// Teardown destroys every ready session, then all pier groundwork and
-// images in the account, and forgets the images and ready-session settings.
+// Teardown destroys every pooled session, then all pier groundwork and
+// images in the account, and forgets the images and pool settings.
 // Live sessions block it: the driver refuses while instances exist.
 func (c *Client) Teardown(ctx context.Context, progress Progress) error {
 	start := time.Now()

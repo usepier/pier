@@ -21,25 +21,25 @@ type CreateRequest struct {
 	// Idle and Cap override the configured park timeouts for this session
 	// (nil = config; 0 = never).
 	Idle, Cap *time.Duration
-	// NoReady skips claiming one of the repo's ready sessions.
-	NoReady  bool
+	// NoPool skips claiming one of the repo's pooled sessions.
+	NoPool  bool
 	Progress Progress
 }
 
 // CreateResult is a finished create.
 type CreateResult struct {
 	Session Session
-	Claimed bool // came from a ready session rather than a fresh launch
-	// RefillLog is set when a background refill of the repo's ready
-	// sessions started; RefillErr when one should have but couldn't.
-	RefillLog string
-	RefillErr error
+	Claimed bool // came from a pooled session rather than a fresh launch
+	// FillLog is set when a background refill of the repo's ready
+	// sessions started; FillErr when one should have but couldn't.
+	FillLog string
+	FillErr error
 }
 
-// Create makes a session: it claims one of the repo's ready sessions when
+// Create makes a session: it claims one of the repo's pooled sessions when
 // there is one (resume, branch, secrets, setup re-run — seconds), and
 // otherwise launches fresh from the repo's image. Either way the repo's
-// ready sessions refill in the background. A create that fails leaves a
+// pooled sessions refill in the background. A create that fails leaves a
 // failed row behind (its instance is already gone), so it never vanishes
 // without trace.
 func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, error) {
@@ -77,7 +77,7 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 			" — .pier/bake.sh toolchains will be missing and .pier/setup.sh may fail; `pier bake` fixes it")
 	}
 
-	poolable := c.cfg.PoolSize(repo) > 0 && !req.NoReady
+	poolable := c.cfg.PoolSize(repo) > 0 && !req.NoPool
 	var res CreateResult
 	if poolable {
 		pp, err := c.poolParams(req.RepoRoot, req.Progress, start)
@@ -87,14 +87,14 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 		pp.IdleTimeout, pp.UnattendedCap = idle, cap_
 		sess, err := pool.Claim(ctx, pp, sessions, req.Branch, req.Branch, base)
 		if err != nil {
-			// A ready session accelerates, never gates: whatever broke the
+			// A pooled session accelerates, never gates: whatever broke the
 			// claim, the fresh create below gives the same answer or a session.
 			req.Progress.emit(start, EventWarn, "claim failed: "+err.Error())
 		}
 		if sess != nil {
 			res.Session, res.Claimed = *sess, true
 		} else {
-			step("no ready session to claim — creating fresh")
+			step("nothing in the pool to claim — creating fresh")
 		}
 	}
 	if !res.Claimed {
@@ -110,9 +110,9 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 		res.Session = *sess
 	}
 	if poolable {
-		// Top the ready sessions back up — after a claim (one was consumed)
+		// Top the pooled sessions back up — after a claim (one was consumed)
 		// and after a fallback create (there were too few) alike.
-		res.RefillLog, res.RefillErr = c.SpawnRefill(req.RepoRoot)
+		res.FillLog, res.FillErr = c.SpawnFill(req.RepoRoot)
 	}
 	return res, nil
 }

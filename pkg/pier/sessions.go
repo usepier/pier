@@ -23,7 +23,7 @@ import (
 // Sessions is the one list every surface shows: the cloud's sessions with
 // their supervisor beacons read (working/idle, strain, setup state), plus a
 // failed row per create that died before becoming a session. Unclaimed
-// ready sessions are included — SplitReady separates them.
+// pooled sessions are included — SplitPool separates them.
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	sessions, err := c.drv.List(ctx)
 	if err != nil {
@@ -37,10 +37,10 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	return merged, nil
 }
 
-// SplitReady separates real sessions from unclaimed ready sessions (warm
+// SplitPool separates real sessions from unclaimed pooled sessions (warm
 // pool members): those are inventory, not work, and never sit in the
 // session table.
-func SplitReady(all []Session) (sessions, ready []Session) {
+func SplitPool(all []Session) (sessions, ready []Session) {
 	for _, s := range all {
 		if s.PoolGen != "" {
 			ready = append(ready, s)
@@ -56,7 +56,7 @@ func SplitReady(all []Session) (sessions, ready []Session) {
 func (c *Client) enrich(ctx context.Context, sessions []Session) {
 	var wg sync.WaitGroup
 	for i := range sessions {
-		// Ready sessions run headless between create and park; their beacon
+		// Pooled sessions run headless between create and park; their beacon
 		// detail is nobody's business until they're claimed.
 		if sessions[i].State != driver.StateRunning || sessions[i].PoolGen != "" {
 			continue
@@ -130,7 +130,7 @@ func mergeTombstones(sessions []Session, recs []tombstone.Record) (merged []Sess
 }
 
 // Match resolves a user-typed session name: an exact name wins, otherwise a
-// unique substring. Ready sessions are never matched by name.
+// unique substring. Pooled sessions are never matched by name.
 func (c *Client) Match(ctx context.Context, query string) (Session, error) {
 	sessions, err := c.Sessions(ctx)
 	if err != nil {

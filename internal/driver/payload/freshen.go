@@ -26,7 +26,7 @@ set -euo pipefail
 # this session's. Let that restore finish first (a server it started after
 # the kill below would outlive it), then drop the server and the saved layout
 # so the next park snapshots this session's own. Setup does not run: the
-# ready session ran it at fill, and its containers came back at this boot.
+# pooled session ran it at fill, and its containers came back at this boot.
 if [ -f /etc/systemd/system/pier-restore.service ]; then
   for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
 fi

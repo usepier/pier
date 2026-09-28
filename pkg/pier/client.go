@@ -1,6 +1,6 @@
 // Package pier is the one API every pier frontend uses: the CLI, the TUI,
 // and (through `pier api`) the Mac app. It owns every capability — sessions,
-// repos and their images, ready sessions, settings, setup checks — and never
+// repos and their images, pooled sessions, settings, setup checks — and never
 // prints, exits, or reads stdin. Frontends render what it returns; long
 // operations report progress as Events through a callback.
 //

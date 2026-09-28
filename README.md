@@ -85,7 +85,7 @@ intact. And to see what the agent built,
 |---|---|
 | running | `~$0.04/h` |
 | parked | `~$3-4/mo` (disk only) |
-| ready session (parked) | `~$3-4/mo` (disk only) |
+| pooled session (parked) | `~$3-4/mo` (disk only) |
 
 There is no control plane. No server, no database, no daemon on your laptop.
 Session state lives in instance tags. Every byte between you and the VM is
@@ -154,15 +154,15 @@ anything later: run `pier` and press `s`.
 ### Speed profiles
 
 A profile presets two settings: whether pier reminds you to bake, and how
-many ready sessions each baked repo keeps.
+big a pool each baked repo keeps.
 
 | Profile | New session | Idle cost per repo |
 |---|---|---|
-| **Fast** (default) | claims a parked, set-up ready session: ~25s | image ~$1-2/mo + one parked disk |
+| **Fast** (default) | claims a parked, set-up session from the pool: ~25s | image ~$1-2/mo + one parked disk |
 | **Lean** | boots from the repo's image, setup re-runs warm: ~1-2 min | image only |
 | **Minimal** | stock launch, full setup every time | $0 |
 
-A ready session is a stopped VM, so waiting costs disk only. Change either
+A pooled session is a stopped VM, so waiting costs disk only. Change either
 setting and the profile reads Custom.
 
 No admin rights? `pier setup --print-admin` prints the handful of commands
@@ -216,17 +216,17 @@ pier <branch> [base]      new session off base (default HEAD), then attach
     --idle <dur|never>    park after this much idle time (default from settings)
     --cap <dur|never>     unattended runaway cap (default 8h)
     --no-park             shorthand for --idle never
-    --no-ready            launch fresh instead of claiming a ready session
+    --no-pool             launch fresh instead of claiming a pooled session
 pier ls [--json]          plain list, or stable JSON for automation
 pier attach <session>     attach (a parked session resumes, ~20-60s, tmux restored)
 pier logs <session>       show the setup script log (-f follows)
 pier rm <session> [-f]    destroy the session and its disk
 pier keep <session>       pin: never park when idle
 pier resize <session> <type>   grow/shrink the VM (~1-2 min, same CPU arch)
-pier repos [--json]       every repo: session image, ready sessions, idle cost, tips
+pier repos [--json]       every repo: session image, pool, idle cost, tips
 pier bake                 build this repo's session image (repo prebuilt by default)
     --toolchain-only      keep repo state out of the image for this bake
-pier ready [n]            show, or set, how many ready sessions this repo keeps
+pier pool                 this repo's pool (set <n> | fill | drain [repo])
 pier mcp login <session>  one-time browser approvals for OAuth MCP servers
 pier proxy                every running session as <session>.pier (macOS)
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
@@ -291,7 +291,7 @@ docker compose up -d
 pnpm db:migrate
 ```
 
-Setup runs **once per session**, when the session is built: a ready session
+Setup runs **once per session**, when the session is built: a pooled session
 ran it before you claimed it, and a parked session never runs it again.
 Waking a parked session brings back its tmux windows and agent
 conversations, and restarts the Docker containers that were running when it
@@ -433,24 +433,29 @@ the warm re-run gets slow. Images are keyed to the repo, so one project's
 toolchain never bleeds into another's. Re-baking supersedes the old image,
 and `pier teardown` sweeps them all by tag.
 
-### Ready sessions: the create is already done
+### Warm pools: the create is already done
 
-Even a create from a prebuilt image boots a VM and re-runs setup. A ready
-session has done that ahead of time: it's a parked, **setup-complete**
-session waiting to be claimed. Baked repos keep one by default (the Fast
-profile); the Repos tab (`+`/`-`) or `pier ready <n>` changes that per repo.
+Even a create from a prebuilt image boots a VM and runs setup. A pool holds
+sessions that already did: parked, **setup-complete** sessions waiting to be
+claimed. Baked repos keep a pool of one by default (the Fast profile).
+
+```
+pier pool               this repo's pool: ready, filling, what it costs
+pier pool set 2         keep two ready (0 turns the pool off and drains it)
+pier pool fill          top it up now, e.g. right after a bake
+pier pool drain [repo]  destroy a repo's pooled sessions, from anywhere
+```
 
 The next `pier <branch>` claims one instead of creating — resume, check out
-your branch, re-push secrets, apply your dirty edits — and refills in the
-background from the repo's image. None left just means a normal create:
-ready sessions accelerate, never gate, and `--no-ready` skips them for one
-create.
+your branch, re-push secrets, apply your dirty edits; setup doesn't run
+again — and the pool refills in the background. An empty pool just means a
+normal create: the pool accelerates, never gates, and `--no-pool` skips it
+for one create.
 
-Ready sessions are stopped instances, so each costs disk only (~$3-4/mo at
+Pooled sessions are stopped instances, so each costs disk only (~$3-4/mo at
 40 GiB). They recycle themselves when they go stale — after a re-bake, a
-setup-script change, or 14 days (`pool.max_age`) — and `pier repos` shows
-what each repo holds and costs. `pier ready 0` turns them off and removes
-the parked ones.
+setup-script change, or 14 days (`pool.max_age`). The app's Repos tab shows
+every repo's pool with its cost: `+`/`-` sets the size, `f` fills, `x` drains.
 
 ### Rebake reminders
 
@@ -465,7 +470,7 @@ per repo), as a dot on the Repos tab, and in `pier repos`.
 
 `pier` with no arguments opens the app: a **Sessions** tab (every session
 with a state dot, a detail pane, attach, logs, resize, keep, delete), a
-**Repos** tab (session image, ready sessions, idle cost and reminders per
+**Repos** tab (session image, pool, idle cost and reminders per
 repo), and **Settings**, one page grouped into Cloud, New sessions, Idle &
 cost, and Speed, showing only the active cloud's fields with a line on what
 each changes. The header keeps running and parked counts and the live

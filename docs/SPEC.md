@@ -341,8 +341,8 @@ protected by the repository's `.gitignore`.
    plane to schedule rebakes.
 
    **Setup runs once per session (2026-09).** Setup runs when a session
-   is built — the bootstrap, a ready-session fill, the bake — and never
-   again: a ready-session claim resumes, checks out the branch and re-pushes
+   is built — the bootstrap, a pool fill, the bake — and never
+   again: a pool claim resumes, checks out the branch and re-pushes
    secrets without it, and a wake re-runs nothing. What a wake needs is what
    was running: the supervisor records the running Docker containers with
    each tmux snapshot (and once more before it parks) in
@@ -402,10 +402,10 @@ protected by the repository's `.gitignore`.
    files it is *not* carrying so a missing one fails loud at create, not deep
    in `make dev`.
 
-4. **Ready sessions (per repo; formerly warm pools)** — baked repos keep
-   `speed.ready_sessions` (default 1, the Fast profile) parked,
+4. **Warm pools (per repo)** — baked repos keep
+   `speed.pool_size` (default 1, the Fast profile) parked,
    **setup-complete** members ready, overridable per repo with
-   `pier ready <n>` or the app's Repos tab; `pier <branch>`
+   `pier pool set <n>` or the app's Repos tab; `pier <branch>`
    then claims one — resume + freshen (secrets re-push, branch at base,
    dirty patch, supervisor conf reset, async setup re-run for drift) instead
    of create + boot + full setup — and refills the pool detached in the
@@ -536,8 +536,8 @@ pier port <match> <p> [p...]  manual port forwards, zero-sudo any-OS fallback (3
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
 pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)
-pier repos [--json]     every repo: session image, ready sessions, idle cost, reminders
-pier ready [n]          show / set the cwd repo's ready sessions (0 = off, removes them)
+pier repos [--json]     every repo: session image, pooled sessions, idle cost, reminders
+pier pool [set <n> | fill | drain [repo]]  the cwd repo's warm pool
 pier setup              wizard (--print-admin for the no-IAM-rights path,
                         --skills to refresh the bundled agent skill only)
 pier bake               build/refresh the repo's session image (--toolchain-only)
@@ -572,14 +572,14 @@ manifest = [".codex/auth.json", ".codex/config.toml", ".claude/settings.json", "
 # claude_oauth_token = "..."  # from `claude setup-token` (macOS Keychain path)
 
 [speed]                        # what a speed profile presets (fast/lean/minimal)
-ready_sessions = 1             # per baked repo; parked, disk-only cost
+pool_size      = 1             # per baked repo; parked, disk-only cost
 bake_reminders = true          # suggest `pier bake`; never automatic
 image_repo     = true          # bake prebuilds the repo (false = toolchains only)
 reminder_age   = "30d"         # remind when an image gets this old
 
-[pool]                         # ready sessions (§7.4)
+[pool]                         # pooled sessions (§7.4)
 # max_age = "14d"              # member recycle age
-# [pool.sizes]                 # per-repo overrides, written by `pier ready`
+# [pool.sizes]                 # per-repo overrides, written by `pier pool set`
 # shop = 2
 
 # [images.<repo>]              # written by `pier bake`: baked_at, setup_sha,

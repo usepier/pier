@@ -94,7 +94,7 @@ func (m model) header() string {
 			meta = append(meta, fmt.Sprintf("%d parked", parked))
 		}
 		if len(m.ready) > 0 {
-			meta = append(meta, fmt.Sprintf("%d ready", len(m.ready)))
+			meta = append(meta, fmt.Sprintf("%d pooled", len(m.ready)))
 		}
 		if hourly > 0 {
 			meta = append(meta, fmt.Sprintf("~$%.2f/h", hourly))
@@ -287,7 +287,7 @@ func (m model) repoList(w, h int) string {
 			nameW = max(nameW, lipgloss.Width(r.Name))
 		}
 		nameW = min(nameW, max(inner/3, 12))
-		lines = append(lines, sDim.Render(fit("  REPO", nameW+2)+"  "+fit("IMAGE", 18)+"  "+fit("READY", 7)+"  IDLE COST"))
+		lines = append(lines, sDim.Render(fit("  REPO", nameW+2)+"  "+fit("IMAGE", 18)+"  "+fit("POOL", 7)+"  IDLE COST"))
 		for i, r := range m.repos {
 			mark := " "
 			if len(r.Reminders) > 0 {
@@ -299,7 +299,7 @@ func (m model) repoList(w, h int) string {
 					mark = sWarn.Render("›")
 				}
 			}
-			row := mark + " " + fit(r.Name, nameW) + "  " + fit(imageCell(r), 18) + "  " + fit(readyCell(r), 7) + "  " + sFaint.Render(money(r.MonthlyUSD))
+			row := mark + " " + fit(r.Name, nameW) + "  " + fit(imageCell(r), 18) + "  " + fit(poolCell(r), 7) + "  " + sFaint.Render(money(r.MonthlyUSD))
 			if i == m.repoIdx {
 				row = selected(row, inner)
 			}
@@ -325,11 +325,11 @@ func imageCell(r pier.Repo) string {
 	return kind + sDim.Render(" · "+pier.Age(r.Baked.BakedAt, time.Now()))
 }
 
-func readyCell(r pier.Repo) string {
-	if r.ReadyTarget == 0 && r.Ready+r.Filling == 0 {
+func poolCell(r pier.Repo) string {
+	if r.PoolSize == 0 && r.Ready+r.Filling == 0 {
 		return sDim.Render("off")
 	}
-	c := fmt.Sprintf("%d/%d", r.Ready, r.ReadyTarget)
+	c := fmt.Sprintf("%d/%d", r.Ready, r.PoolSize)
 	if r.Filling > 0 {
 		c += sAccent.Render("+")
 	}
@@ -364,8 +364,8 @@ func (m model) repoDetail(w, h int) string {
 		}
 		lines = append(lines, field("image", what+sDim.Render(" · baked "+ago(r.Baked.BakedAt))))
 	}
-	ready := fmt.Sprintf("keep %d", r.ReadyTarget)
-	if r.ReadyTarget == 0 {
+	ready := fmt.Sprintf("size %d", r.PoolSize)
+	if r.PoolSize == 0 {
 		ready = "off"
 	}
 	var parts []string
@@ -381,7 +381,7 @@ func (m model) repoDetail(w, h int) string {
 	if len(parts) > 0 {
 		ready += sDim.Render(" · " + strings.Join(parts, ", "))
 	}
-	lines = append(lines, field("ready", ready))
+	lines = append(lines, field("pool", ready))
 	lines = append(lines, field("sessions", strconv.Itoa(r.Sessions)))
 	lines = append(lines, field("idle cost", money(r.MonthlyUSD)+sDim.Render(" while nothing runs")))
 	lines = append(lines, "")
@@ -399,10 +399,10 @@ func (m model) repoDetail(w, h int) string {
 	}
 	var help string
 	if r.Current {
-		help = "b bakes the image (background). +/- sets ready sessions: parked, set-up copies that make the next session start in ~25s, each " +
-			money(m.be.DiskMonthlyUSD()) + " while waiting. x removes them."
+		help = "b bakes the image (background). The pool holds parked, set-up sessions a new one claims in ~25s, each " +
+			money(m.be.DiskMonthlyUSD()) + " while waiting: +/- sets its size, f fills it now, x drains it."
 	} else {
-		help = "Bake and refill from inside this repo. x removes its ready sessions from anywhere."
+		help = "Bake, size and fill this repo's pool from inside it. x drains its pool from anywhere."
 	}
 	for _, l := range wrap(help, iw) {
 		lines = append(lines, sDim.Render(l))
@@ -530,7 +530,7 @@ func (m model) footer() string {
 	case m.tab == tabSessions:
 		k = []string{"enter", "attach", "n", "new", "l", "logs", "m", "resize", "p", "keep", "d", "delete", "tab", "repos"}
 	case m.tab == tabRepos:
-		k = []string{"b", "bake", "+/-", "ready", "x", "remove ready", "tab", "settings"}
+		k = []string{"b", "bake", "+/-", "pool size", "f", "fill", "x", "drain", "tab", "settings"}
 	default:
 		k = []string{"enter", "change", "↑↓", "move", "tab", "sessions"}
 	}
@@ -630,8 +630,9 @@ func (m model) helpView() string {
 		"",
 		sec("Repos"),
 		row("b", "bake this repo's session image"),
-		row("+ -", "ready sessions: parked, set-up copies for ~25s starts"),
-		row("x", "remove a repo's ready sessions"),
+		row("+ -", "pool size: parked, set-up sessions new ones claim in ~25s"),
+		row("f", "fill the pool now"),
+		row("x", "drain a repo's pool"),
 		"",
 		sDim.Render("  Sessions park themselves when you're away: only the disk costs money."),
 		sDim.Render("  The CLI does all of this too — `pier help`."),

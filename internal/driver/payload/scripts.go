@@ -126,7 +126,7 @@ tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s mai
 `
 
 // setupWindow runs the repo's .pier/setup.sh in its own tmux window, once,
-// when a session is built (a ready session ran it at fill, so its claim
+// when a session is built (a pooled session ran it at fill, so its claim
 // doesn't). The outcome must be impossible to miss — a failed setup used to
 // vanish with its window: ~/.pier-setup.status holds "running" then the exit
 // code (the supervisor beacons it to ls and the app), the log's last line
