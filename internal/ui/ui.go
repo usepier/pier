@@ -38,7 +38,7 @@ var ThemeNames = []string{"teal", "navy", "violet", "emerald", "orange", "crimso
 var Themes = map[string]lipgloss.TerminalColor{
 	"teal":     lipgloss.Color("6"),
 	"navy":     lipgloss.Color("#2B4FC5"),
-	"violet":   lipgloss.Color("#6D28D9"),
+	"violet":   lipgloss.Color("#7C3AED"),
 	"emerald":  lipgloss.Color("#10B981"),
 	"orange":   lipgloss.Color("#F97316"),
 	"crimson":  lipgloss.Color("#E11D48"),
