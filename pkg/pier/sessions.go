@@ -25,16 +25,34 @@ import (
 // failed row per create that died before becoming a session. Unclaimed
 // pooled sessions are included — SplitPool separates them.
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
+	sessions, err := c.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.Enrich(ctx, sessions), nil
+}
+
+// ListSessions is Sessions without the per-session status reads: one cloud
+// call plus the local failed-create records. A frontend shows it at once and
+// fills in Enrich's answer when it lands.
+func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 	sessions, err := c.drv.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	c.enrich(ctx, sessions)
 	merged, revived := mergeTombstones(sessions, tombstone.List(config.Dir()))
 	for _, name := range revived {
 		tombstone.Dismiss(config.Dir(), name)
 	}
 	return merged, nil
+}
+
+// Enrich returns a copy of sessions with each running session's supervisor
+// status read: activity, strain, setup state.
+func (c *Client) Enrich(ctx context.Context, sessions []Session) []Session {
+	out := append([]Session(nil), sessions...)
+	c.enrich(ctx, out)
+	return out
 }
 
 // SplitPool separates real sessions from unclaimed pooled sessions (warm
@@ -259,6 +277,9 @@ func (c *Client) WaitReachable(ctx context.Context, s Session, timeout time.Dura
 		cancel()
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, driver.ErrNoKey) {
+			return err // waiting won't conjure the key
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

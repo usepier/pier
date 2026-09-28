@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/usepier/pier/internal/driver"
 )
 
 // aws runs the AWS CLI (the tool already requires it for the SSM plugin, so
@@ -52,6 +54,15 @@ func LoginExpired(err error) bool {
 // typing), falling back to an SSM ProxyCommand (works everywhere, no
 // inbound ports, slow) whenever direct can't work. aws.direct = false
 // forces the tunnel.
+
+// needKey fails fast with ErrNoKey when the session's key isn't here: ssh
+// would otherwise retry an unreachable-looking host for minutes.
+func (d *Driver) needKey(id string) error {
+	if _, err := os.Stat(d.keyPath(id)); err != nil {
+		return fmt.Errorf("%w (%s) — it lives only on the machine that created the session", driver.ErrNoKey, d.keyPath(id))
+	}
+	return nil
+}
 
 func (d *Driver) keyPath(id string) string {
 	return filepath.Join(d.StateDir, "keys", id+".pem")
@@ -105,6 +116,9 @@ func (d *Driver) sshRun(ctx context.Context, id, script string) (string, error) 
 // sshRunOpts is sshRun with extra ssh flags — the bootstrap passes -A when
 // the workspace fetch rides the laptop's ssh agent.
 func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, script string) (string, error) {
+	if err := d.needKey(id); err != nil {
+		return "", err
+	}
 	args := append(append(d.sshOpts(ctx, id), extra...), "agent@"+id, script)
 	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
 	if err != nil {

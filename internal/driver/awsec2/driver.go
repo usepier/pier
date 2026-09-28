@@ -12,6 +12,7 @@ package awsec2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -78,6 +79,7 @@ type Driver struct {
 	// direct-connect probe state (direct.go)
 	dmu       sync.Mutex
 	dprobe    map[string]directProbe
+	known     map[string]instanceInfo // from the last List, for the probe
 	myIP      string
 	myIPUntil time.Time
 	ensured   string // the cidr whose SG rule this process reconciled
@@ -112,6 +114,8 @@ type ec2Instance struct {
 	State  string `json:"state"`
 	Launch string `json:"launch"`
 	IType  string `json:"itype"`
+	IP     string `json:"ip"`
+	SG     string `json:"sg"`
 	Tags   []struct {
 		Key   string `json:"Key"`
 		Value string `json:"Value"`
@@ -126,7 +130,7 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	out, err := d.aws(ctx, "ec2", "describe-instances",
 		"--filters", "Name=tag:"+TagManaged+",Values=1", "Name=tag:"+TagUser+",Values="+me,
 		"Name=instance-state-name,Values=pending,running,stopping,stopped",
-		"--query", "Reservations[].Instances[].{id:InstanceId,state:State.Name,launch:LaunchTime,itype:InstanceType,tags:Tags}",
+		"--query", "Reservations[].Instances[].{id:InstanceId,state:State.Name,launch:LaunchTime,itype:InstanceType,tags:Tags,ip:PublicIpAddress,sg:SecurityGroups[0].GroupId}",
 		"--output", "json")
 	if err != nil {
 		return nil, err
@@ -137,6 +141,9 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	}
 	var sessions []driver.Session
 	for _, in := range raw {
+		// The direct-connect probe needs exactly what this call just
+		// returned; hand it over rather than describing each instance again.
+		d.noteInstance(in.ID, in.IP, in.SG, in.Launch)
 		s := driver.Session{ID: in.ID, User: me, Driver: d.Name(), InstanceType: in.IType}
 		ready := false
 		for _, t := range in.Tags {
@@ -321,6 +328,9 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 // The one wait it does make is short and bounded: for the boot-time tmux
 // restore of a woken session to finish (see cmd/pier-supervisor/tmux.go).
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
+	if err := d.needKey(id); err != nil {
+		return nil, err
+	}
 	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
 [ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
 # SSH forwards the client's TERM, but newer terminals (for example Ghostty)
@@ -393,6 +403,9 @@ func (d *Driver) waitSSH(ctx context.Context, id string, timeout time.Duration) 
 		cancel()
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, driver.ErrNoKey) {
+			return err // no key, no connection — retrying changes nothing
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

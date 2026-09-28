@@ -88,6 +88,11 @@ type CreateSpec struct {
 // not leave a parked session reading "starting" forever.
 const ClaimWindow = 15 * time.Minute
 
+// ErrNoKey: this machine holds no ssh key for the session. Each session's
+// key lives only on the laptop that created it, so another machine (or a
+// cleared ~/.config/pier/keys) can't reach it — and retrying won't help.
+var ErrNoKey = errors.New("no ssh key for this session on this machine")
+
 // ErrClaimLost: another claimer won this pool member — move on to the next
 // candidate.
 var ErrClaimLost = errors.New("pool member claimed by another process")

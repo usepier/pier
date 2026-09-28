@@ -22,7 +22,8 @@ import (
 // can drive the app without a cloud.
 type Backend interface {
 	Cloud() string
-	Sessions(ctx context.Context) ([]pier.Session, error)
+	ListSessions(ctx context.Context) ([]pier.Session, error)
+	Enrich(ctx context.Context, sessions []pier.Session) []pier.Session
 	Repos(sessions []pier.Session, curRoot string) []pier.Repo
 	Headroom(ctx context.Context) (pier.Quota, error)
 	Remove(ctx context.Context, s pier.Session) error
@@ -153,9 +154,12 @@ func newModel(opts Options, be Backend) model {
 
 // --- messages ---------------------------------------------------------------------
 
+// sessionsMsg carries a list; enriched says whether the per-session status
+// reads are in (the list shows first, statuses fill in after).
 type sessionsMsg struct {
-	all []pier.Session
-	err error
+	all      []pier.Session
+	err      error
+	enriched bool
 }
 type quotaMsg string
 type tickMsg struct{}
@@ -197,8 +201,18 @@ func pollCmd() tea.Cmd {
 func (m model) fetch() tea.Msg {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	all, err := m.be.Sessions(ctx)
-	return sessionsMsg{all, err}
+	all, err := m.be.ListSessions(ctx)
+	return sessionsMsg{all: all, err: err}
+}
+
+// enrich reads the running sessions' statuses for a list already on screen.
+func (m model) enrich(all []pier.Session) tea.Cmd {
+	be := m.be
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return sessionsMsg{all: be.Enrich(ctx, all), enriched: true}
+	}
 }
 
 func (m model) fetchQuota() tea.Msg {
@@ -274,6 +288,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.loaded, m.authRequired = true, false
+		if !msg.enriched {
+			// Keep what the last status read said until the new one lands,
+			// so rows don't blink between states on every refresh.
+			msg.all = carryStatus(m.all, msg.all)
+		}
 		m.all = msg.all
 		m.sessions, m.ready = pier.SplitPool(msg.all)
 		m.repos = m.be.Repos(msg.all, m.opts.RepoRoot)
@@ -282,11 +301,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.watch > 0 {
 			m.watch--
 		}
+		var cmds []tea.Cmd
+		if !msg.enriched {
+			cmds = append(cmds, m.enrich(msg.all))
+		}
 		if (m.inFlight() || m.watch > 0) && !m.polling {
 			m.polling = true
-			return m, pollCmd()
+			cmds = append(cmds, pollCmd())
 		}
-		return m, nil
+		return m, tea.Batch(cmds...)
 
 	case pollMsg:
 		// Background refreshes stay quiet: the spinner is for the first load
@@ -375,6 +398,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onKey(msg)
 	}
 	return m, nil
+}
+
+// carryStatus copies the previous status read onto a fresh list, for the
+// sessions still in the same cloud state.
+func carryStatus(prev, next []pier.Session) []pier.Session {
+	old := map[string]pier.Session{}
+	for _, s := range prev {
+		old[s.ID] = s
+	}
+	for i, s := range next {
+		p, ok := old[s.ID]
+		if !ok || s.ID == "" || s.State != pier.StateRunning {
+			continue
+		}
+		switch p.State {
+		case pier.StateRunning, pier.StateWorking, pier.StateIdle:
+			next[i].State, next[i].Attached = p.State, p.Attached
+			next[i].Strained, next[i].Setup = p.Strained, p.Setup
+		}
+	}
+	return next
 }
 
 func clamp(i, n int) int {
@@ -544,7 +588,13 @@ func (m model) startAttach(s pier.Session) (tea.Model, tea.Cmd) {
 		m.note("resuming " + s.Name + " — about 20-60s, tmux comes back as you left it")
 		return m, func() tea.Msg { return resumedMsg{s, m.be.Resume(context.Background(), s)} }
 	}
-	return m.execAttach(s)
+	// Prove the VM answers while the app is still on screen: handing the
+	// terminal to an ssh that's still connecting (or will fail) looks like
+	// pier quit, and its errors land outside the app.
+	m.note("connecting to " + s.Name + "…")
+	return m, func() tea.Msg {
+		return reachableMsg{s, m.be.WaitReachable(context.Background(), s, 90*time.Second)}
+	}
 }
 
 func (m model) execAttach(s pier.Session) (tea.Model, tea.Cmd) {

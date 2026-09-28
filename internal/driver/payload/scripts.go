@@ -43,6 +43,12 @@ runcmd:
     # out instead of failing the install (the block deliberately has no set
     # -e, so a lost race would otherwise skip a harness silently).
     echo 'DPkg::Lock::Timeout "120";' > /etc/apt/apt.conf.d/90pier
+    # sshd never times out a dead connection by default, so a dropped attach
+    # (a laptop sleeping, a VPN reconnecting) left a phantom tmux client:
+    # the session read as attached and could never park. Drop dead
+    # connections after ~1 min of silence.
+    printf 'ClientAliveInterval 15\nClientAliveCountMax 4\n' > /etc/ssh/sshd_config.d/10-pier.conf
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
     install -d -m 700 -o agent -g agent /home/agent/.ssh
     grep -qxF '{{PUBKEY}}' /home/agent/.ssh/authorized_keys 2>/dev/null || echo '{{PUBKEY}}' >> /home/agent/.ssh/authorized_keys
     chown agent:agent /home/agent/.ssh/authorized_keys && chmod 600 /home/agent/.ssh/authorized_keys
@@ -152,6 +158,8 @@ func sessionUp(runSetup bool) string {
 # (user-data rewrites older rcs too, but on a baked image cloud-init is still
 # running when this does, and tmux must not start with the old line).
 sed -i 's#^cd ~/work/\* 2>/dev/null || true$#if [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi#' "$HOME/.bashrc" 2>/dev/null || true
+# Sessions and pooled sessions made before sshd dropped dead connections.
+[ -f /etc/ssh/sshd_config.d/10-pier.conf ] || { printf 'ClientAliveInterval 15\nClientAliveCountMax 4\n' | sudo tee /etc/ssh/sshd_config.d/10-pier.conf >/dev/null && { sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true; }; }
 ` + tmuxEnsure
 	if runSetup {
 		s += setupWindow

@@ -3,6 +3,8 @@ package pier
 import (
 	"errors"
 	"time"
+
+	"github.com/usepier/pier/internal/driver"
 )
 
 // EventKind classifies a progress event so frontends style it without
@@ -49,4 +51,5 @@ var (
 	ErrCreateFailed  = errors.New("session never finished creating")
 	ErrDeleting      = errors.New("session is being deleted")
 	ErrParked        = errors.New("session is parked")
+	ErrNoKey         = driver.ErrNoKey
 )

@@ -3,6 +3,11 @@ package awsec2
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +49,8 @@ func TestSSHOptsTransports(t *testing.T) {
 
 func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
 	d := &Driver{StateDir: t.TempDir()}
+	os.MkdirAll(filepath.Join(d.StateDir, "keys"), 0o700)
+	os.WriteFile(d.keyPath("i-0abc"), []byte("k"), 0o600)
 	cmd, err := d.AttachCommand(context.Background(), "i-0abc")
 	if err != nil {
 		t.Fatal(err)
@@ -152,5 +159,38 @@ func TestSanitizeRuleName(t *testing.T) {
 		if got := sanitizeRuleName(in); got != want {
 			t.Errorf("sanitizeRuleName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// One filtered or slow IP service must not make every connection wait out
+// its timeout: the lookup races them and takes the first good answer.
+func TestCallerPublicIPRacesServices(t *testing.T) {
+	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	defer hang.Close()
+	junk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<html>not an ip</html>")
+	}))
+	defer junk.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "203.0.113.7\n")
+	}))
+	defer good.Close()
+	old := ipServices
+	ipServices = []string{hang.URL, junk.URL, good.URL}
+	t.Cleanup(func() { ipServices = old })
+
+	d := &Driver{}
+	start := time.Now()
+	ip, err := d.callerPublicIP(context.Background())
+	if err != nil || ip != "203.0.113.7" {
+		t.Fatalf("want the good service's answer, got %q %v", ip, err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("a hanging service must not hold the lookup up, took %s", took)
 	}
 }

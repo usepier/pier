@@ -488,8 +488,8 @@ func (m model) sheet() string {
 	var line string
 	switch m.ov {
 	case ovNew:
-		title = "New session from " + m.repo
-		line = sAccent.Render("branch ❯ ") + m.input + sAccent.Render("▌")
+		title = "New session"
+		line = sAccent.Render("❯ ") + m.input + sAccent.Render("▌")
 	case ovConfirm:
 		title = "Confirm"
 		line = sWarn.Render(m.confirmQ) + "  " + keys("y", "yes", "n", "no")

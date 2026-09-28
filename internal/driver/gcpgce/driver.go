@@ -383,6 +383,9 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 // it does make is short and bounded: for the boot-time tmux restore of a
 // woken session to finish (see cmd/pier-supervisor/tmux.go).
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
+	if err := d.needKey(id); err != nil {
+		return nil, err
+	}
 	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
 [ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
 # SSH forwards the client's TERM, but newer terminals (for example Ghostty)

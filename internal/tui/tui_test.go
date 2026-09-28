@@ -50,10 +50,11 @@ func newFake() *fake {
 }
 
 func (f *fake) Cloud() string { return "AWS eu-central-1" }
-func (f *fake) Sessions(context.Context) ([]pier.Session, error) {
+func (f *fake) ListSessions(context.Context) ([]pier.Session, error) {
 	return f.sessions, nil
 }
-func (f *fake) Repos([]pier.Session, string) []pier.Repo { return f.repos }
+func (f *fake) Enrich(_ context.Context, s []pier.Session) []pier.Session { return s }
+func (f *fake) Repos([]pier.Session, string) []pier.Repo                  { return f.repos }
 func (f *fake) Headroom(context.Context) (pier.Quota, error) {
 	return pier.Quota{Detail: "10/32 vCPU"}, nil
 }
@@ -118,7 +119,7 @@ func loaded(t *testing.T, f *fake, w, h int) model {
 	m := newModel(Options{Open: func() (Backend, error) { return f, nil }, RepoRoot: "/code/flb-estimation", Version: "test"}, f)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	m = next.(model)
-	all, _ := f.Sessions(context.Background())
+	all, _ := f.ListSessions(context.Background())
 	next, _ = m.Update(sessionsMsg{all: all})
 	return next.(model)
 }
@@ -428,5 +429,19 @@ func TestRowsDontFlicker(t *testing.T) {
 	next, _ := m.Update(pollMsg{})
 	if next.(model).loading {
 		t.Error("a background poll must not show the spinner")
+	}
+}
+
+// Attaching a running session first proves the VM answers, with the app
+// still on screen — handing the terminal to a still-connecting ssh looks
+// like pier quit.
+func TestAttachConnectsBeforeHandingOverTheTerminal(t *testing.T) {
+	m := loaded(t, newFake(), 120, 30)
+	m, cmd := press(t, m, "enter")
+	if cmd == nil || !strings.Contains(m.status, "connecting to checkout-flow") {
+		t.Fatalf("enter must show it's connecting, got status %q", m.status)
+	}
+	if _, ok := cmd().(reachableMsg); !ok {
+		t.Error("the terminal must only be handed over once the VM answers")
 	}
 }

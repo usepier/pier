@@ -3,6 +3,7 @@ package gcpgce
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/usepier/pier/internal/driver"
 )
 
 var (
@@ -99,6 +102,15 @@ func (d *Driver) user(ctx context.Context) (string, error) {
 // ~/.ssh/google_compute_engine key, and a passphrase on that key breaks
 // every non-interactive use.
 
+// needKey fails fast with ErrNoKey when the session's key isn't here: ssh
+// would otherwise retry an unreachable-looking host for minutes.
+func (d *Driver) needKey(id string) error {
+	if _, err := os.Stat(d.keyPath(id)); err != nil {
+		return fmt.Errorf("%w (%s) — it lives only on the machine that created the session", driver.ErrNoKey, d.keyPath(id))
+	}
+	return nil
+}
+
 func (d *Driver) keyPath(id string) string {
 	return filepath.Join(d.StateDir, "keys", id+".pem")
 }
@@ -135,6 +147,9 @@ func (d *Driver) sshRun(ctx context.Context, id, script string) (string, error) 
 // sshRunOpts is sshRun with extra ssh flags — the bootstrap passes -A when
 // the workspace fetch rides the laptop's ssh agent.
 func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, script string) (string, error) {
+	if err := d.needKey(id); err != nil {
+		return "", err
+	}
 	args := append(append(d.sshOpts(id), extra...), "agent@"+id, script)
 	out, err := execCommandContext(ctx, "ssh", args...).CombinedOutput()
 	if err != nil {
@@ -200,6 +215,9 @@ func (d *Driver) waitSSH(ctx context.Context, id string, timeout time.Duration) 
 		cancel()
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, driver.ErrNoKey) {
+			return err // no key, no connection — retrying changes nothing
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
