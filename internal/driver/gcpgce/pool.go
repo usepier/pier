@@ -56,6 +56,12 @@ func (d *Driver) Claim(ctx context.Context, id string, spec driver.ClaimSpec) er
 	// Removing the pool label is the commit point: the member now lists as a
 	// regular session.
 	_, err = d.gcloud(ctx, "compute", "instances", "remove-labels", id,
-		"--zone", d.Zone, "--labels", LabelPool+","+LabelClaim)
+		"--zone", d.Zone, "--labels", LabelPool+","+LabelClaim+","+LabelReady)
+	return err
+}
+
+func (d *Driver) MarkReady(ctx context.Context, id string) error {
+	_, err := d.gcloud(ctx, "compute", "instances", "add-labels", id,
+		"--zone", d.Zone, "--labels", LabelReady+"=1")
 	return err
 }

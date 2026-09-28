@@ -45,6 +45,7 @@ type Session struct {
 	Driver       string
 	State        State
 	Strained     bool      // sustained cpu/mem pressure (supervisor beacon) — resize hint
+	Attached     bool      // a terminal is attached right now (supervisor beacon; false when unknown)
 	Setup        string    // repo setup script: "" | "running" | "failed" (supervisor beacon)
 	InstanceType string    // provider machine type; feeds the TUI resize picker
 	Created      time.Time // session creation, not last boot — AGE must never go backward
@@ -82,6 +83,16 @@ type CreateSpec struct {
 	Progress      func(step string)
 }
 
+// ClaimWindow bounds how long a claimed-but-not-ready session lists as
+// starting. A claim that died before MarkReady (the laptop went away) must
+// not leave a parked session reading "starting" forever.
+const ClaimWindow = 15 * time.Minute
+
+// ErrNoKey: this machine holds no ssh key for the session. Each session's
+// key lives only on the laptop that created it, so another machine (or a
+// cleared ~/.config/pier/keys) can't reach it — and retrying won't help.
+var ErrNoKey = errors.New("no ssh key for this session on this machine")
+
 // ErrClaimLost: another claimer won this pool member — move on to the next
 // candidate.
 var ErrClaimLost = errors.New("pool member claimed by another process")
@@ -101,11 +112,22 @@ type ClaimSpec struct {
 
 // BakeSpec describes one repo's image bake. Images are repo-specific: the
 // default install serves pier and the harnesses; whatever a repo's toolchain
-// needs on top (pnpm, python, ...) comes from its .pier/bake.sh.
+// needs on top (pnpm, python, ...) comes from its .pier/bake.sh; and with
+// RepoRoot set, the bake is a prebuild — the repo checked out and its
+// .pier/setup.sh run to completion, so sessions start from the result.
 type BakeSpec struct {
 	RepoName string   // repo basename; keys the image to its repo
+	RepoRoot string   // local repo root to prebuild from; "" = toolchains only
 	HookPath string   // local path to the repo's .pier/bake.sh; "" = none
 	Replaces []string // images this bake supersedes (previous bake, legacy shared image)
+	Progress func(step string)
+}
+
+// Step reports one bake phase; a nil Progress discards it.
+func (s BakeSpec) Step(msg string) {
+	if s.Progress != nil {
+		s.Progress(msg)
+	}
 }
 
 // BakeHook returns the repo's .pier/bake.sh, "" when absent. It runs on the
@@ -159,6 +181,12 @@ type Driver interface {
 	// the instance itself.
 	Claim(ctx context.Context, id string, spec ClaimSpec) error
 
+	// MarkReady writes the ready tag/label: the session is attachable. It's
+	// a create's last act, and a claim's — Claim clears it at its commit
+	// point, so a claimed session lists as starting, not parked, while it
+	// resumes and freshens.
+	MarkReady(ctx context.Context, id string) error
+
 	// Resize changes the instance size (vertical scaling). Providers only
 	// allow this on stopped instances, and park is exactly a stop — so a
 	// running session rides one park+resume cycle (~40s down); a parked one
@@ -177,11 +205,6 @@ type Driver interface {
 	// session-manager-plugin, or `gcloud compute ssh --tunnel-through-iap`.
 	AttachCommand(ctx context.Context, id string) (*exec.Cmd, error)
 
-	// MCPLoginCommand runs `claude mcp login <server>` inside the session
-	// with the OAuth callback port tunneled back to the laptop, so
-	// browser-based MCP auth completes with one approval — no URL copying.
-	MCPLoginCommand(ctx context.Context, id, server string, port int) (*exec.Cmd, error)
-
 	// PortForwardCommand holds local→session port forwards open until the
 	// process is interrupted: the app in the session on your laptop's
 	// browser, its database in your local psql. pairs are {local, remote}.
@@ -196,8 +219,9 @@ type Driver interface {
 	// Exec runs a one-shot command (status reads, push bootstrap) without a TTY.
 	Exec(ctx context.Context, id string, command string) (string, error)
 
-	// Bake builds one repo's prebaked session image (harnesses + the repo's
-	// .pier/bake.sh toolchains), cutting that repo's cold create to ~60-90s.
+	// Bake builds one repo's prebaked session image: harnesses, the repo's
+	// .pier/bake.sh toolchains, and (prebuild) its checkout with
+	// .pier/setup.sh already run, so creates skip the repo's own setup cost.
 	Bake(ctx context.Context, spec BakeSpec) (imageID string, err error)
 
 	// Headroom reports account capacity (vCPU quota) for the create-time

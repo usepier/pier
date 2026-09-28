@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,11 +28,18 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	if err := payload.ValidateNames(spec); err != nil {
 		return nil, err
 	}
-	me, err := d.user(ctx)
-	if err != nil {
-		return nil, err
+	// Each AWS CLI call costs ~0.4s of process startup and a round trip, and
+	// nothing here waits on the caller identity: look it up alongside the
+	// arch → AMI chain instead of before it.
+	type ident struct {
+		arn string
+		err error
 	}
-
+	identity := make(chan ident, 1)
+	go func() {
+		arn, err := d.user(ctx)
+		identity <- ident{arn, err}
+	}()
 	arch, err := d.archOf(ctx, d.InstanceType)
 	if err != nil {
 		return nil, err
@@ -44,6 +52,11 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	if err != nil {
 		return nil, err
 	}
+	id0 := <-identity
+	if id0.err != nil {
+		return nil, id0.err
+	}
+	me := id0.arn
 
 	// The keypair is instance-id-keyed but must exist pre-launch (pubkey goes
 	// into user-data), so generate under a temp name and rename after launch.
@@ -103,7 +116,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 		}
 	}
 
-	progress("bootstrapping (stock AMI waits for cloud-init here — `pier bake` skips that)")
+	progress(payload.BootstrapNote(spec.Image))
 	var fwd []string
 	if pl.ForwardAgent {
 		fwd = []string{"-A"}
@@ -115,8 +128,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	// without it reads as still-creating everywhere. A failed tag write
 	// fails the create (defer cleans up) rather than leave a session that
 	// looks stuck forever.
-	if _, err := d.aws(ctx, "ec2", "create-tags", "--resources", id,
-		"--tags", "Key="+TagReady+",Value=1"); err != nil {
+	if err := d.MarkReady(ctx, id); err != nil {
 		return nil, fmt.Errorf("marking session ready: %w", err)
 	}
 
@@ -127,6 +139,11 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 		CostNote:     costNote(driver.StateRunning, d.InstanceType),
 	}, nil
 }
+
+// volumeInitRate is the provisioned hydration rate (MiB/s) for volumes
+// restored from a baked image — the API's maximum, 300, loads a 20 GiB
+// prebuild in about 70s.
+const volumeInitRate = 300
 
 // pushBackoff is the first pause between push attempts, doubling after each.
 // A var so tests can exercise the retry policy without sleeping through it.
@@ -185,25 +202,50 @@ func (d *Driver) push(ctx context.Context, id, local, remote string, progress fu
 // launch retries on IAM instance-profile propagation lag (the spike showed
 // one retry is usually needed right after `pier setup`).
 func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, udPath string) (string, error) {
+	// The security group (two calls) and the image's root device are
+	// independent lookups: run them side by side.
+	type lookup struct {
+		val string
+		err error
+	}
+	root := make(chan lookup, 1)
+	go func() {
+		dev, err := d.aws(ctx, "ec2", "describe-images", "--image-ids", ami,
+			"--query", "Images[0].RootDeviceName", "--output", "text")
+		root <- lookup{dev, err}
+	}()
 	sg, err := d.securityGroupID(ctx)
+	rd := <-root
 	if err != nil {
 		return "", err
 	}
 	if sg == "" {
 		return "", fmt.Errorf("security group %s not found — run `pier setup`", SecurityGroup)
 	}
-	rootDev, err := d.aws(ctx, "ec2", "describe-images", "--image-ids", ami,
-		"--query", "Images[0].RootDeviceName", "--output", "text")
-	if err != nil {
-		return "", err
+	if rd.err != nil {
+		return "", rd.err
 	}
+	rootDev := rd.val
 
 	tags, _ := json.Marshal([]map[string]any{
 		{"ResourceType": "instance", "Tags": tagList(spec, me, "pier-"+spec.Name)},
 		{"ResourceType": "volume", "Tags": tagList(spec, me, "pier-"+spec.Name)},
 	})
-	bdm := fmt.Sprintf(`[{"DeviceName":%q,"Ebs":{"VolumeSize":%d,"VolumeType":"gp3","DeleteOnTermination":true}}]`,
-		rootDev, d.DiskGiB)
+	// A volume restored from a snapshot is lazily loaded from S3: every block's
+	// first read stalls, which a prebuilt image — gigabytes of dependencies
+	// and container layers — feels on every command of its first minutes.
+	// Provisioned-rate initialization hydrates the whole volume at a fixed
+	// rate right after launch instead (billed per GiB of snapshot data, cents
+	// per create). Stock AMIs are small and cached by AWS, so only baked
+	// images ask for it.
+	initRate := ""
+	if spec.Image != "" {
+		initRate = fmt.Sprintf(`,"VolumeInitializationRate":%d`, volumeInitRate)
+	}
+	bdm := func(initRate string) string {
+		return fmt.Sprintf(`[{"DeviceName":%q,"Ebs":{"VolumeSize":%d,"VolumeType":"gp3","DeleteOnTermination":true%s}}]`,
+			rootDev, d.DiskGiB, initRate)
+	}
 
 	args := []string{"ec2", "run-instances",
 		"--image-id", ami,
@@ -212,7 +254,7 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, ud
 		"--security-group-ids", sg,
 		"--instance-initiated-shutdown-behavior", "stop", // in-VM shutdown = park
 		"--metadata-options", "HttpTokens=required,HttpEndpoint=enabled",
-		"--block-device-mappings", bdm,
+		"--block-device-mappings", bdm(initRate),
 		"--tag-specifications", string(tags),
 		"--user-data", "file://" + udPath,
 		"--query", "Instances[0].InstanceId",
@@ -228,6 +270,16 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, ud
 			return out, nil
 		}
 		lastErr = err
+		if initRate != "" && strings.Contains(err.Error(), "VolumeInitializationRate") {
+			// An aws CLI older than the field (mid-2025) rejects it client-side.
+			// The launch still works without it, just with slower first reads.
+			if spec.Progress != nil {
+				spec.Progress("aws CLI predates fast volume initialization — upgrade it for faster first disk reads")
+			}
+			initRate = ""
+			args[slices.Index(args, "--block-device-mappings")+1] = bdm("")
+			continue
+		}
 		if strings.Contains(err.Error(), "Invalid IAM Instance Profile") {
 			time.Sleep(3 * time.Second) // IAM propagation
 			continue

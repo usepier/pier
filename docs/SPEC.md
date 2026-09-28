@@ -57,7 +57,17 @@ the container services for this product:
 
 Honest seam: in v1 a park loses running processes (including the tmux server
 and any in-flight agent run) — files, git state, and installed tools survive.
-v1.1 upgrade: EC2 hibernate / GCE suspend to preserve RAM across park.
+What a wake brings back is the arrangement (§6 restore-on-wake): the tmux
+layout, cwds and scrollback, with agents relaunched on their conversations
+from the transcripts on disk, plus the Docker containers that were running
+at the park. What it can't bring back is a process outside Docker that was
+mid-flight: an agent turn stops at its last saved message, and a dev server
+started in a pane returns as its command typed at the prompt, not running.
+Hibernate/suspend was weighed and dropped: it differs per cloud and per
+machine family (encrypted roots, launch-time flags, a 60-day cap) and has
+no supported guest-initiated trigger. Instead a wake restores the tmux
+layout, relaunches agents on their conversations, and restarts the Docker
+containers that were running (§6, §7.4).
 
 ## 3. Drivers
 
@@ -181,6 +191,36 @@ The beacon additionally lists the session's listening TCP ports (one
 `sudo ss -Htnap` pass; sshd and systemd-resolved excluded) — this is how
 `pier proxy` knows what to mirror without the user declaring anything.
 
+**Restore-on-wake.** Parking stays a plain shutdown; the supervisor makes it
+cheap to come back from. Every ~30s, and once more right before `shutdown`,
+it snapshots the agent user's tmux to `~/.pier/tmux/state.json` (atomic
+write) from one `tmux list-panes -a` call: every session, window (index,
+name, layout string, active) and pane (cwd, active, and the foreground
+process's argv read from `/proc` via the pane pid's terminal foreground
+group), plus each pane's last 2000 lines of scrollback beside it. No tmux
+server leaves the last snapshot alone, so a boot nobody attached to is still
+restorable after its next park. Each pane is classified: `agent-claude`
+(recording a `--resume`/`-r`/`--session-id` conversation id when argv names
+one), `agent-codex`, `setup` (the setup window), `shell`, or `other`.
+
+`pier-restore.service` (installed next to the supervisor unit; oneshot,
+`RemainAfterExit=yes`, `KillMode=process`, because the tmux server it starts
+lives in its cgroup) runs `pier-supervisor restore` once per boot, before
+anyone attaches. When no tmux server runs and a snapshot exists, it rebuilds
+every session (`main` first, with the attach-refreshed `SSH_AUTH_SOCK`
+symlink), window and pane at its saved cwd and layout. Each pane's shell
+replays its scrollback, then: claude relaunches with `claude --resume <id>`,
+or `claude --continue` (the newest conversation in that cwd) when no id was
+recorded; codex with `codex resume --last`; `other` panes get the old
+command typed at the prompt but not executed; setup windows come back as a
+plain shell with their log, and setup never re-runs. It always ends by
+writing `/run/pier/restored`. Attach waits up to ~15s for that marker, but
+only when the unit and a snapshot both exist, so older sessions never wait.
+A pool claim is a wake too: freshen drops the restored server and
+`~/.pier/tmux` before its own setup window, and the prebuild scrub deletes
+`~/.pier/tmux` so an image never carries a layout. No cloud API or
+credential is involved, so it works the same on every cloud.
+
 A session either exists fully set up or not at all — no half-states:
 
 - The create's **last act** is a `pier:ready` tag on the instance (written
@@ -283,6 +323,44 @@ protected by the repository's `.gitignore`.
    teardown sweeps every `pier:managed`-tagged image. ~$1/mo snapshot
    storage per repo. Offered as the wizard's last step when it runs inside
    a repo; `pier bake` refreshes it.
+
+   **Prebuild (2026-09).** A toolchain-only image turned out to save almost
+   nothing on real repos: measured on a large monorepo, a baked create was
+   attach-ready in 72s but `.pier/setup.sh` then ran ~9 min (container
+   builds with zero cache hits, dependency stores downloaded from scratch),
+   so baked and stock felt the same. The bake therefore also prebuilds: after
+   the hook, the bake instance receives a create's exact cargo off the
+   laptop's HEAD (placeholder branch `pier-prebuild`), bootstraps, and runs
+   `.pier/setup.sh` to completion; a failed setup aborts the bake. A scrub
+   then deletes, by exact path, every file the files tar delivered, plus
+   containers (their config embeds `env_file` values), setup logs and
+   status, gh/docker/git credential files and `~/.config/pier`, and resets
+   tracked edits. Images, volumes and the build cache stay. Anything setup
+   derived from secrets is the repo's responsibility, and is documented as
+   such. The bootstrap is shared: finding `~/work/<repo>/.git` it sets the
+   origin, fetches incrementally, `checkout -f -B` onto the session branch
+   (untracked artifacts survive) and drops the placeholder, so
+   `.pier/setup.sh` re-runs warm. That was already the pool-claim contract,
+   and is now stated for every session: setup must be safe to re-run on a
+   warm disk. Freshness is manual (`pier bake` again); there is no control
+   plane to schedule rebakes.
+
+   **Setup runs once per session (2026-09).** Setup runs when a session
+   is built — the bootstrap, a pool fill, the bake — and never
+   again: a pool claim resumes, checks out the branch and re-pushes
+   secrets without it, and a wake re-runs nothing. What a wake needs is what
+   was running: the supervisor records the running Docker containers with
+   each tmux snapshot (and once more before it parks) in
+   `~/.pier/containers.json`, and the first supervisor of each boot waits for
+   the daemon and `docker start`s exactly those — any repo, nothing to
+   configure. Processes outside Docker come back as the tmux restore types
+   them at the prompt.
+
+   EBS restores snapshots lazily from S3, and a prebuilt image is gigabytes.
+   AWS launches from a baked image therefore set `VolumeInitializationRate`
+   (300 MiB/s, billed per GiB of snapshot data) on the root mapping. A CLI
+   that predates the field rejects it client-side, and the launch retries
+   without it. GCE documents no lazy-restore penalty, so it needs nothing.
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
    `.pier/setup.sh` runs asynchronously in a background tmux window while you
@@ -329,8 +407,10 @@ protected by the repository's `.gitignore`.
    files it is *not* carrying so a missing one fails loud at create, not deep
    in `make dev`.
 
-4. **Warm pools (opt-in, per repo)** — `pier pool set <size>` (or the TUI's
-   w page) keeps N parked, **setup-complete** members ready; `pier <branch>`
+4. **Warm pools (per repo)** — baked repos keep
+   `speed.pool_size` (default 1, the Fast profile) parked,
+   **setup-complete** members ready, overridable per repo with
+   `pier pool set <n>` or the app's Repos tab; `pier <branch>`
    then claims one — resume + freshen (secrets re-push, branch at base,
    dirty patch, supervisor conf reset, async setup re-run for drift) instead
    of create + boot + full setup — and refills the pool detached in the
@@ -386,13 +466,13 @@ written back. Sources:
   stay home. MCP servers whose auth lives in the macOS Keychain (OAuth-based
   remotes) carry their declaration but not their tokens — they rotate on
   refresh, so copying them would let two machines revoke each other. Instead:
-  `pier mcp login <session>` asks the session which servers still lack a
-  token (seeded config minus its credential store) and runs `claude mcp
-  login` for each, sequentially, with the OAuth callback port forwarded
-  through the SSM tunnel — one browser approval per server on the laptop
-  completes each flow inside the session; tokens persist on its disk across
-  park/resume, and re-runs skip what's done. The interactive create offers
-  this sweep right before the first attach. (Remotes that accept static keys
+  they log in from inside the session instead: while someone is attached,
+  the attach connection forwards a unix socket the session's `xdg-open` and
+  `$BROWSER` (pier-supervisor open) hand URLs to, so they open in the
+  laptop's browser, and a side connection mirrors the session's listening
+  ports to the same localhost ports, so OAuth callbacks land. Any agent,
+  any CLI — nothing agent-specific. Tokens persist on the session disk
+  across park/resume. (Remotes that accept static keys
   can be declared locally with an `Authorization` header, which travels
   whole — zero approvals.)
 
@@ -414,13 +494,19 @@ minutes:
    IAM rights. `pier teardown` reverses it.
 4. **Doctor** — quota headroom, connectivity, plugin; writes
    `~/.config/pier/config.toml`; prints `cd <repo> && pier <branch>`.
-5. **Skills** — one confirm per detected agent (claude, codex — same
-   SKILL.md format), then the bundled pier-onboard skill (embedded in the
-   binary) is installed/refreshed under `~/.<agent>/skills`. A dir
-   confirmed here postdates manifest detection, so it's appended to the
-   session manifest — only when the manifest was accepted at all. Runs
-   before the bake offer so no question hides behind the build.
-   `pier skills` is the same install standalone, no questions.
+5. **Skills** — the pier-onboard skill (embedded in the binary) is one row
+   of the confirmed defaults block: accepting installs it for every
+   detected agent (claude, codex — same SKILL.md format) under
+   `~/.<agent>/skills`; editing asks per agent. An installed dir is
+   appended to the session manifest — only when the manifest was accepted
+   at all. `pier setup --skills` is the same install standalone.
+
+**Revised flow (2026-09).** Setup now asks only for the cloud and account,
+then shows every default in one block — machine, disk, park-after, runaway
+cap, speed profile, copied-in config, the skill — with its cost, for enter
+(accept) or `e` (walk each). Nothing is applied silently. Inside a repo it
+ends by offering the repo's bake, and always by pointing at the app's
+settings page (`pier`, then `s`).
 
 Second dev on a prepared account: detect finds groundwork (`Existed`),
 creates nothing, done in ~90s.
@@ -434,14 +520,18 @@ shows headroom (e.g. `12/32 vCPU`).
 
 ## 11. CLI
 
+Every frontend — this CLI, the app (`pier` with no arguments), and the
+coming Mac app — runs on `pkg/pier`, which owns the capabilities and never
+prints, exits or reads stdin. The Mac app will reach it through a
+`pier api` JSON-RPC server over stdio (the LSP model: a child process, no
+daemon, no port).
+
 ```
-pier                    TUI: list / attach / new / delete / pin (new = background create,
+pier                    the app: Sessions · Repos · Settings tabs (new = background create,
                         listed as "creating" until the create writes its ready tag)
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
-pier mcp login <match> [server]  browser-auth every MCP server that still needs it, sequentially
-                        (callback rides the tunnel; server arg = redo just that one)
 pier proxy              every running session as <session>.pier, listening ports mirrored
                         live onto a per-session loopback IP and onto localhost, HTTP
                         accelerated (§6.1; macOS, one sudo)
@@ -449,13 +539,11 @@ pier port <match> <p> [p...]  manual port forwards, zero-sudo any-OS fallback (3
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
 pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)
-pier pool               warm pool status + cost (TUI: the w page)
-pier pool set <size>    keep <size> warm sessions ready for the cwd repo (0 = off)
-pier pool fill [--detach]  top the cwd repo's pool up to size now
-pier pool drain [repo]  destroy a repo's warm members
-pier setup              wizard (--print-admin for the no-IAM-rights path)
-pier skills             install/refresh the bundled agent skills standalone
-pier bake               build/refresh the prebaked image
+pier repos [--json]     every repo: session image, pooled sessions, idle cost, reminders
+pier pool [set <n> | fill | drain [repo]]  the cwd repo's warm pool
+pier setup              wizard (--print-admin for the no-IAM-rights path,
+                        --skills to refresh the bundled agent skill only)
+pier bake               build/refresh the repo's session image (--toolchain-only)
 pier doctor             checks
 pier teardown           remove account groundwork
 ```
@@ -466,6 +554,7 @@ pier teardown           remove account groundwork
 driver         = "aws-ec2"
 idle_timeout   = "30m"        # or "never"
 unattended_cap = "8h"
+theme          = "teal"       # accent color: teal navy violet emerald orange crimson pink amber graphite
 
 [aws]
 profile       = "default"
@@ -486,10 +575,19 @@ disk_gib     = 40
 manifest = [".codex/auth.json", ".codex/config.toml", ".claude/settings.json", ".claude/CLAUDE.md"]
 # claude_oauth_token = "..."  # from `claude setup-token` (macOS Keychain path)
 
-[pool]                         # warm pools (§7.4); strictly opt-in
+[speed]                        # what a speed profile presets (fast/lean/minimal)
+pool_size      = 1             # per baked repo; parked, disk-only cost
+bake_reminders = true          # suggest `pier bake`; never automatic
+image_repo     = true          # bake prebuilds the repo (false = toolchains only)
+reminder_age   = "30d"         # remind when an image gets this old
+
+[pool]                         # pooled sessions (§7.4)
 # max_age = "14d"              # member recycle age
-# [pool.sizes]                 # written by `pier pool set`, keyed by repo
+# [pool.sizes]                 # per-repo overrides, written by `pier pool set`
 # shop = 2
+
+# [images.<repo>]              # written by `pier bake`: baked_at, setup_sha,
+#                              # bake_sha, repo_included — feeds the reminders
 ```
 
 ## 13. v1 cut line
@@ -497,7 +595,7 @@ manifest = [".codex/auth.json", ".codex/config.toml", ".claude/settings.json", "
 In: AWS + GCP drivers, TUI, wizard (+print-admin, teardown), bake,
 overlapped create, supervisor parking (+keep/pin), one-way secrets copy,
 doctor, quota UX, warm pools (opt-in, added post-cut — §7.4).
-Out (v1.1+): hibernate/suspend park, k8s driver, `ls --all`, Windows.
+Out (v1.1+): k8s driver, `ls --all`, Windows.
 
 ## 14. Load-bearing bets → spikes
 

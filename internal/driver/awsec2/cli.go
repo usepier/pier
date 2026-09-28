@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/usepier/pier/internal/driver"
 )
 
 // aws runs the AWS CLI (the tool already requires it for the SSM plugin, so
@@ -51,6 +54,15 @@ func LoginExpired(err error) bool {
 // typing), falling back to an SSM ProxyCommand (works everywhere, no
 // inbound ports, slow) whenever direct can't work. aws.direct = false
 // forces the tunnel.
+
+// needKey fails fast with ErrNoKey when the session's key isn't here: ssh
+// would otherwise retry an unreachable-looking host for minutes.
+func (d *Driver) needKey(id string) error {
+	if _, err := os.Stat(d.keyPath(id)); err != nil {
+		return fmt.Errorf("%w (%s) — it lives only on the machine that created the session", driver.ErrNoKey, d.keyPath(id))
+	}
+	return nil
+}
 
 func (d *Driver) keyPath(id string) string {
 	return filepath.Join(d.StateDir, "keys", id+".pem")
@@ -104,6 +116,9 @@ func (d *Driver) sshRun(ctx context.Context, id, script string) (string, error) 
 // sshRunOpts is sshRun with extra ssh flags — the bootstrap passes -A when
 // the workspace fetch rides the laptop's ssh agent.
 func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, script string) (string, error) {
+	if err := d.needKey(id); err != nil {
+		return "", err
+	}
 	args := append(append(d.sshOpts(ctx, id), extra...), "agent@"+id, script)
 	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
 	if err != nil {
@@ -112,13 +127,13 @@ func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, scri
 	return strings.TrimSpace(string(out)), nil
 }
 
-// sshStream is sshRun with output flowing straight to the terminal — for
+// sshStream is sshRun with output streaming to d.Out as it arrives — for
 // long user-visible steps (the bake hook) where buffered output would look
 // like a hang.
 func (d *Driver) sshStream(ctx context.Context, id, script string) error {
 	args := append(d.sshOpts(ctx, id), "agent@"+id, script)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.Stdout, cmd.Stderr = d.out(), d.out()
 	return cmd.Run()
 }
 
@@ -128,9 +143,9 @@ func (d *Driver) scpTo(ctx context.Context, id, local, remote string, extra ...s
 	args := append(append(d.sshOpts(ctx, id), extra...), local, "agent@"+id+":"+remote)
 	cmd := exec.CommandContext(ctx, "scp", args...)
 	// scp draws its progress meter only when stdout is a terminal — so big
-	// pushes (the repo bundle) show live progress interactively and stay
-	// silent when piped.
-	cmd.Stdout = os.Stdout
+	// pushes (the repo bundle) show live progress when the frontend hands
+	// its terminal in as Out, and stay silent otherwise.
+	cmd.Stdout = d.out()
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
@@ -158,4 +173,19 @@ func (d *Driver) newKeypair(id string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(pub)), nil
+}
+
+// out is Out, or a sink when the frontend wants no driver output.
+func (d *Driver) out() io.Writer {
+	if d.Out == nil {
+		return io.Discard
+	}
+	return d.Out
+}
+
+// notify passes a transport notice to the frontend, if it listens.
+func (d *Driver) notify(msg string) {
+	if d.Notify != nil {
+		d.Notify(msg)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/usepier/pier/internal/driver"
@@ -14,10 +15,12 @@ import (
 
 // Bake launches a throwaway instance with the exact session user-data, lets
 // cloud-init finish the harness install, runs the repo's .pier/bake.sh (if
-// any), and images the result. Because every install step in the user-data is
-// guarded, sessions launched from the baked AMI skip straight past it — cold
-// create drops to boot + push time (~60-90s). Images are repo-specific: the
-// hook is where a repo's toolchains (pnpm, python, ...) get baked in.
+// any), prebuilds the repo (checkout + .pier/setup.sh to completion, then a
+// scrub), and images the result. Every install step in the user-data is
+// guarded and the bootstrap reuses a checkout it finds, so sessions launched
+// from the baked AMI skip both the harness install and the repo's cold setup.
+// Images are repo-specific: the hook is where a repo's toolchains (pnpm,
+// python, ...) get baked in, setup.sh where its dependencies do.
 func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error) {
 	arch, err := d.archOf(ctx, d.InstanceType)
 	if err != nil {
@@ -62,7 +65,7 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error)
 	os.Rename(d.keyPath("bake")+".pub", d.keyPath(id)+".pub")
 	defer os.Remove(d.keyPath(id))
 	defer os.Remove(d.keyPath(id) + ".pub")
-	fmt.Println(ui.Step("bake instance " + id + " launched — installing harnesses (a few minutes)"))
+	spec.Step("bake instance " + id + " launched — installing harnesses (a few minutes)")
 
 	if err := d.waitSSH(ctx, id, 240*time.Second); err != nil {
 		return "", err
@@ -81,7 +84,7 @@ exit 1`
 		return "", fmt.Errorf("harness install did not complete: %w", err)
 	}
 	if spec.HookPath != "" {
-		fmt.Println(ui.Step("running .pier/bake.sh (output follows)"))
+		spec.Step("running .pier/bake.sh (output follows)")
 		if err := d.scpTo(ctx, id, spec.HookPath, "/tmp/pier-bake.sh", "-q"); err != nil {
 			return "", err
 		}
@@ -89,12 +92,28 @@ exit 1`
 			return "", fmt.Errorf(".pier/bake.sh failed — nothing baked: %w", err)
 		}
 	}
+	if spec.RepoRoot != "" {
+		supervisor, err := d.SupervisorBin(arch)
+		if err != nil {
+			return "", err
+		}
+		step := func(s string) { fmt.Println(ui.Step(s)) }
+		remote := payload.Remote{
+			Push: func(ctx context.Context, local, remote string) error { return d.push(ctx, id, local, remote, step) },
+			Run: func(ctx context.Context, extra []string, script string) (string, error) {
+				return d.sshRunOpts(ctx, id, extra, script)
+			},
+		}
+		if err := payload.Prebuild(ctx, spec.RepoRoot, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
+			return "", fmt.Errorf("prebuild failed — nothing baked: %w", err)
+		}
+	}
 	// Per-instance state must not leak into the image.
 	if _, err := d.sshRun(ctx, id, "rm -f ~/.ssh/authorized_keys && sudo rm -rf /etc/pier"); err != nil {
 		return "", err
 	}
 
-	fmt.Println(ui.Step("imaging — stop, snapshot, register (a few minutes)"))
+	spec.Step("imaging — stop, snapshot, register (a few minutes)")
 	if _, err := d.aws(ctx, "ec2", "stop-instances", "--instance-ids", id); err != nil {
 		return "", err
 	}
@@ -105,7 +124,7 @@ exit 1`
 	name := "pier-" + repo + "-" + time.Now().Format("20060102-1504")
 	tags := "Tags=[{Key=pier:managed,Value=1},{Key=pier:repo,Value=" + repo + "}]"
 	img, err := d.aws(ctx, "ec2", "create-image", "--instance-id", id, "--name", name,
-		"--description", "pier session base for "+repo+" (harnesses + bake hook preinstalled)",
+		"--description", "pier session base for "+repo+" (harnesses, bake hook, prebuilt checkout)",
 		"--tag-specifications",
 		"ResourceType=image,"+tags,
 		"ResourceType=snapshot,"+tags,
@@ -113,7 +132,7 @@ exit 1`
 	if err != nil {
 		return "", err
 	}
-	if _, err := d.aws(ctx, "ec2", "wait", "image-available", "--image-ids", img); err != nil {
+	if err := d.waitImage(ctx, img, spec.Step); err != nil {
 		return "", err
 	}
 
@@ -123,4 +142,50 @@ exit 1`
 		}
 	}
 	return img, nil
+}
+
+// imageWait bounds how long a bake waits for its image. A prebuilt image
+// carries the repo's dependencies and container images, and snapshotting that
+// routinely outlasts the CLI waiter's fixed ten minutes — which used to fail a
+// bake whose image was still on its way to being fine.
+var imageWait, imagePoll = 90 * time.Minute, 20 * time.Second
+
+// waitImage polls the image until it's available, reporting the snapshot's
+// progress about once a minute so a long wait doesn't read as a hang.
+func (d *Driver) waitImage(ctx context.Context, img string, step func(string)) error {
+	deadline := time.Now().Add(imageWait)
+	lastNote := time.Now()
+	for {
+		out, err := d.aws(ctx, "ec2", "describe-images", "--image-ids", img,
+			"--query", "Images[0].[State,BlockDeviceMappings[0].Ebs.SnapshotId]", "--output", "text")
+		if err != nil {
+			return err
+		}
+		f := strings.Fields(out)
+		state := ""
+		if len(f) > 0 {
+			state = f[0]
+		}
+		switch state {
+		case "available":
+			return nil
+		case "failed", "invalid", "deregistered", "error":
+			return fmt.Errorf("image %s ended %s", img, state)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("image %s still %s after %s — it may yet finish; check it in the EC2 console", img, state, imageWait)
+		}
+		if len(f) > 1 && f[1] != "None" && time.Since(lastNote) >= time.Minute {
+			if pct, err := d.aws(ctx, "ec2", "describe-snapshots", "--snapshot-ids", f[1],
+				"--query", "Snapshots[0].Progress", "--output", "text"); err == nil {
+				step("snapshot " + pct)
+			}
+			lastNote = time.Now()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(imagePoll):
+		}
+	}
 }

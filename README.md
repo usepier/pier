@@ -14,11 +14,11 @@ resizes it.
 ![pier demo](docs/demo.gif)
 
 ```
-pier setup          # once: a short wizard sets up the account groundwork
+pier setup          # once: pick your cloud, confirm the defaults, bake this repo
 cd ~/code/myapp
 pier fix-login      # new session: your branch, your secrets, your dev env
 pier proxy          # sessions as hostnames: the dev server at fix-login.pier:3000
-pier                # the TUI: list, attach, create, resize, destroy
+pier                # the app: sessions, repos, settings
 ```
 
 ## Contents
@@ -74,7 +74,8 @@ inside it, with:
 Detach and forget it. An in-VM supervisor parks the VM once the agent goes
 quiet: the instance stops, the disk persists. Attach again and it resumes in
 about 20 seconds on AWS and about a minute on GCP, with files, branches, and
-credentials exactly as you left them. If the session outgrows its hardware,
+credentials exactly as you left them, and your tmux windows back with the
+agents reopened on their conversations. If the session outgrows its hardware,
 `pier resize` swaps the machine type in one park and resume cycle, disk
 intact. And to see what the agent built,
 `pier proxy` turns every running session into a hostname:
@@ -84,7 +85,7 @@ intact. And to see what the agent built,
 |---|---|
 | running | `~$0.04/h` |
 | parked | `~$3-4/mo` (disk only) |
-| warm pool member (parked) | `~$3-4/mo` (disk only) |
+| pooled session (parked) | `~$3-4/mo` (disk only) |
 
 There is no control plane. No server, no database, no daemon on your laptop.
 Session state lives in instance tags. Every byte between you and the VM is
@@ -130,21 +131,39 @@ You also need, on the laptop:
 pier setup
 ```
 
-The wizard handles the account groundwork once:
+The wizard asks as little as it can and applies nothing silently:
 
-1. Asks which cloud and authenticates against your AWS profile or GCP
-   project.
-2. Creates the groundwork. On AWS: an IAM role and instance profile carrying
-   only `AmazonSSMManagedInstanceCore`, plus one egress-only security group.
-   On GCP: the compute and IAP API enables, plus two firewall rules that
-   admit only Google's IAP range to pier VMs and shut everything else out.
-3. Writes `~/.config/pier/config.toml`.
-4. Detects the agent config and credentials it will copy into sessions.
-5. Offers to bake an image for the current repo.
-6. Runs the `pier doctor` checks.
+1. **Cloud.** Which cloud, then it authenticates against your AWS profile or
+   GCP project.
+2. **Defaults.** Every default a new session will use, in one block, each
+   with what it costs: machine, disk, park-after, runaway cap, speed profile,
+   the agent config copied in, and the pier-onboard skill. Press enter to
+   accept or `e` to walk through them.
+3. **Account.** Creates the groundwork. On AWS: an IAM role and instance
+   profile carrying only `AmazonSSMManagedInstanceCore`, plus one egress-only
+   security group. On GCP: the compute and IAP API enables, plus two
+   firewall rules that admit only Google's IAP range to pier VMs. Then it
+   writes `~/.config/pier/config.toml` and runs the `pier doctor` checks.
+4. **This repo.** Run inside a repo, it offers to bake the repo's session
+   image, so new sessions start in a minute or two instead of running the
+   full setup.
 
 Everything it creates is tagged and removable with `pier teardown`. Change
-any setting later from inside the TUI. Run `pier` and press `s`.
+anything later: run `pier` and press `s`.
+
+### Speed profiles
+
+A profile presets two settings: whether pier reminds you to bake, and how
+big a pool each baked repo keeps.
+
+| Profile | New session | Idle cost per repo |
+|---|---|---|
+| **Fast** (default) | claims a parked, set-up session from the pool: ~25s | image ~$1-2/mo + one parked disk |
+| **Lean** | boots from the repo's image, setup re-runs warm: ~1-2 min | image only |
+| **Minimal** | stock launch, full setup every time | $0 |
+
+A pooled session is a stopped VM, so waiting costs disk only. Change either
+setting and the profile reads Custom.
 
 No admin rights? `pier setup --print-admin` prints the handful of commands
 for an admin to run once. The wizard then works with what exists.
@@ -191,28 +210,26 @@ for pier VMs and one allow rule above it for exactly Google's IAP range
 ## Usage
 
 ```
-pier                      the TUI: sessions live-updating
-                          enter attach · n new · d delete · p pin · m resize · w pools · s settings · r refresh · q quit
+pier                      the app: Sessions · Repos · Settings tabs (? for keys)
 pier <branch> [base]      new session off base (default HEAD), then attach
     -d, --detach          create without attaching
-    --idle <dur|never>    idle self-park timeout (default 30m)
+    --idle <dur|never>    park after this much idle time (default from settings)
     --cap <dur|never>     unattended runaway cap (default 8h)
     --no-park             shorthand for --idle never
-    --no-pool             skip this repo's warm pool for this create
+    --no-pool             launch fresh instead of claiming a pooled session
 pier ls [--json]          plain list, or stable JSON for automation
-pier attach <session>     attach (parked sessions auto-resume, ~20-60s)
+pier attach <session>     attach (a parked session resumes, ~20-60s, tmux restored)
 pier logs <session>       show the setup script log (-f follows)
 pier rm <session> [-f]    destroy the session and its disk
-pier keep <session>       pin: disable idle self-park
+pier keep <session>       pin: never park when idle
 pier resize <session> <type>   grow/shrink the VM (~1-2 min, same CPU arch)
-pier bake                 prebake this repo's session image (~1-2 min creates)
-pier pool                 warm pool status + cost (the TUI's w page, scriptable)
-pier pool set <size>      keep <size> warm sessions ready for this repo (0 = off)
-pier pool fill [--detach] top this repo's pool up to size now
-pier pool drain [repo]    destroy a repo's warm members
-pier mcp login <session>  one-time browser approvals for OAuth MCP servers
+pier repos [--json]       every repo: session image, pool, idle cost, tips
+pier bake                 build this repo's session image (repo prebuilt by default)
+    --toolchain-only      keep repo state out of the image for this bake
+pier pool                 this repo's pool (set <n> | fill | drain [repo])
 pier proxy                every running session as <session>.pier (macOS)
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
+pier setup [--skills]     first-time setup; --skills only refreshes the agent skill
 pier doctor               environment + account checks
 pier teardown             remove all pier groundwork from the account
 ```
@@ -258,7 +275,7 @@ Pier uses one committed `.pier/` directory with three optional files:
 
 | File | Runs / read | Contains |
 |---|---|---|
-| `.pier/setup.sh` | Every session's first boot, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds |
+| `.pier/setup.sh` | Once at `pier bake` (prebuild), then once per new session, async, in a `setup` tmux window | Repo state: deps, services, migrations, seeds (must be safe to re-run) |
 | `.pier/include` | At create | Ignored files to carry (env files, local certs) |
 | `.pier/bake.sh` | Once, during `pier bake` | Toolchains beyond the default image (pnpm, python, rust, ...) |
 
@@ -272,6 +289,12 @@ pnpm install
 docker compose up -d
 pnpm db:migrate
 ```
+
+Setup runs **once per session**, when the session is built: a pooled session
+ran it before you claimed it, and a parked session never runs it again.
+Waking a parked session brings back its tmux windows and agent
+conversations, and restarts the Docker containers that were running when it
+parked, so the stack comes back without setup.
 
 Prefer `docker compose up -d` for services. A bare background process must
 fully detach with `setsid cmd </dev/null >log 2>&1 &` or it dies when the
@@ -302,10 +325,10 @@ Don't write those files by hand. pier ships
 a coding agent to inspect your repo, write all three files with the right
 boundaries, and keep loose local files protected by `.gitignore`.
 
-`pier setup` offers it at the end, one confirm per agent on the machine —
-Claude Code (`~/.claude/skills`) and Codex (`~/.codex/skills`) read the
-same skill format — and `pier skills` runs the same install without
-questions, e.g. to refresh after a pier upgrade. To pin it to one repo
+`pier setup` installs it with the rest of the defaults, for every agent on
+the machine — Claude Code (`~/.claude/skills`) and Codex
+(`~/.codex/skills`) read the same skill format — and `pier setup --skills`
+refreshes it without the other questions, e.g. after a pier upgrade. To pin it to one repo
 instead, copy it into that repo's `.claude/skills/`.
 
 Then ask your agent to "set this repo up for pier".
@@ -347,11 +370,20 @@ all.
 
 MCP servers travel with their config, including auth when it's static (env
 vars, API-key headers). OAuth-backed remotes keep rotating tokens in the OS
-keychain and can't be copied, so they need one browser approval per session:
+keychain and can't be copied — two holders of one refresh token revoke each
+other — so they log in once per session, from inside it, the normal way
+(for example claude's `/mcp`). While you're attached, the session uses your
+browser:
 
-```
-pier mcp login <session>    # sweeps whatever still needs auth
-```
+- anything in the session that opens a URL (an agent's OAuth login, `gh auth
+  login`, "open in browser") opens it in your laptop's browser;
+- ports the session listens on (an OAuth callback, a dev server) are
+  reachable at the same port on your laptop.
+
+That makes every in-session browser login work, for any agent or CLI. The
+token lands on the session's disk and survives parking. Where a provider
+offers a personal API key, declaring the server with it skips the login
+entirely: it travels into every session.
 
 Headless Chromium ships in the default image, so browser MCPs and skills
 (screenshots, web automation) work out of the box.
@@ -378,41 +410,85 @@ proxy up — running sessions resolve as <session>.pier (http + https), ports mi
 - One sudo on first run. macOS only for now.
 - `pier port <session> 3000` is the manual, zero-sudo fallback everywhere.
 
-### `pier bake`: per-repo images
+### `pier bake`: per-repo prebuilt images
 
-A stock create installs the harnesses under cloud-init, which takes minutes.
-Baking pays that cost once:
+Most of a create's wait is the repo's own setup: dependency installs,
+container image builds, seeds. A toolchain-only image can't help with any of
+that, so a bake prebuilds the repo:
 
 ```
-pier bake    # one throwaway instance + your .pier/bake.sh, snapshotted as an image
+pier bake    # one throwaway instance: harnesses + .pier/bake.sh, then your
+             # checkout (HEAD) with .pier/setup.sh run to completion, imaged
 ```
 
-Creates from a baked image drop to a minute or two. Images are keyed to
-the repo, so one project's toolchain never bleeds into another's. Re-baking
-supersedes the old image, and `pier teardown` sweeps them all by tag.
+Sessions launched from the image find the checkout and everything setup
+left around it (installed dependencies, virtualenvs, the docker build cache,
+built images, volumes) already on disk. The bootstrap fetches only what
+changed, moves the checkout to your branch, and `.pier/setup.sh` re-runs
+warm: cache hits instead of a cold install. On AWS the restored volume
+is also hydrated at a provisioned rate right after launch, a few cents per
+create, so the first commands don't stall on lazily-loaded snapshot blocks.
+
+Before imaging, the bake scrubs everything the create cargo delivered:
+harness auth, tokens, the MCP seed, untracked and `.pier/include` files,
+containers (their config holds `env_file` values), setup logs. Every create
+pushes those fresh, so scrubbing costs no speed. What setup *derives* from
+secrets, such as an env value compiled into a build or a seeded database, is
+the repo's to keep out. Anyone who can launch the image can read its disk.
+
+Freshness is manual: re-run `pier bake` when dependencies drift enough that
+the warm re-run gets slow. Images are keyed to the repo, so one project's
+toolchain never bleeds into another's. Re-baking supersedes the old image,
+and `pier teardown` sweeps them all by tag.
 
 ### Warm pools: the create is already done
 
-Even a baked create spends a minute booting and then runs your setup script.
-A warm pool does that work ahead of time:
+Even a create from a prebuilt image boots a VM and runs setup. A pool holds
+sessions that already did: parked, **setup-complete** sessions waiting to be
+claimed. Baked repos keep a pool of one by default (the Fast profile).
 
 ```
-cd ~/code/shop && pier pool set 2
+pier pool               this repo's pool: ready, filling, what it costs
+pier pool set 2         keep two ready (0 turns the pool off and drains it)
+pier pool fill          top it up now, e.g. right after a bake
+pier pool drain [repo]  destroy a repo's pooled sessions, from anywhere
 ```
 
-pier now keeps two parked, **setup-complete** sessions ready for `shop`. The
-next `pier <branch>` claims one instead of creating — resume, check out your
-branch, re-push secrets, apply your dirty edits — and refills the pool in
-the background. An empty pool just means a normal create; the pool
-accelerates, never gates, and `--no-pool` skips it for one create.
+The next `pier <branch>` claims one instead of creating — resume, check out
+your branch, re-push secrets, apply your dirty edits; setup doesn't run
+again — and the pool refills in the background. An empty pool just means a
+normal create: the pool accelerates, never gates, and `--no-pool` skips it
+for one create.
 
-Warm members are parked instances, so each costs disk only (~$3-4/mo).
-They recycle themselves when they go stale — after a re-bake, a
-setup-script change, or 14 days (`pool.max_age`) — and `pier pool` shows
-every pool you're holding with what it costs. In the TUI, `w` opens the
-pool page: `+`/`-` and enter size the current repo's pool, `d` drains any
-repo's members, and the header counts what's warm. Strictly opt-in;
-`pier pool set 0` turns it off and drains.
+Pooled sessions are stopped instances, so each costs disk only (~$3-4/mo at
+40 GiB). They recycle themselves when they go stale — after a re-bake, a
+setup-script change, or 14 days (`pool.max_age`). The app's Repos tab shows
+every repo's pool with its cost: `+`/`-` sets the size, `f` fills, `x` drains.
+
+### Rebake reminders
+
+pier never rebakes on its own. With bake reminders on (the Fast and Lean
+profiles), it says when a bake would make sessions start faster, and only
+states facts: the repo has no image yet, its image is older than the
+reminder age (30 days by default), or `.pier/setup.sh` or `.pier/bake.sh`
+changed since the bake. Reminders show after a create (at most once a day
+per repo), as a dot on the Repos tab, and in `pier repos`.
+
+### The app
+
+`pier` with no arguments opens the app: a **Sessions** tab (every session
+with a state dot, a detail pane, attach, logs, resize, keep, delete), a
+**Repos** tab (session image, pool, idle cost and reminders per
+repo), and **Settings**, one page grouped into Cloud, New sessions, Idle &
+cost, Speed, and Appearance (the accent color: teal, navy, violet, emerald,
+orange, crimson, pink, amber or graphite), showing only the active cloud's
+fields with a line on what each changes. The header keeps running and
+parked counts and the live hourly cost in view; `?` lists the keys.
+Attaching stays in the app until the session answers, then hands over to
+it.
+
+Every frontend runs on the same API (`pkg/pier`): the CLI, the app, and the
+coming Mac app.
 
 ### Setup that can't fail silently
 
@@ -420,9 +496,9 @@ repo's members, and the header counts what's warm. Strictly opt-in;
 checkout, dirty patch, untracked files, and `.pier/include` extras are in
 place. The outcome always surfaces:
 
-- `pier ls` and the TUI show `(setup running)` or `(setup failed)`
+- `pier ls` and the app show `(setup running)` or `(setup failed)`
 - `pier logs <session>` prints the log from anywhere, no attach needed
-  (`-f` follows, `l` in the TUI)
+  (`-f` follows, `l` in the app)
 - `~/.pier-setup.log` ends with `pier setup: done` or `pier setup: FAILED (exit N)`
 - a failed window renames to `setup-failed` and stays open instead of vanishing
 
@@ -436,12 +512,12 @@ resize` fixes it without losing anything:
 ```
 $ pier ls
 NAME           REPO  STATE               AGE  COST
-checkout-flow  shop  working (strained)  2h   ~$0.04/h
+checkout-flow  shop  running (strained)  2h   ~$0.04/h
 
 $ pier resize checkout-flow t4g.xlarge
 ```
 
-Or press `m` in the TUI. It lists same-arch machines with their vCPU, memory
+Or press `m` in the app. It lists same-arch machines with their vCPU, memory
 and hourly cost, so nobody memorizes instance type names.
 
 One park/resume cycle, about a minute on AWS and about two on GCP, disk and
@@ -452,10 +528,11 @@ and auto-scaling is a surprise-cost footgun.
 
 The cloud says "running" long before a session is usable, so pier doesn't:
 
-- A session lists as `creating` until the bootstrap's last act marks the
-  instance ready (a tag on AWS, a label on GCP).
+- A session lists as `starting` until the bootstrap's last act marks the
+  instance ready (a tag on AWS, a label on GCP). A session claimed from the
+  pool reads `starting` too, until it's resumed and on your branch.
 - Attaching early gets a plain "still setting up", not a raw connection error.
-- TUI creates run in the background and the row flips when ready.
+- Creates from the app run in the background and the row flips when ready.
 - A deleted session lists as `deleting` until the cloud actually removes it.
   GCE takes a minute there and would otherwise read as parked.
 - A create that fails cleans up its own instance.
@@ -466,11 +543,15 @@ The cloud says "running" long before a session is usable, so pier doesn't:
   GitHub push their history through it (a 300 MB history takes about 5
   minutes, once per create). The create output says which transfer mode you
   got and why.
-- **Parking loses processes.** Files, git state, and installed tools
-  survive. The tmux server and an in-flight agent run don't. Hibernate
-  (park with RAM) is on the roadmap.
-- **OAuth MCPs need a browser approval per session.** Keychain-held tokens
-  can't be copied safely. This floor is real.
+- **Parking stops processes.** Files, git state, and installed tools
+  survive, and on wake your tmux layout comes back (windows, panes, cwds,
+  scrollback, claude/codex relaunched on their conversations) along with the
+  Docker containers that were running. Processes outside Docker don't
+  survive: an agent mid-turn stops at its last saved message, and a dev
+  server started in a pane comes back as its command typed at the prompt,
+  one Enter away.
+- **OAuth MCPs log in once per session,** from inside it while attached.
+  Keychain-held tokens can't be copied safely.
 - **ssh-key-only GitHub auth pushes while attached.** The forwarded agent
   disconnects with you. Any token lifts this.
 - **`pier proxy` is macOS-only** for now. `pier port` works everywhere.
@@ -494,7 +575,7 @@ or pay for.
 ```
 laptop                              AWS account (yours)
 ──────                              ───────────────────
-pier CLI/TUI ── aws cli ──────────▶ EC2 API        (create/stop/start/tags)
+pier CLI/app ── aws cli ──────────▶ EC2 API        (create/stop/start/tags)
      │                              ┌─────────────────────────┐
      └── ssh ─────────────────────▶ │ session VM               │
          (direct to its public IP,  │  tmux ▸ claude / codex   │
@@ -521,6 +602,16 @@ to stop rather than terminate. The supervisor holds no credentials and calls
 no APIs. It beacons state to `/run/pier/status.json`, which `ls`, the TUI,
 and `pier proxy` read.
 
+A shutdown ends every process, so every 30 seconds, and once more right
+before it parks, the supervisor also snapshots the tmux layout to
+`~/.pier/tmux`: sessions, windows, pane layouts and cwds, each pane's last
+2000 lines of scrollback, and what each pane was running. On the next boot
+`pier-restore.service` rebuilds it before you attach. Scrollback is replayed,
+claude comes back with `--resume <id>` (or `--continue`) and codex with
+`codex resume --last`, and any other command is typed at the prompt but not
+run. It is the same on every cloud: no hibernation, no cloud APIs. Pool
+claims and baked images start clean and never inherit a layout.
+
 Full design, including the settled trade-offs and measured spike numbers:
 [docs/SPEC.md](docs/SPEC.md).
 
@@ -543,13 +634,18 @@ The choices contributors should know before proposing changes
 - **Guarded cloud-init, identical on stock and baked images.** Every
   install step is a no-op when the image already has it. Baking is an
   optimization, never a requirement.
-- **Images are toolchains, sessions are state.** `pier bake` installs
-  tools. Deps, migrations, and env belong to `.pier/setup.sh` at boot.
+- **Images are prebuilt, secrets are per-session.** `pier bake` images a
+  setup-complete checkout so creates skip the repo's cold setup. Anything
+  pier pushed is scrubbed before imaging and re-pushed per session, and
+  `.pier/setup.sh` must stay safe to re-run on a warm disk.
 - **Dirty state travels as a git patch,** not rsync. Binary-safe,
   reviewable, applied atomically after checkout.
 - **Truth over optimism in states.** The ready tag, the setup status file,
   the strained flag: pier reports what is, not what the cloud claims.
-- **`pier ls` stays plain** (pipeable). The TUI is the pretty view.
+- **`pier ls` stays plain** (pipeable). The app is the pretty view.
+- **One API, many frontends.** Capabilities live in `pkg/pier`, which never
+  prints, exits or reads stdin; the CLI, the app and the Mac app render what
+  it returns.
 
 ## vs. other tools
 
@@ -570,7 +666,6 @@ with your code, at storage prices when you're not using them.
 
 ## Roadmap
 
-- **Hibernate/suspend parking.** Keep RAM, resume mid-agent-run.
 - **Linux `pier proxy`.**
 - **Custom base images.** Bring your own golden image under pier's harness
   layer.

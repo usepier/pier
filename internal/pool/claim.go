@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,12 +59,16 @@ func Claim(ctx context.Context, p Params, sessions []driver.Session, name, branc
 	if member == nil {
 		return nil, nil
 	}
-	progress(fmt.Sprintf("claimed warm member %s — resuming", member.Name))
-	if err := freshen(ctx, p, member, name, branch, baseRef); err != nil {
+	progress(fmt.Sprintf("claimed pooled session %s — resuming", member.Name))
+	err = freshen(ctx, p, member, name, branch, baseRef)
+	if err == nil {
+		err = p.Driver.MarkReady(ctx, member.ID)
+	}
+	if err != nil {
 		progress("freshen failed (" + err.Error() + ")")
-		progress("destroying the member — its state is untrusted — and creating fresh")
+		progress("destroying that pooled session — its state is untrusted — and creating fresh")
 		if derr := p.Driver.Destroy(context.WithoutCancel(ctx), member.ID); derr != nil {
-			progress("destroy failed too (" + derr.Error() + ") — check `pier pool` for a leftover member")
+			progress("destroy failed too (" + derr.Error() + ") — check `pier pool` for a leftover")
 		}
 		return nil, nil
 	}
@@ -122,7 +127,7 @@ func freshen(ctx context.Context, p Params, member *driver.Session, name, branch
 		progress(n)
 	}
 	for _, push := range pl.Pushes {
-		if err := scpTo(ctx, opts, dest, push.Local, push.Remote); err != nil {
+		if err := scpTo(ctx, p.Out, opts, dest, push.Local, push.Remote); err != nil {
 			if ctx.Err() != nil {
 				return err
 			}
@@ -130,12 +135,12 @@ func freshen(ctx context.Context, p Params, member *driver.Session, name, branch
 			// settles, exactly as during create.
 			progress("push interrupted — retrying")
 			time.Sleep(2 * time.Second)
-			if err := scpTo(ctx, opts, dest, push.Local, push.Remote); err != nil {
+			if err := scpTo(ctx, p.Out, opts, dest, push.Local, push.Remote); err != nil {
 				return err
 			}
 		}
 	}
-	progress("freshening: branch, secrets, setup re-run")
+	progress("switching to your branch, refreshing secrets, starting the environment")
 	var extra []string
 	if pl.ForwardAgent {
 		extra = []string{"-A"}
@@ -146,12 +151,15 @@ func freshen(ctx context.Context, p Params, member *driver.Session, name, branch
 	return nil
 }
 
-func scpTo(ctx context.Context, opts []string, dest, local, remote string) error {
+func scpTo(ctx context.Context, out io.Writer, opts []string, dest, local, remote string) error {
 	args := slices.Concat(opts, []string{local, dest + ":" + remote})
 	cmd := exec.CommandContext(ctx, "scp", args...)
 	// scp draws its progress meter only when stdout is a terminal, same as
-	// the drivers' pushes.
-	cmd.Stdout = os.Stdout
+	// the drivers' pushes; Params.Out decides whether there is one.
+	if out == nil {
+		out = io.Discard
+	}
+	cmd.Stdout = out
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {

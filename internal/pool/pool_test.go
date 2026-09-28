@@ -13,20 +13,21 @@ import (
 // The generation is the staleness contract: any input that changes what a
 // fresh create would produce must change it, and nothing else may.
 func TestGeneration(t *testing.T) {
-	base := Generation("aws-ec2", "ami-1", "t4g.medium", 40, []byte("npm ci"))
-	if again := Generation("aws-ec2", "ami-1", "t4g.medium", 40, []byte("npm ci")); again != base {
+	base := Generation("aws-ec2", "ami-1", "t4g.medium", 40, []byte("npm ci"), "b1")
+	if again := Generation("aws-ec2", "ami-1", "t4g.medium", 40, []byte("npm ci"), "b1"); again != base {
 		t.Errorf("generation is not stable: %s vs %s", base, again)
 	}
 	if len(base) != 12 || base != strings.ToLower(base) {
 		t.Errorf("generation %q must be 12 lowercase hex chars (GCE label + EC2 tag safe)", base)
 	}
 	for name, gen := range map[string]string{
-		"driver":  Generation("gcp-gce", "ami-1", "t4g.medium", 40, []byte("npm ci")),
-		"image":   Generation("aws-ec2", "ami-2", "t4g.medium", 40, []byte("npm ci")),
-		"type":    Generation("aws-ec2", "ami-1", "t4g.large", 40, []byte("npm ci")),
-		"disk":    Generation("aws-ec2", "ami-1", "t4g.medium", 80, []byte("npm ci")),
-		"setup":   Generation("aws-ec2", "ami-1", "t4g.medium", 40, []byte("npm ci && make")),
-		"nosetup": Generation("aws-ec2", "ami-1", "t4g.medium", 40, nil),
+		"driver":  Generation("gcp-gce", "ami-1", "t4g.medium", 40, []byte("npm ci"), "b1"),
+		"image":   Generation("aws-ec2", "ami-2", "t4g.medium", 40, []byte("npm ci"), "b1"),
+		"type":    Generation("aws-ec2", "ami-1", "t4g.large", 40, []byte("npm ci"), "b1"),
+		"disk":    Generation("aws-ec2", "ami-1", "t4g.medium", 80, []byte("npm ci"), "b1"),
+		"setup":   Generation("aws-ec2", "ami-1", "t4g.medium", 40, []byte("npm ci && make"), "b1"),
+		"nosetup": Generation("aws-ec2", "ami-1", "t4g.medium", 40, nil, "b1"),
+		"build":   Generation("aws-ec2", "ami-1", "t4g.medium", 40, []byte("npm ci"), "b2"),
 	} {
 		if gen == base {
 			t.Errorf("changing %s did not change the generation", name)

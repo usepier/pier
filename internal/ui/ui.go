@@ -29,6 +29,50 @@ var (
 		MarginLeft(1)
 )
 
+// ThemeNames lists the accent colors in the order the settings picker shows
+// them. Teal is the terminal's own cyan (it follows the user's palette); the
+// rest are fixed tones.
+var ThemeNames = []string{"teal", "navy", "violet", "emerald", "orange", "crimson", "pink", "amber", "graphite"}
+
+// Themes maps each accent color's name to its color.
+var Themes = map[string]lipgloss.TerminalColor{
+	"teal":     lipgloss.Color("6"),
+	"navy":     lipgloss.Color("#2B4FC5"),
+	"violet":   lipgloss.Color("#7C3AED"),
+	"emerald":  lipgloss.Color("#10B981"),
+	"orange":   lipgloss.Color("#F97316"),
+	"crimson":  lipgloss.Color("#E11D48"),
+	"pink":     lipgloss.Color("#EC4899"),
+	"amber":    lipgloss.Color("#F59E0B"),
+	"graphite": lipgloss.Color("#A1A1AA"),
+}
+
+// darkThemes need light text where the accent is a background (the active
+// tab); black on them is unreadable.
+var darkThemes = map[string]bool{"navy": true, "violet": true, "crimson": true}
+
+// OnAccent is the text color for text drawn on the accent.
+var OnAccent lipgloss.TerminalColor = lipgloss.Color("0")
+
+// AccentColor is the active accent; SetAccent changes it.
+var AccentColor lipgloss.TerminalColor = lipgloss.Color("6")
+
+// SetAccent switches the accent to a theme by name (unknown names keep the
+// default) and restyles the shared accent styles.
+func SetAccent(theme string) {
+	c, ok := Themes[theme]
+	if !ok {
+		c = Themes["teal"]
+	}
+	AccentColor = c
+	OnAccent = lipgloss.Color("0")
+	if darkThemes[theme] {
+		OnAccent = lipgloss.Color("15")
+	}
+	Accent = lipgloss.NewStyle().Foreground(c)
+	Title = lipgloss.NewStyle().Foreground(c).Bold(true)
+}
+
 // Step renders a progress-step line: accent chevron, indented under the
 // command's bold header — the shared shape for every long-running command
 // (create, bake, resize).

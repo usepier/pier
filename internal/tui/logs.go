@@ -1,20 +1,30 @@
 package tui
 
 import (
-	"fmt"
+	"context"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/usepier/pier/internal/ui"
+	"github.com/usepier/pier/pkg/pier"
 )
 
-// The l key: the session's setup log as a pager inside the TUI — scroll,
-// live-follow while the setup still runs, esc back to the list. The CLI
-// `pier logs` stays the raw pipeable path; this view answers "what is it
-// doing" without leaving the screen.
+// The l key: a session's setup log inside the app — scroll, live-follow
+// while setup still runs, esc back. `pier logs` stays the raw pipeable path.
+
+type logView struct {
+	sess    pier.Session
+	text    string   // sanitized; the source for rewrapping
+	lines   []string // text wrapped to the viewer width
+	off     int      // first visible line
+	stick   bool     // pinned to the tail: new content keeps the end in view
+	loading bool
+	polling bool
+}
 
 type logMsg struct {
 	name string
@@ -25,116 +35,127 @@ type logMsg struct {
 type logPollMsg struct{}
 
 // logPollCmd refetches on a slow cadence while the viewer is open, so a
-// running setup streams in place. One ssh exec per tick over the tunnel —
-// the same weight as the list's beacon probe.
+// running setup streams in place — one ssh exec per tick, the same weight
+// as the list's beacon read.
 func logPollCmd() tea.Cmd {
 	return tea.Tick(4*time.Second, func(time.Time) tea.Msg { return logPollMsg{} })
 }
 
+func (m model) openLogs(s pier.Session) (tea.Model, tea.Cmd) {
+	if s.State != pier.StateFailed {
+		if err := pier.CheckReady(s); err != nil {
+			m.fail(err)
+			return m, nil
+		}
+		if s.State == pier.StateParked {
+			m.note(s.Name + " is parked — attach to resume it, or `pier logs " + s.Name + "`")
+			return m, nil
+		}
+	}
+	m.ov = ovLogs
+	m.log = logView{sess: s, stick: true, loading: true}
+	return m, m.fetchLog()
+}
+
 func (m model) fetchLog() tea.Cmd {
-	s := m.logSess
-	fetch := m.opts.FetchLog
+	s, be := m.log.sess, m.be
 	return func() tea.Msg {
-		text, err := fetch(s)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		// The viewer refetches every few seconds, so the transfer stays
+		// bounded; `pier logs` prints everything.
+		text, err := be.SetupLog(ctx, s, 2000)
 		return logMsg{s.Name, text, err}
 	}
 }
 
-func (m model) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
-		return m, tea.Quit
-	case "q", "esc":
-		m.mode = modeList
-		m.status = ""
-	case "up", "k":
-		m.logOff = max(0, m.logOff-1)
-		m.logStick = false
-	case "down", "j":
-		m.logOff = min(m.maxLogOff(), m.logOff+1)
-		m.logStick = m.logOff == m.maxLogOff()
-	case "pgup", "b":
-		m.logOff = max(0, m.logOff-m.logBodyH())
-		m.logStick = false
-	case "pgdown", " ":
-		m.logOff = min(m.maxLogOff(), m.logOff+m.logBodyH())
-		m.logStick = m.logOff == m.maxLogOff()
-	case "g":
-		m.logOff, m.logStick = 0, false
-	case "G":
-		m.logOff, m.logStick = m.maxLogOff(), true
-	case "r":
-		if !m.logLoading {
-			m.logLoading = true
-			return m, m.fetchLog()
+func (m model) onLog(msg logMsg) (tea.Model, tea.Cmd) {
+	if m.ov != ovLogs || msg.name != m.log.sess.Name {
+		return m, nil
+	}
+	m.log.loading = false
+	if msg.err != nil {
+		m.fail(msg.err)
+	} else {
+		m.log.text = sanitizeLog(msg.text)
+		m.log.relayout(m.logWidth())
+		if m.log.stick {
+			m.log.off = m.log.maxOff(m.logBodyH())
 		}
+	}
+	// Keep following while the log can still grow.
+	if m.log.sess.State != pier.StateFailed && !m.log.polling {
+		m.log.polling = true
+		return m, logPollCmd()
 	}
 	return m, nil
 }
 
-// setLogText replaces the viewer content: sanitize once, rewrap to the
-// current width, and keep the view pinned to the tail while following.
-func (m *model) setLogText(text string) {
-	m.logText = sanitizeLog(text)
-	m.relayoutLog()
-}
-
-func (m *model) relayoutLog() {
-	m.logLines = wrapLines(m.logText, m.logWidth())
-	if m.logStick || m.logOff > m.maxLogOff() {
-		m.logOff = m.maxLogOff()
+func (m model) keyLogs(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	h := m.logBodyH()
+	switch k.String() {
+	case "esc", "q", "l":
+		m.ov = ovNone
+		m.log.polling = false
+	case "up", "k":
+		m.log.off = max(m.log.off-1, 0)
+		m.log.stick = false
+	case "down", "j":
+		m.log.off = min(m.log.off+1, m.log.maxOff(h))
+		m.log.stick = m.log.off == m.log.maxOff(h)
+	case "pgup", "b":
+		m.log.off = max(m.log.off-h, 0)
+		m.log.stick = false
+	case "pgdown", " ", "f":
+		m.log.off = min(m.log.off+h, m.log.maxOff(h))
+		m.log.stick = m.log.off == m.log.maxOff(h)
+	case "g", "home":
+		m.log.off, m.log.stick = 0, false
+	case "G", "end":
+		m.log.off, m.log.stick = m.log.maxOff(h), true
 	}
+	return m, nil
 }
 
-func (m model) logWidth() int {
-	if m.width >= 12 {
-		return m.width - 4
-	}
-	return 96
+func (l *logView) relayout(width int) {
+	l.lines = wrapLines(l.text, width)
 }
 
-func (m model) logBodyH() int {
-	if m.height >= 12 {
-		return m.height - 6
-	}
-	return 20
-}
+func (l logView) maxOff(h int) int { return max(len(l.lines)-h, 0) }
 
-func (m model) maxLogOff() int {
-	return max(0, len(m.logLines)-m.logBodyH())
-}
+// logWidth / logBodyH are the viewer panel's inner size.
+func (m model) logWidth() int { return max(m.width-4, 20) }
+func (m model) logBodyH() int { return max(m.bodyHeight()-2, 3) }
 
 func (m model) logsView() string {
-	var b strings.Builder
-	head := " " + ui.Title.Render("⚓ setup log") + ui.Dim.Render("  "+m.logSess.Name)
-	if m.logLoading && m.logText == "" {
-		head += ui.Dim.Render("  fetching…")
-	}
-	b.WriteString("\n" + head + "\n\n")
-
 	h := m.logBodyH()
-	end := min(len(m.logLines), m.logOff+h)
-	for _, line := range m.logLines[m.logOff:end] {
-		b.WriteString("  " + styleLogLine(line) + "\n")
+	var lines []string
+	switch {
+	case m.log.loading && len(m.log.lines) == 0:
+		lines = []string{sDim.Render("fetching the log…")}
+	case len(m.log.lines) == 0:
+		lines = []string{sDim.Render("the log is empty so far")}
+	default:
+		end := min(m.log.off+h, len(m.log.lines))
+		for _, l := range m.log.lines[m.log.off:end] {
+			lines = append(lines, styleLogLine(l))
+		}
 	}
-	if len(m.logLines) == 0 && !m.logLoading {
-		b.WriteString(ui.Dim.Render("  (empty log)") + "\n")
+	note := "following"
+	if !m.log.stick {
+		note = pct(m.log.off+h, len(m.log.lines))
 	}
-	b.WriteString("\n")
+	if m.log.sess.State == pier.StateFailed {
+		note = "create log"
+	}
+	return panel("setup log · "+m.log.sess.Name, note, lines, m.width, m.bodyHeight(), true)
+}
 
-	if m.status != "" && m.statusBad {
-		b.WriteString(" " + ui.Bad.Render("! "+m.status) + "\n")
+func pct(seen, total int) string {
+	if total == 0 {
+		return ""
 	}
-	info := fmt.Sprintf("%d lines", len(m.logLines))
-	if m.maxLogOff() > 0 {
-		info = fmt.Sprintf("lines %d-%d of %d", m.logOff+1, end, len(m.logLines))
-	}
-	if m.logStick {
-		info += " · following"
-	}
-	b.WriteString(" " + ui.Dim.Render(info) + "\n")
-	b.WriteString(" " + ui.Keys("↑/↓", "scroll", "g/G", "top/end", "r", "refresh", "esc", "back") + "\n")
-	return b.String()
+	return itoa(min(seen, total)*100/total) + "%"
 }
 
 // styleLogLine keeps the body plain and lets pier's own outcome markers
@@ -142,9 +163,11 @@ func (m model) logsView() string {
 func styleLogLine(l string) string {
 	switch {
 	case strings.HasPrefix(l, "pier setup: FAILED"):
-		return ui.Bad.Render(l)
+		return sBad.Render(l)
 	case strings.HasPrefix(l, "pier setup: done"):
-		return ui.OK.Render(l)
+		return sOK.Render(l)
+	case strings.HasPrefix(l, "==>"):
+		return sAccent.Render(l)
 	}
 	return l
 }
@@ -192,4 +215,16 @@ func wrapLines(text string, width int) []string {
 		out = append(out, string(r))
 	}
 	return out
+}
+
+// tilde shortens a path under home to ~/… for display.
+func tilde(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if rest, ok := strings.CutPrefix(p, home+string(filepath.Separator)); ok {
+		return "~/" + rest
+	}
+	return p
 }

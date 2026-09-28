@@ -181,6 +181,12 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// (docker.sock denied in .pier/setup.sh otherwise).
 		`sudo -u agent tmux new-session -d -s main`,
 		`setup=./.pier/setup.sh`,
+		// Restore-on-wake: a oneshot that leaves the tmux server it starts
+		// running (it lives in the unit's cgroup), enabled for every boot.
+		`ExecStart=/usr/local/bin/pier-supervisor restore`,
+		`RemainAfterExit=yes`,
+		`KillMode=process`,
+		`sudo systemctl enable --now pier-restore.service`,
 	} {
 		if !strings.Contains(origin, want) {
 			t.Errorf("origin-mode bootstrap missing %q", want)
@@ -195,6 +201,24 @@ func TestRenderBootstrapModes(t *testing.T) {
 	// not race on a shared refs/pier/export.
 	if !strings.Contains(full, "git fetch -q /tmp/pier.bundle refs/pier/export-x") {
 		t.Error("full-mode bootstrap must fetch the bundle by this create's export ref")
+	}
+}
+
+// A claim resumes the member, and the boot restores the member's fill-time
+// tmux layout. None of it belongs to the claiming session: freshen must drop
+// the server and the saved layout before anything else — and before its own
+// tmuxEnsure, which would otherwise find the restored main and skip.
+func TestFreshenDropsRestoredLayout(t *testing.T) {
+	kill := strings.Index(freshenTmpl, "tmux kill-server 2>/dev/null || true")
+	rm := strings.Index(freshenTmpl, `rm -rf "$HOME/.pier/tmux"`)
+	wait := strings.Index(freshenTmpl, "[ -e /run/pier/restored ] && break")
+	first := strings.Index(freshenTmpl, "tar -xf /tmp/pier-files.tar")
+	ensure := strings.Index(freshenTmpl, "tmux has-session -t main")
+	if wait < 0 || kill < 0 || rm < 0 {
+		t.Fatalf("freshen must wait out the restore, then kill tmux and drop ~/.pier/tmux")
+	}
+	if !(wait < kill && kill < first && rm < first && first < ensure) {
+		t.Errorf("order: wait %d, kill %d, rm %d must all precede the first step %d and tmuxEnsure %d", wait, kill, rm, first, ensure)
 	}
 }
 

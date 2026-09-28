@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -77,6 +78,13 @@ type Driver struct {
 	// SupervisorBin returns the embedded pier-supervisor binary for an arch
 	// ("arm64"/"amd64").
 	SupervisorBin func(arch string) ([]byte, error)
+	// Out receives transfer meters and streamed remote output (the bake
+	// hook). nil discards it: a frontend speaking a protocol on stdout (the
+	// `pier api` server) must never have a driver write there behind it.
+	Out io.Writer
+	// Notify receives one-off transport notices ("using the ssm tunnel").
+	// nil discards them.
+	Notify func(string)
 
 	principal string // cached
 }
@@ -224,6 +232,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Created = ts
 			}
 		}
+		// A claimed session is stopped, unlabeled-ready and fresh while its
+		// claim resumes it: it's starting, not parked.
+		if s.State == driver.StateParked && in.Labels[LabelReady] != "1" && s.PoolGen == "" &&
+			!s.Created.IsZero() && time.Since(s.Created) < driver.ClaimWindow {
+			s.State = driver.StateCreating
+		}
 		s.CostNote = costNote(s.State, s.InstanceType)
 		sessions = append(sessions, s)
 	}
@@ -365,35 +379,28 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 // It also refuses on a missing bootstrap marker: attaching mid-create would
 // land in an empty $HOME (no repo yet) and steal the `main` tmux session
 // away from its workdir. The ready label stops pier's own commands well
-// before this, so it's a backstop for races and raw ssh users.
+// before this, so it's a backstop for races and raw ssh users. The one wait
+// it does make is short and bounded: for the boot-time tmux restore of a
+// woken session to finish (see cmd/pier-supervisor/tmux.go).
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
+	if err := d.needKey(id); err != nil {
+		return nil, err
+	}
 	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
 [ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
 # SSH forwards the client's TERM, but newer terminals (for example Ghostty)
 # may not exist in the VM image's terminfo database yet. Keep the richer entry
 # when it is installed and otherwise use the portable 256-colour baseline.
 if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
+# A woken session rebuilds its saved tmux layout at boot (pier-restore.service);
+# give that a moment so this attach lands in the restored windows instead of
+# racing it to an empty main. Sessions without the unit or a saved layout
+# never wait.
+if [ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]; then
+  for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
+fi
 exec tmux new-session -A -s main`
 	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
-	cmd := execCommandContext(ctx, "ssh", args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd, nil
-}
-
-// MCPLoginCommand: interactive `claude mcp login` with the OAuth callback
-// port forwarded through the IAP tunnel. The auth URL prints in the user's
-// terminal (BROWSER=echo keeps headless claude from skipping straight to
-// paste mode); opening it on the laptop completes the provider's
-// localhost redirect INTO the VM's waiting listener — one browser approval,
-// no URL copy-paste. The token then lives on the session disk, so this is
-// once per session, surviving park/resume. Same local/remote port: the
-// redirect URL embeds the port claude registered on the VM.
-func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port int) (*exec.Cmd, error) {
-	remote := fmt.Sprintf(
-		"set -a; . ~/.config/pier/env 2>/dev/null; set +a; BROWSER=echo exec claude mcp login '%s' --callback-port %d",
-		server, port)
-	args := append(d.sshOpts(id),
-		"-t", "-L", fmt.Sprintf("%d:localhost:%d", port, port), "agent@"+id, remote)
 	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil

@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,9 +36,6 @@ const (
 	// claim burns real money. Exported so doctor and the TUI census can flag
 	// the same corpses reconcile would collect.
 	FillGrace = 2 * time.Hour
-	// setupWait bounds fill's wait for .pier/setup.sh. A setup this slow is
-	// broken, not warm.
-	setupWait = 45 * time.Minute
 )
 
 // Params carries everything fill and claim need, resolved by the cmd layer
@@ -58,6 +56,7 @@ type Params struct {
 	Manifest   []string          // $HOME-relative files, same as the driver gets
 	SessionEnv map[string]string // ~/.config/pier/env content, same as the driver gets
 	Progress   func(string)
+	Out        io.Writer // scp meters during a claim; nil discards
 }
 
 func (p *Params) progress() func(string) {
@@ -68,13 +67,15 @@ func (p *Params) progress() func(string) {
 }
 
 // Generation fingerprints everything that makes a warm member equivalent to
-// a fresh create: a member built under a different driver, image, shape, or
+// a fresh create — including build, the pier that fills it (its in-VM
+// supervisor): a claim doesn't reinstall anything, so a member filled by an
+// older pier would bring its older VM-side behavior into the session: a member built under a different driver, image, shape, or
 // setup script is stale and gets recycled rather than claimed. 12 hex chars —
 // lowercase, so it is valid as an EC2 tag value and a GCE label value alike.
-func Generation(driverName, image, instanceType string, diskGiB int, setupScript []byte) string {
+func Generation(driverName, image, instanceType string, diskGiB int, setupScript []byte, build string) string {
 	setup := sha256.Sum256(setupScript)
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%s|%d|%x", driverName, image, instanceType, diskGiB, setup)
+	fmt.Fprintf(h, "%s|%s|%s|%d|%x|%s", driverName, image, instanceType, diskGiB, setup, build)
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 

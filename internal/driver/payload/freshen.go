@@ -13,12 +13,25 @@ import (
 // A warm pool member already carries everything slow: harnesses, supervisor,
 // the repo's history, a completed .pier/setup.sh. Claiming it means making
 // what's cheap-but-stale current again — this script is that step. It runs on
-// the just-resumed member (a boot: the tmux server is always gone, /tmp is
-// clean) after the same cargo pushes as create, minus supervisor + user-data.
+// the just-resumed member (a boot: /tmp is clean, and any tmux server is the
+// restore of the member's own fill-time layout, which the script discards)
+// after the same cargo pushes as create, minus supervisor + user-data.
 
-const freshenTmpl = `#!/usr/bin/env bash
+var freshenTmpl = `#!/usr/bin/env bash
 # pier freshen — runs at claim, as agent, on a just-resumed warm pool member.
 set -euo pipefail
+
+# The resume was a boot, so pier-restore.service may have rebuilt the
+# member's fill-time tmux layout (its setup window, a shell) — none of it is
+# this session's. Let that restore finish first (a server it started after
+# the kill below would outlive it), then drop the server and the saved layout
+# so the next park snapshots this session's own. Setup does not run: the
+# pooled session ran it at fill, and its containers came back at this boot.
+if [ -f /etc/systemd/system/pier-restore.service ]; then
+  for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
+fi
+tmux kill-server 2>/dev/null || true
+rm -rf "$HOME/.pier/tmux"
 
 tar -xf /tmp/pier-files.tar -C "$HOME" --strip-components=1 home 2>/dev/null || true
 set -a; . "$HOME/.config/pier/env" 2>/dev/null || true; set +a
@@ -49,7 +62,7 @@ tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
 # Cosmetic: prompts show the session, not the pool placeholder.
 sudo hostnamectl set-hostname '{{HOSTNAME}}' 2>/dev/null || true
 
-` + tmuxEnsure + setupWindow + `
+` + sessionUp(false) + `
 rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-freshen.sh
 echo freshened
 `

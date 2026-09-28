@@ -17,7 +17,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -69,14 +68,46 @@ func (d *Driver) directIP(ctx context.Context, id string) string {
 	return ip
 }
 
-func (d *Driver) probeDirect(ctx context.Context, id string) (string, time.Duration) {
+// instanceInfo is what the probe needs about an instance, as a List saw it.
+type instanceInfo struct {
+	ip, sg, launch string
+	at             time.Time
+}
+
+// noteInstance records what a List returned, so probes right after it (the
+// beacon reads that follow every list) skip their own describe call.
+func (d *Driver) noteInstance(id, ip, sg, launch string) {
+	d.dmu.Lock()
+	defer d.dmu.Unlock()
+	if d.known == nil {
+		d.known = map[string]instanceInfo{}
+	}
+	d.known[id] = instanceInfo{ip: ip, sg: sg, launch: launch, at: time.Now()}
+}
+
+// instanceFields returns [ip, sg, launch] for id: from the last List when it
+// is fresh, otherwise from one describe call.
+func (d *Driver) instanceFields(ctx context.Context, id string) ([]string, error) {
+	d.dmu.Lock()
+	info, ok := d.known[id]
+	d.dmu.Unlock()
+	if ok && time.Since(info.at) < 30*time.Second && info.ip != "" {
+		return []string{info.ip, info.sg, info.launch}, nil
+	}
 	out, err := d.aws(ctx, "ec2", "describe-instances", "--instance-ids", id,
 		"--query", "Reservations[0].Instances[0].[PublicIpAddress,SecurityGroups[0].GroupId,LaunchTime]",
 		"--output", "text")
 	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
+}
+
+func (d *Driver) probeDirect(ctx context.Context, id string) (string, time.Duration) {
+	f, err := d.instanceFields(ctx, id)
+	if err != nil {
 		return "", directTTL
 	}
-	f := strings.Fields(out)
 	if len(f) != 3 || f[0] == "None" || f[1] == "None" {
 		// No public address (yet): still pending, parked, or a private
 		// subnet. Cheap to re-check.
@@ -100,7 +131,7 @@ func (d *Driver) probeDirect(ctx context.Context, id string) (string, time.Durat
 		if booting || strings.Contains(err.Error(), "refused") {
 			return "", directBootTTL
 		}
-		d.directNotice(id, "direct connect: "+ip+":22 does not answer from this network — using the ssm tunnel")
+		d.directNotice(id, "direct connect: "+ip+":22 does not answer from this network — using the slower ssm tunnel (a VPN or secure gateway can change the address the VM sees)")
 		return "", directTTL
 	}
 	c.Close()
@@ -113,6 +144,7 @@ func (d *Driver) probeDirect(ctx context.Context, id string) (string, time.Durat
 func (d *Driver) dropProbe(id string) {
 	d.dmu.Lock()
 	delete(d.dprobe, id)
+	delete(d.known, id) // the list's copy carries the old address too
 	d.dmu.Unlock()
 }
 
@@ -226,9 +258,20 @@ func (d *Driver) ensureDirectRule(ctx context.Context, sg string) error {
 	return nil
 }
 
-// callerPublicIP asks checkip.amazonaws.com — over IPv4, so the answer is
-// the address the security group will see when ssh dials the instance's
-// IPv4.
+// ipServices answer with the caller's public IPv4 as plain text. Several,
+// raced: any one of them can be filtered or slow on a given network (VPNs
+// and secure gateways block some), and the answer gates every direct
+// connection — a single slow service made every command wait out its timeout
+// and then fall back to the tunnel.
+var ipServices = []string{
+	"https://checkip.amazonaws.com",
+	"https://api.ipify.org",
+	"https://ipv4.icanhazip.com",
+}
+
+// callerPublicIP asks the ipServices in parallel, over IPv4 (the address the
+// security group sees when ssh dials the instance's IPv4), and takes the
+// first plausible answer.
 func (d *Driver) callerPublicIP(ctx context.Context) (string, error) {
 	d.dmu.Lock()
 	if d.myIP != "" && time.Now().Before(d.myIPUntil) {
@@ -239,34 +282,53 @@ func (d *Driver) callerPublicIP(ctx context.Context) (string, error) {
 	d.dmu.Unlock()
 
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 2 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
-				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp4", addr)
+				return (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp4", addr)
 			},
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://checkip.amazonaws.com", nil)
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	answers := make(chan string, len(ipServices))
+	for _, u := range ipServices {
+		go func(u string) {
+			answers <- lookupIP(ctx, client, u)
+		}(u)
+	}
+	for range ipServices {
+		if ip := <-answers; ip != "" {
+			d.dmu.Lock()
+			d.myIP, d.myIPUntil = ip, time.Now().Add(directTTL)
+			d.dmu.Unlock()
+			return ip, nil
+		}
+	}
+	return "", fmt.Errorf("public IP lookup: none of %d services answered", len(ipServices))
+}
+
+// lookupIP asks one service; "" when it fails or answers something that
+// isn't an IPv4 address.
+func lookupIP(ctx context.Context, client *http.Client, url string) string {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return "", err
+		return ""
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("public IP lookup: %w", err)
+		return ""
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 64))
-	if err != nil {
-		return "", fmt.Errorf("public IP lookup: %w", err)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return ""
 	}
 	s := strings.TrimSpace(string(b))
 	if ip := net.ParseIP(s); ip == nil || ip.To4() == nil {
-		return "", fmt.Errorf("public IP lookup: implausible answer %q", s)
+		return ""
 	}
-	d.dmu.Lock()
-	d.myIP, d.myIPUntil = s, time.Now().Add(directTTL)
-	d.dmu.Unlock()
-	return s, nil
+	return s
 }
 
 // shortUser is the caller's IAM name (the ARN's last segment), sanitized to
@@ -310,6 +372,6 @@ func (d *Driver) directNotice(id, msg string) {
 	}
 	d.dmu.Unlock()
 	if !seen {
-		fmt.Fprintln(os.Stderr, "pier: "+msg)
+		d.notify(msg)
 	}
 }

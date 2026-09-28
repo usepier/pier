@@ -12,7 +12,9 @@ package awsec2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -60,6 +62,13 @@ type Driver struct {
 	// SupervisorBin returns the embedded pier-supervisor binary for an arch
 	// ("arm64"/"amd64").
 	SupervisorBin func(arch string) ([]byte, error)
+	// Out receives transfer meters and streamed remote output (the bake
+	// hook). nil discards it: a frontend speaking a protocol on stdout (the
+	// `pier api` server) must never have a driver write there behind it.
+	Out io.Writer
+	// Notify receives one-off transport notices ("using the ssm tunnel").
+	// nil discards them.
+	Notify func(string)
 
 	callerARN string // cached
 
@@ -70,6 +79,7 @@ type Driver struct {
 	// direct-connect probe state (direct.go)
 	dmu       sync.Mutex
 	dprobe    map[string]directProbe
+	known     map[string]instanceInfo // from the last List, for the probe
 	myIP      string
 	myIPUntil time.Time
 	ensured   string // the cidr whose SG rule this process reconciled
@@ -104,6 +114,8 @@ type ec2Instance struct {
 	State  string `json:"state"`
 	Launch string `json:"launch"`
 	IType  string `json:"itype"`
+	IP     string `json:"ip"`
+	SG     string `json:"sg"`
 	Tags   []struct {
 		Key   string `json:"Key"`
 		Value string `json:"Value"`
@@ -118,7 +130,7 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	out, err := d.aws(ctx, "ec2", "describe-instances",
 		"--filters", "Name=tag:"+TagManaged+",Values=1", "Name=tag:"+TagUser+",Values="+me,
 		"Name=instance-state-name,Values=pending,running,stopping,stopped",
-		"--query", "Reservations[].Instances[].{id:InstanceId,state:State.Name,launch:LaunchTime,itype:InstanceType,tags:Tags}",
+		"--query", "Reservations[].Instances[].{id:InstanceId,state:State.Name,launch:LaunchTime,itype:InstanceType,tags:Tags,ip:PublicIpAddress,sg:SecurityGroups[0].GroupId}",
 		"--output", "json")
 	if err != nil {
 		return nil, err
@@ -129,6 +141,9 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	}
 	var sessions []driver.Session
 	for _, in := range raw {
+		// The direct-connect probe needs exactly what this call just
+		// returned; hand it over rather than describing each instance again.
+		d.noteInstance(in.ID, in.IP, in.SG, in.Launch)
 		s := driver.Session{ID: in.ID, User: me, Driver: d.Name(), InstanceType: in.IType}
 		ready := false
 		for _, t := range in.Tags {
@@ -165,6 +180,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 			s.State = driver.StateParked
 		default:
 			s.State = driver.StateDead
+		}
+		// A claimed session is stopped, untagged-ready and fresh while its
+		// claim resumes it: it's starting, not parked.
+		if s.State == driver.StateParked && !ready && s.PoolGen == "" &&
+			!s.Created.IsZero() && time.Since(s.Created) < driver.ClaimWindow {
+			s.State = driver.StateCreating
 		}
 		// Launch time is the fallback for pre-tag sessions; it resets on
 		// every resume, so the created tag wins whenever present.
@@ -304,34 +325,27 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 // land in an empty $HOME (no repo yet) and steal the `main` tmux session
 // away from its workdir. The ready tag stops pier's own commands well before
 // this, so it's a backstop for races and raw ssh users — refuse, don't wait.
+// The one wait it does make is short and bounded: for the boot-time tmux
+// restore of a woken session to finish (see cmd/pier-supervisor/tmux.go).
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
+	if err := d.needKey(id); err != nil {
+		return nil, err
+	}
 	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
 [ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
 # SSH forwards the client's TERM, but newer terminals (for example Ghostty)
 # may not exist in the VM image's terminfo database yet. Keep the richer entry
 # when it is installed and otherwise use the portable 256-colour baseline.
 if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
+# A woken session rebuilds its saved tmux layout at boot (pier-restore.service);
+# give that a moment so this attach lands in the restored windows instead of
+# racing it to an empty main. Sessions without the unit or a saved layout
+# never wait.
+if [ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]; then
+  for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
+fi
 exec tmux new-session -A -s main`
 	args := append(d.sshOpts(ctx, id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd, nil
-}
-
-// MCPLoginCommand: interactive `claude mcp login` with the OAuth callback
-// port forwarded through the SSM tunnel. The auth URL prints in the user's
-// terminal (BROWSER=echo keeps headless claude from skipping straight to
-// paste mode); opening it on the laptop completes the provider's
-// localhost redirect INTO the VM's waiting listener — one browser approval,
-// no URL copy-paste. The token then lives on the session disk, so this is
-// once per session, surviving park/resume. Same local/remote port: the
-// redirect URL embeds the port claude registered on the VM.
-func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port int) (*exec.Cmd, error) {
-	remote := fmt.Sprintf(
-		"set -a; . ~/.config/pier/env 2>/dev/null; set +a; BROWSER=echo exec claude mcp login '%s' --callback-port %d",
-		server, port)
-	args := append(d.sshOpts(ctx, id),
-		"-t", "-L", fmt.Sprintf("%d:localhost:%d", port, port), "agent@"+id, remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
@@ -370,6 +384,9 @@ func (d *Driver) waitSSH(ctx context.Context, id string, timeout time.Duration) 
 		cancel()
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, driver.ErrNoKey) {
+			return err // no key, no connection — retrying changes nothing
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

@@ -43,6 +43,15 @@ runcmd:
     # out instead of failing the install (the block deliberately has no set
     # -e, so a lost race would otherwise skip a harness silently).
     echo 'DPkg::Lock::Timeout "120";' > /etc/apt/apt.conf.d/90pier
+    # sshd never times out a dead connection by default, so a dropped attach
+    # (a laptop sleeping, a VPN reconnecting) left a phantom tmux client:
+    # the session read as attached and could never park. Drop dead
+    # connections after ~1 min of silence.
+    # StreamLocalBindUnlink: an attach forwards the laptop's browser opener
+    # as a unix socket; a reconnecting attach must be able to replace the
+    # previous connection's socket.
+    printf 'ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\n' > /etc/ssh/sshd_config.d/10-pier.conf
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
     install -d -m 700 -o agent -g agent /home/agent/.ssh
     grep -qxF '{{PUBKEY}}' /home/agent/.ssh/authorized_keys 2>/dev/null || echo '{{PUBKEY}}' >> /home/agent/.ssh/authorized_keys
     chown agent:agent /home/agent/.ssh/authorized_keys && chmod 600 /home/agent/.ssh/authorized_keys
@@ -66,7 +75,7 @@ runcmd:
     # across every launch. This also keeps sessions from baked images current —
     # they update themselves instead of pinning the bake-time version. The
     # /usr/local/bin symlink keeps claude on PATH for non-login shells (ssh
-    # exec channels, like pier mcp login rides).
+    # exec channels).
     if ! command -v claude >/dev/null; then
       sudo -Hu agent bash -c 'curl -fsSL --retry 3 https://claude.ai/install.sh | bash'
       ln -sf /home/agent/.local/bin/claude /usr/local/bin/claude
@@ -79,7 +88,12 @@ runcmd:
     # Headless chromium for browser MCPs/skills (playwright cache + shared libs).
     [ -e /home/agent/.cache/ms-playwright ] || { npx -y playwright install-deps chromium && sudo -Hu agent npx -y playwright install chromium; }
     getent group docker >/dev/null && usermod -aG docker agent
-    grep -q 'pier/env' /home/agent/.bashrc || printf '\n[ -f ~/.config/pier/env ] && set -a && . ~/.config/pier/env && set +a\n[ -S ~/.ssh/agent.sock ] && export SSH_AUTH_SOCK=~/.ssh/agent.sock\ncd ~/work/* 2>/dev/null || true\n' >> /home/agent/.bashrc
+    # Land new logins in the repo — but only a shell starting in $HOME: an
+    # unconditional cd dragged every new tmux window and split (and the
+    # restored panes) out of the folder it was opened in.
+    grep -q 'pier/env' /home/agent/.bashrc || printf '\n[ -f ~/.config/pier/env ] && set -a && . ~/.config/pier/env && set +a\n[ -S ~/.ssh/agent.sock ] && export SSH_AUTH_SOCK=~/.ssh/agent.sock\nif [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi\n' >> /home/agent/.bashrc
+    # Images and sessions made before that fix carry the unconditional line.
+    sed -i 's#^cd ~/work/\* 2>/dev/null || true$#if [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi#' /home/agent/.bashrc
 `
 
 // RenderUserData fills the shared cloud-init template with this session's
@@ -105,7 +119,8 @@ func DurConf(d time.Duration) string {
 // --- bootstrap ----------------------------------------------------------------
 // The tmux-server start and the async setup window are shared with the pool
 // freshen script (freshen.go): a claimed member resumes from parked — a boot,
-// so the tmux server is always gone — and re-runs setup to catch drift.
+// so the only tmux server is the member's restored fill-time layout, which
+// freshen kills first — and re-runs setup to catch drift.
 
 const tmuxEnsure = `# SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
 # first attach forwards an agent; harmless when it never does).
@@ -119,28 +134,55 @@ const tmuxEnsure = `# SSH_AUTH_SOCK points at the attach-refreshed symlink (dang
 tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
 `
 
-const setupWindow = `# Background setup, after checkout + patch + .pier/include extras are all in
-# place: the repo's .pier/setup.sh, unless a PIER_SETUP_SCRIPT override rode
-# the tar into ~/.config/pier (outer double quotes expand $setup now, into the single-quoted
-# bash -c; \$ defers the rest to run time). The outcome must be impossible to
-# miss — a failed setup used to vanish with its window: ~/.pier-setup.status
-# holds "running" then the exit code (the supervisor beacons it to ls/TUI),
-# the log's last line says done/FAILED, and a failed window renames to
-# setup-failed and stays open instead of closing. The rename targets its own
-# pane id: with a client attached, a bare rename-window can resolve "current
-# window" to the attached client's window and mislabel the user's shell.
+// setupWindow runs the repo's .pier/setup.sh in its own tmux window, once,
+// when a session is built (a pooled session ran it at fill, so its claim
+// doesn't). The outcome must be impossible to miss — a failed setup used to
+// vanish with its window: ~/.pier-setup.status holds "running" then the exit
+// code (the supervisor beacons it to ls and the app), the log's last line
+// says done/FAILED, and a failed window renames itself setup-failed and stays
+// open. The rename targets its own pane id: with a client attached, a bare
+// rename-window can resolve "current window" to the attached client's.
+const setupWindow = `cd "$HOME/work/{{REPO}}"
+# A PIER_SETUP_SCRIPT override rides the tar into ~/.config/pier. Presence is
+# the signal, not the exec bit: git only carries +x when the author
+# remembered chmod. bash runs it either way.
 setup=./.pier/setup.sh
 if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
-# Presence is the signal, not the exec bit: git only carries +x when the
-# author remembered chmod, and gating on -x skipped a committed 0644
-# .pier/setup.sh with no trace — the one silent failure setup promises not
-# to have. bash runs it either way.
 if [ -f "$setup" ]; then
   tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; bash $setup 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window -t \$TMUX_PANE setup-failed; exec sleep infinity; fi'"
 fi
 `
 
-const bootstrapTmpl = `#!/usr/bin/env bash
+// sessionUp is the tail the bootstrap and the claim freshen share: the
+// shell rc fix, the tmux server, and — only when a session is being built —
+// the setup window.
+func sessionUp(runSetup bool) string {
+	s := `# The shell rc must only move a login into the repo when it starts in $HOME
+# (user-data rewrites older rcs too, but on a baked image cloud-init is still
+# running when this does, and tmux must not start with the old line).
+sed -i 's#^cd ~/work/\* 2>/dev/null || true$#if [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi#' "$HOME/.bashrc" 2>/dev/null || true
+# sshd: drop dead connections (a dropped attach must not leave a phantom
+# tmux client), and let an attach replace the browser-opener socket a
+# previous connection forwarded. Written here too so sessions from older
+# images and pooled sessions get it.
+if ! grep -q StreamLocalBindUnlink /etc/ssh/sshd_config.d/10-pier.conf 2>/dev/null; then
+  printf 'ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\n' | sudo tee /etc/ssh/sshd_config.d/10-pier.conf >/dev/null
+  sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true
+fi
+mkdir -p "$HOME/.pier" # where an attach forwards the browser opener
+# The session's browser is the attached laptop's: xdg-open and $BROWSER hand
+# URLs to the supervisor, which sends them back over the attach connection.
+printf '#!/bin/sh\nexec /usr/local/bin/pier-supervisor open "$@"\n' | sudo tee /usr/local/bin/xdg-open >/dev/null
+sudo chmod 755 /usr/local/bin/xdg-open
+grep -q 'BROWSER=/usr/local/bin/xdg-open' "$HOME/.bashrc" 2>/dev/null || echo 'export BROWSER=/usr/local/bin/xdg-open' >> "$HOME/.bashrc"
+` + tmuxEnsure
+	if runSetup {
+		s += setupWindow
+	}
+	return s
+}
+
+var bootstrapTmpl = `#!/usr/bin/env bash
 # pier bootstrap — runs once, as agent, on the fresh instance.
 set -euo pipefail
 
@@ -160,23 +202,64 @@ After=multi-user.target
 [Service]
 User=agent
 RuntimeDirectory=pier
+# /run/pier is shared with pier-restore.service; a supervisor restart must
+# not wipe the restore marker attach waits on (/run is tmpfs: a boot still
+# clears it).
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/local/bin/pier-supervisor
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 UNIT
+# Parking is a shutdown, so a wake finds every process gone. This rebuilds
+# the tmux layout the supervisor snapshotted (windows, cwds, scrollback,
+# agents resumed on their conversations) once per boot, before anyone
+# attaches; attach waits for its /run/pier/restored marker.
+sudo tee /etc/systemd/system/pier-restore.service >/dev/null <<'UNIT'
+[Unit]
+Description=pier tmux restore (brings a parked session's layout back on wake)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=agent
+RuntimeDirectory=pier
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/local/bin/pier-supervisor restore
+TimeoutStartSec=60
+# The tmux server this starts is the user's whole session, and it lives in
+# this unit's cgroup. RemainAfterExit keeps the unit active once restore
+# exits (an inactive oneshot's leftover processes are killed); KillMode=process
+# keeps a stop or restart of the unit from taking the server down with it.
+RemainAfterExit=yes
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 sudo systemctl daemon-reload
-sudo systemctl enable --now pier-supervisor.service
+# restart, not enable --now: a baked image boots its own (older) supervisor
+# before this runs, and --now leaves a running unit alone — the session
+# would spend its first boot on the image's binary.
+sudo systemctl enable pier-supervisor.service
+sudo systemctl restart pier-supervisor.service
+# --now on a fresh instance finds no saved layout and just writes the marker.
+sudo systemctl enable --now pier-restore.service
 
 tar -xf /tmp/pier-files.tar -C "$HOME" --strip-components=1 home 2>/dev/null || true
 set -a; . "$HOME/.config/pier/env" 2>/dev/null || true; set +a
 
 mkdir -p "$HOME/work/{{REPO}}"
 cd "$HOME/work/{{REPO}}"
-git init -q -b '{{BRANCH}}'
+# A prebuilt image already holds the checkout with setup's artifacts around it
+# (node_modules, venvs, build caches — the warmth pier bake paid for), so the
+# fetch below is incremental and the branch moves onto it instead of a fresh
+# init. Untracked artifacts survive the checkout; tracked state is reset.
+prebuilt=
+if [ -d .git ]; then prebuilt=1; else git init -q -b '{{BRANCH}}'; fi
 {{GITCONFIG}}
-if [ -n '{{ORIGIN}}' ]; then git remote add origin '{{ORIGIN}}'; fi
+if [ -n '{{ORIGIN}}' ]; then git remote set-url origin '{{ORIGIN}}' 2>/dev/null || git remote add origin '{{ORIGIN}}'; fi
 # ssh origin = fetch rides the laptop's forwarded agent; pre-trust github.
 case '{{ORIGIN}}' in git@*|ssh://*) mkdir -p "$HOME/.ssh" && ssh-keyscan github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true ;; esac
 # gh brokers git credentials for https origin fetches; on a stock image it may
@@ -188,7 +271,9 @@ case '{{MODE}}' in
   thin)   git fetch -q --no-tags origin && git fetch -q /tmp/pier.bundle {{EXPORTREF}} ;;
   *)      git fetch -q /tmp/pier.bundle {{EXPORTREF}} ;;
 esac
+if [ -n "$prebuilt" ]; then git checkout -qf -B '{{BRANCH}}' {{SHA}}; fi
 git reset -q --hard {{SHA}}
+if [ -n "$prebuilt" ] && [ '{{BRANCH}}' != '` + PrebuildBranch + `' ]; then git branch -qD '` + PrebuildBranch + `' 2>/dev/null || true; fi
 # Uncommitted edits to tracked files, exactly as the laptop had them (a
 # failed apply fails the create — better than silently missing work).
 if [ -f /tmp/pier-dirty.patch ]; then git apply /tmp/pier-dirty.patch; fi
@@ -208,7 +293,7 @@ if [ ! -f "$HOME/.tmux.conf" ]; then
   printf 'set -g mouse on\nset -g history-limit 50000\nset -g focus-events on\n' > "$HOME/.tmux.conf"
 fi
 
-` + tmuxEnsure + setupWindow + `
+` + sessionUp(true) + `
 # Attach gates on this marker: nobody lands in a half-set-up session. Written
 # after the repo checkout and tmux session exist; deliberately NOT after
 # .pier/setup.sh, which runs async in its tmux window.
@@ -217,6 +302,16 @@ touch "$HOME/.pier-bootstrapped"
 rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-supervisor /tmp/pier-bootstrap.sh
 echo bootstrapped
 `
+
+// BootstrapNote is the progress line for the bootstrap step: on a stock image
+// it waits out cloud-init's harness install; on a baked one it reuses the
+// prebuilt checkout when the image carries one.
+func BootstrapNote(image string) string {
+	if image == "" {
+		return "bootstrapping (a stock image waits for cloud-init here — `pier bake` skips that)"
+	}
+	return "bootstrapping (baked image: harnesses installed, prebuilt checkout reused when present)"
+}
 
 func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
 	return strings.NewReplacer(

@@ -3,6 +3,7 @@ package gcpgce
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -87,8 +88,28 @@ func TestArchAndRegion(t *testing.T) {
 	}
 }
 
+// withKey gives a test driver a key file for id, as a real create leaves.
+func withKey(t *testing.T, d *Driver, id string) {
+	t.Helper()
+	os.MkdirAll(filepath.Join(d.StateDir, "keys"), 0o700)
+	os.WriteFile(d.keyPath(id), []byte("k"), 0o600)
+}
+
+// A session whose key isn't on this machine fails at once with ErrNoKey,
+// instead of ssh retrying an unreachable-looking host.
+func TestMissingKeyFailsFast(t *testing.T) {
+	d := &Driver{Project: "p", Zone: "z", StateDir: t.TempDir()}
+	if _, err := d.AttachCommand(context.Background(), "pier-x-abc123"); !errors.Is(err, driver.ErrNoKey) {
+		t.Errorf("attach without a key must return ErrNoKey, got %v", err)
+	}
+	if _, err := d.Exec(context.Background(), "pier-x-abc123", "true"); !errors.Is(err, driver.ErrNoKey) {
+		t.Errorf("exec without a key must return ErrNoKey, got %v", err)
+	}
+}
+
 func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
 	d := &Driver{Project: "p", Zone: "z", StateDir: t.TempDir()}
+	withKey(t, d, "pier-x-abc123")
 	cmd, err := d.AttachCommand(context.Background(), "pier-x-abc123")
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +117,15 @@ func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
 	remote := cmd.Args[len(cmd.Args)-1]
 	if !strings.Contains(remote, `infocmp "$TERM"`) || !strings.Contains(remote, "export TERM=xterm-256color") {
 		t.Errorf("attach must fall back when the VM lacks the client's terminfo entry, got %q", remote)
+	}
+	// The wait for the boot-time tmux restore is gated on the unit and a
+	// saved layout (sessions from before restore existed must never hang)
+	// and happens before tmux starts.
+	gate := strings.Index(remote, `[ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]`)
+	wait := strings.Index(remote, `[ -e /run/pier/restored ] && break`)
+	exec := strings.Index(remote, "exec tmux new-session -A -s main")
+	if gate < 0 || wait < gate || exec < wait {
+		t.Errorf("attach must wait for the restore marker, gated, before tmux; got %q", remote)
 	}
 }
 
@@ -235,6 +265,7 @@ func TestHelperProcess(t *testing.T) {
 	case "ssh-keygen":
 		if len(args) > 8 && args[1] == "-t" {
 			keyPath := args[8]
+			os.WriteFile(keyPath, []byte("fake-private-key"), 0600)
 			os.WriteFile(keyPath+".pub", []byte("fake-pub-key"), 0644)
 		}
 	case "ssh", "scp":
@@ -416,6 +447,7 @@ func TestLifecycle(t *testing.T) {
 	})
 
 	id := "pier-session-123"
+	withKey(t, d, id)
 
 	// Park
 	if err := d.Park(context.Background(), id); err != nil {

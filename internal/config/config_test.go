@@ -275,3 +275,16 @@ func TestConfig_ClearBakes(t *testing.T) {
 		})
 	}
 }
+
+func TestThemeSetting(t *testing.T) {
+	c := Default()
+	if err := Set(&c, "theme", "Violet"); err != nil || c.Theme != "violet" {
+		t.Fatalf("want violet, got %q %v", c.Theme, err)
+	}
+	if err := Set(&c, "theme", "chartreuse"); err == nil {
+		t.Error("an unknown color must be rejected")
+	}
+	if Get(c, "theme") != "violet" {
+		t.Error("Get must read the theme back")
+	}
+}
