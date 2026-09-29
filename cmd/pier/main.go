@@ -433,8 +433,15 @@ func cmdLS(args []string) {
 	// entirely, and one dim summary line below the table instead of rows.
 	sessions, pooled := pier.SplitPool(all)
 	poolLine := ""
-	if len(pooled) > 0 {
-		poolLine = ui.Dim.Render(fmt.Sprintf("+ %d pooled session(s) waiting to be claimed — `pier pool`", len(pooled)))
+	if ready, filling := pier.PoolCounts(pooled); ready+filling > 0 {
+		var parts []string
+		if ready > 0 {
+			parts = append(parts, fmt.Sprintf("%d pooled session(s) ready to claim", ready))
+		}
+		if filling > 0 {
+			parts = append(parts, fmt.Sprintf("%d being set up", filling))
+		}
+		poolLine = ui.Dim.Render("+ " + strings.Join(parts, ", ") + " — `pier pool`")
 	}
 	if jsonOutput {
 		if err := writeSessionsJSON(os.Stdout, sessions); err != nil {
@@ -776,6 +783,14 @@ func cmdBake(args []string) {
 	var include *bool
 	for _, a := range args {
 		switch a {
+		case "--finish":
+			// Hidden: a bake's background half, spawned by the bake itself.
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if err := open().FinishBake(ctx, repoRoot(), progress); err != nil {
+				fatal(err)
+			}
+			return
 		case "--toolchain-only":
 			f := false
 			include = &f
@@ -810,15 +825,19 @@ func cmdBake(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Println(ui.OK.Render("baked "+res.Image) + ui.Dim.Render(" — new "+name+" sessions start from it; pier reminds you when a rebake would help"))
-	if res.ReadyStale {
-		fmt.Println(ui.Dim.Render("the pool was built on the old image — its sessions recycle on the next claim or `pier pool fill`"))
+	if res.FinishLog == "" {
+		// The finish couldn't go to the background and ran here instead.
+		fmt.Println(ui.OK.Render("baked "+res.Image) + ui.Dim.Render(" — new "+name+" sessions start from it"))
+		return
 	}
+	fmt.Println(ui.OK.Render("baked "+name) + ui.Dim.Render(" — image "+res.Image+" is being saved in the background; new sessions start from it once it's saved, and the pool fills from it then"))
+	fmt.Println(ui.Dim.Render("log: " + ui.Tilde(res.FinishLog)))
 }
 
 // cmdPool: this repo's pool — parked, setup-complete sessions `pier <branch>`
 // claims instead of launching. `pier pool` shows it; set/fill/drain change it.
-// Fills also happen by themselves after every create and every size change.
+// Fills also happen by themselves after setup, every bake, every create and
+// every size change.
 func cmdPool(args []string) {
 	if len(args) == 0 {
 		poolStatus()

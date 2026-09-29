@@ -144,9 +144,10 @@ The wizard asks as little as it can and applies nothing silently:
    security group. On GCP: the compute and IAP API enables, plus two
    firewall rules that admit only Google's IAP range to pier VMs. Then it
    writes `~/.config/pier/config.toml` and runs the `pier doctor` checks.
-4. **This repo.** Run inside a repo, it offers to bake the repo's session
-   image, so new sessions start in a minute or two instead of running the
-   full setup.
+4. **This repo.** Session images already in the account are picked back
+   up. Run inside a repo with a `.pier/bake.sh`, it bakes the repo's image
+   (sessions need its toolchains); in any other repo it offers to, so new
+   sessions start in a minute or two instead of running the full setup.
 
 Everything it creates is tagged and removable with `pier teardown`. Change
 anything later: run `pier` and press `s`.
@@ -421,6 +422,13 @@ pier bake    # one throwaway instance: harnesses + .pier/bake.sh, then your
              # checkout (HEAD) with .pier/setup.sh run to completion, imaged
 ```
 
+`pier bake` returns as soon as the bake instance is done. Saving the image,
+which copies the bake disk into image storage, often takes longer than the
+bake itself and finishes in the background. Until it does, sessions keep
+starting from the previous image. Once it's saved, the new image is
+recorded, every older image of the repo is deleted, and the pool fills from
+it.
+
 Sessions launched from the image find the checkout and everything setup
 left around it (installed dependencies, virtualenvs, the docker build cache,
 built images, volumes) already on disk. The bootstrap fetches only what
@@ -445,7 +453,10 @@ and `pier teardown` sweeps them all by tag.
 
 Even a create from a prebuilt image boots a VM and runs setup. A pool holds
 sessions that already did: parked, **setup-complete** sessions waiting to be
-claimed. Baked repos keep a pool of one by default (the Fast profile).
+claimed. Baked repos keep a pool of one by default (the Fast profile). The
+pool fills in the background as soon as it can be: after `pier setup` in a
+baked repo, after every bake (recycling members built on the old image),
+after every claim, and whenever its size changes.
 
 ```
 pier pool               this repo's pool: ready, filling, what it costs
@@ -462,7 +473,10 @@ for one create.
 
 Pooled sessions are stopped instances, so each costs disk only (~$3-4/mo at
 40 GiB). They recycle themselves when they go stale — after a re-bake, a
-setup-script change, or 14 days (`pool.max_age`). The app's Repos tab shows
+setup-script change, or 14 days (`pool.max_age`). Any listing (`pier ls`,
+the app) also removes pooled sessions nothing would claim — a repo whose
+pool is off or has no image, a dead member, a fill that never parked — and
+bake instances whose bake died, from every repo, wherever you run it. The app's Repos tab shows
 every repo's pool with its cost: `+`/`-` sets the size, `f` fills, `x` drains.
 
 ### Rebake reminders
@@ -558,8 +572,9 @@ The cloud says "running" long before a session is usable, so pier doesn't:
 - **GCP wakes slower than AWS.** Resume to attached is about a minute
   against EC2's ~20s, and a running resize takes about two minutes. GCE
   stop/start simply takes longer.
-- **Bake hooks live only in baked images.** A repo with a `.pier/bake.sh`
-  that was never baked runs stock. Setup then fails loudly, not silently.
+- **A bake hook requires an image.** A repo with a `.pier/bake.sh` gets no
+  sessions until it's baked: `pier <branch>` refuses rather than launching
+  the stock image, where `.pier/setup.sh` would fail on missing toolchains.
 - **Resize stays within the CPU arch** (t4g to t4g). Providers only allow
   type changes on stopped instances.
 
@@ -638,6 +653,10 @@ The choices contributors should know before proposing changes
   setup-complete checkout so creates skip the repo's cold setup. Anything
   pier pushed is scrubbed before imaging and re-pushed per session, and
   `.pier/setup.sh` must stay safe to re-run on a warm disk.
+- **The cloud is the record of images.** Images carry their repo and owner
+  as tags; the config only caches which one a repo uses. A lost config
+  never orphans an image: setup and creates pick the newest one back up,
+  and a bake deletes every older image of its repo.
 - **Dirty state travels as a git patch,** not rsync. Binary-safe,
   reviewable, applied atomically after checkout.
 - **Truth over optimism in states.** The ready tag, the setup status file,

@@ -41,7 +41,7 @@ func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 	for _, name := range revived {
 		tombstone.Dismiss(config.Dir(), name)
 	}
-	return merged, nil
+	return c.sweep(ctx, merged), nil
 }
 
 // Enrich returns a copy of sessions with each running session's supervisor
@@ -54,16 +54,30 @@ func (c *Client) Enrich(ctx context.Context, sessions []Session) []Session {
 
 // SplitPool separates real sessions from unclaimed pooled sessions (warm
 // pool members): those are inventory, not work, and never sit in the
-// session table.
-func SplitPool(all []Session) (sessions, ready []Session) {
+// session table. Members on their way out are in neither.
+func SplitPool(all []Session) (sessions, pooled []Session) {
 	for _, s := range all {
-		if s.PoolGen != "" {
-			ready = append(ready, s)
-		} else {
+		switch {
+		case s.PoolGen == "":
 			sessions = append(sessions, s)
+		case s.State != driver.StateDeleting:
+			pooled = append(pooled, s)
 		}
 	}
-	return sessions, ready
+	return sessions, pooled
+}
+
+// PoolCounts splits pooled sessions into ready ones (parked, set up — what
+// a claim takes) and ones still being filled.
+func PoolCounts(pooled []Session) (ready, filling int) {
+	for _, s := range pooled {
+		if s.State == driver.StateParked {
+			ready++
+		} else {
+			filling++
+		}
+	}
+	return ready, filling
 }
 
 // enrich upgrades StateRunning to working/idle by reading each running

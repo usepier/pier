@@ -241,7 +241,14 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 		}
 	}
 
-	// 4. this repo's session image — offered, never assumed.
+	// Images already in the account come back into the config — a reset
+	// config must neither orphan them nor send sessions to the stock image.
+	if err := adoptImages(ctx, opts); err != nil {
+		return err
+	}
+
+	// 4. this repo's session image: required when the repo has a bake hook,
+	// offered otherwise.
 	if repo := gitToplevel(); repo != "" {
 		if err := offerBake(ctx, in, opts, repo); err != nil {
 			return err
@@ -442,8 +449,26 @@ func manifestSummary(m []string) string {
 	return strings.Join(parts, ", ") + " config"
 }
 
-// offerBake asks to bake the repo's session image now. A no is fine: the
-// same suggestion comes back as a reminder after creates.
+// adoptImages records the account's existing session images and deletes
+// superseded ones.
+func adoptImages(ctx context.Context, opts pier.Options) error {
+	c, err := pier.Open(opts)
+	if err != nil {
+		return err
+	}
+	rep, err := c.ReconcileImages(ctx)
+	for repo, img := range rep.Adopted {
+		fmt.Println("  " + ui.OK.Render("=") + " found " + repo + "'s session image " + img)
+	}
+	for _, img := range rep.Deleted {
+		fmt.Println("  " + ui.OK.Render("-") + " deleted superseded image " + img)
+	}
+	return err
+}
+
+// offerBake bakes the repo's session image now. A repo with .pier/bake.sh
+// doesn't work without one, so it bakes without asking; for any other repo
+// a no is fine — the suggestion comes back as a reminder after creates.
 func offerBake(ctx context.Context, in *bufio.Reader, opts pier.Options, repo string) error {
 	name := filepath.Base(repo)
 	c, err := pier.Open(opts)
@@ -451,13 +476,19 @@ func offerBake(ctx context.Context, in *bufio.Reader, opts pier.Options, repo st
 		return err
 	}
 	if c.Config().BakedImage(name) != "" {
+		// Already baked: make sure its pool is waiting for the first session.
+		if c.Config().PoolSize(name) > 0 {
+			printFill(c.SpawnFill(repo))
+		}
 		return nil
 	}
 	fmt.Println("\n " + ui.Accent.Render("4 · "+name))
 	if _, err := os.Stat(filepath.Join(repo, ".pier", "setup.sh")); err != nil {
 		fmt.Println(ui.Dim.Render("  no .pier/setup.sh yet — ask your agent to \"set this repo up for pier\" so sessions install its dependencies"))
 	}
-	if !yes(in, "No session image for "+name+" yet. Bake one now? New sessions then start in a minute or two instead of running the full setup", true) {
+	if driver.BakeHook(repo) != "" {
+		fmt.Println("  No session image for " + name + " yet, and its .pier/bake.sh toolchains are required — baking one now.")
+	} else if !yes(in, "No session image for "+name+" yet. Bake one now? New sessions then start in a minute or two instead of running the full setup", true) {
 		fmt.Println(ui.Dim.Render("  later: `pier bake` in the repo"))
 		return nil
 	}
@@ -472,8 +503,20 @@ func offerBake(ctx context.Context, in *bufio.Reader, opts pier.Options, repo st
 	if err != nil {
 		return err
 	}
-	fmt.Println("  "+ui.Mark(true), "baked", res.Image, "for", name)
+	fmt.Println("  "+ui.Mark(true), "baked", name, "— image", res.Image, "is being saved in the background")
+	if res.FinishLog != "" {
+		fmt.Println(ui.Dim.Render("  sessions start from it once it's saved, and the pool fills from it then — log: " + ui.Tilde(res.FinishLog)))
+	}
 	return nil
+}
+
+// printFill reports a background pool fill starting.
+func printFill(log string, err error) {
+	if err != nil {
+		fmt.Println("  " + ui.Warn.Render("!") + " pool fill didn't start: " + err.Error() + " — run `pier pool fill` in the repo")
+		return
+	}
+	fmt.Println(ui.Dim.Render("  filling the pool in the background, so the first session starts set up — log: " + ui.Tilde(log)))
 }
 
 // askAWS: tool check, then profile (identity-checked immediately), region,

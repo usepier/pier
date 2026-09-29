@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 	"github.com/usepier/pier/internal/pool"
 )
 
@@ -250,19 +252,34 @@ type BakeRequest struct {
 	Progress    Progress
 }
 
-// BakeResult is a finished bake.
+// BakeResult is a bake whose image is being saved.
 type BakeResult struct {
 	Image        string
 	RepoIncluded bool
-	// ReadyStale is set when the repo's pooled sessions were built on the
-	// previous image; they recycle on the next claim or refill.
-	ReadyStale bool
+	// FinishLog is where the background finish writes: it waits for the
+	// image, records it, deletes the images it replaces and fills the pool.
+	FinishLog string
 }
 
-// Bake builds (or rebuilds) the repo's session image and records it.
+// pendingBake is a bake handed to its background finish.
+type pendingBake struct {
+	Baked driver.Baked
+	Info  config.ImageInfo
+}
+
+func pendingBakePath(repo string) string {
+	return filepath.Join(config.Dir(), "logs", "bake-"+repo+".pending.json")
+}
+
+// Bake builds (or rebuilds) the repo's session image. It returns once the
+// image is being saved — copying the bake disk into image storage can take
+// longer than the bake — and leaves the rest to a background finish.
 func (c *Client) Bake(ctx context.Context, req BakeRequest) (BakeResult, error) {
 	start := time.Now()
 	name := filepath.Base(req.RepoRoot)
+	if pid := bakePID(name); pid != 0 && pid != os.Getpid() {
+		return BakeResult{}, fmt.Errorf("a bake of %s is already running — log: %s", name, BakeLogPath(name))
+	}
 	include := c.cfg.Speed.ImageRepo
 	if req.IncludeRepo != nil {
 		include = *req.IncludeRepo
@@ -270,37 +287,115 @@ func (c *Client) Bake(ctx context.Context, req BakeRequest) (BakeResult, error) 
 	spec := driver.BakeSpec{
 		RepoName: name,
 		HookPath: driver.BakeHook(req.RepoRoot),
-		// This bake supersedes the repo's previous image (and on aws-ec2,
-		// once per config, the legacy shared one).
-		Replaces: c.cfg.BakedReplaces(name),
 		Progress: req.Progress.stepper(start),
 	}
 	if include {
 		spec.RepoRoot = req.RepoRoot
 	}
-	img, err := c.drv.Bake(ctx, spec)
+	baked, err := c.drv.Bake(ctx, spec)
 	if err != nil {
 		return BakeResult{}, err
 	}
-	info := config.ImageInfo{
+	pending, err := json.Marshal(pendingBake{Baked: baked, Info: config.ImageInfo{
 		BakedAt:      time.Now().UTC(),
 		SetupSHA:     fileSHA(filepath.Join(req.RepoRoot, ".pier", "setup.sh")),
 		BakeSHA:      fileSHA(filepath.Join(req.RepoRoot, ".pier", "bake.sh")),
 		RepoIncluded: include,
-	}
-	// Update, not Save: a bake takes minutes, and c.cfg was read before it
-	// started. Saving it wholesale would revert anything written meanwhile —
-	// including another repo's bake.
-	next, err := config.Update(func(cfg *config.Config) error {
-		cfg.RecordBake(name, img)
-		cfg.RecordImageInfo(name, info)
-		return nil
-	})
+	}})
 	if err != nil {
 		return BakeResult{}, err
 	}
+	if err := os.MkdirAll(filepath.Dir(pendingBakePath(name)), 0o700); err != nil {
+		return BakeResult{}, err
+	}
+	if err := os.WriteFile(pendingBakePath(name), pending, 0o600); err != nil {
+		return BakeResult{}, err
+	}
+	res := BakeResult{Image: baked.Image, RepoIncluded: include, FinishLog: BakeFinishLogPath(name)}
+	pid, err := spawnDetachedPID(req.RepoRoot, res.FinishLog, false, "bake", "--finish")
+	if err != nil {
+		// No background process: finish here rather than leave the image
+		// and the bake instance to the sweeps.
+		res.FinishLog = ""
+		return res, c.FinishBake(ctx, req.RepoRoot, req.Progress)
+	}
+	// The finish is the bake's tail: BakeRunning stays true until it's done.
+	_ = os.WriteFile(bakePIDPath(name), []byte(strconv.Itoa(pid)), 0o600)
+	return res, nil
+}
+
+// FinishBake is a bake's background half: wait until the image can launch
+// sessions, release the bake instance, record the image, delete every image
+// it replaces, and fill the pool from it.
+func (c *Client) FinishBake(ctx context.Context, repoRoot string, progress Progress) error {
+	start := time.Now()
+	step := progress.stepper(start)
+	name := filepath.Base(repoRoot)
+	b, err := os.ReadFile(pendingBakePath(name))
+	if err != nil {
+		return fmt.Errorf("no bake of %s to finish: %w", name, err)
+	}
+	var p pendingBake
+	if err := json.Unmarshal(b, &p); err != nil {
+		return fmt.Errorf("bake of %s: %w", name, err)
+	}
+	step("saving image " + p.Baked.Image + " — copying the bake disk into image storage")
+	if err := c.drv.FinishBake(ctx, p.Baked, step); err != nil {
+		if ctx.Err() == nil {
+			os.Remove(pendingBakePath(name))
+		}
+		return err
+	}
+	os.Remove(pendingBakePath(name))
+	var replaced []string
+	// Update, not Save: c.cfg was read before the bake started. Saving it
+	// wholesale would revert anything written meanwhile — including another
+	// repo's bake.
+	next, err := config.Update(func(cfg *config.Config) error {
+		replaced = cfg.BakedReplaces(name)
+		cfg.RecordBake(name, p.Baked.Image)
+		cfg.RecordImageInfo(name, p.Info)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
 	c.cfg = next
-	return BakeResult{Image: img, RepoIncluded: include, ReadyStale: next.PoolSize(name) > 0}, nil
+	step("image " + p.Baked.Image + " ready — new " + name + " sessions start from it")
+	// Every earlier image of the repo goes: the config's previous pick (and
+	// on aws-ec2 the legacy shared image), and any the config lost track of.
+	if imgs, err := c.drv.Images(ctx); err == nil {
+		for _, img := range imgs {
+			if img.Repo == payload.Sanitize(name) {
+				replaced = append(replaced, img.ID)
+			}
+		}
+	} else {
+		step("could not list images (" + err.Error() + ") — only the recorded previous image is removed")
+	}
+	seen := map[string]bool{p.Baked.Image: true, "": true}
+	for _, id := range replaced {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if err := c.drv.DeleteImage(ctx, id); err != nil {
+			step("could not delete superseded image " + id + ": " + err.Error())
+			continue
+		}
+		step("deleted superseded image " + id)
+	}
+	// The pool fills now, not on the next create: its members were built on
+	// the old image (the fill recycles them), and the next session should
+	// find one waiting.
+	if next.PoolSize(name) > 0 {
+		log, err := c.SpawnFill(repoRoot)
+		if err != nil {
+			return fmt.Errorf("pool fill didn't start: %w — run `pier pool fill`", err)
+		}
+		step("filling the pool from the new image — log: " + log)
+	}
+	return nil
 }
 
 // poolParams assembles everything internal/pool needs, including the
@@ -375,6 +470,9 @@ func (c *Client) DrainPool(ctx context.Context, repo string, progress Progress) 
 
 // Refill tops the repo's pooled sessions up to target, in the foreground.
 func (c *Client) FillPool(ctx context.Context, repoRoot string, progress Progress) error {
+	if err := c.needImage(repoRoot); err != nil {
+		return err
+	}
 	pp, err := c.poolParams(repoRoot, progress, time.Now())
 	if err != nil {
 		return err
@@ -418,18 +516,26 @@ func (c *Client) SpawnBake(repoRoot string) (string, error) {
 	return logPath, nil
 }
 
-// BakeRunning reports whether a background bake of repo started from this
-// machine is still running (its process is alive).
-func BakeRunning(repo string) bool {
+// BakeRunning reports whether a bake of repo started from this machine is
+// still running, its background finish included.
+func BakeRunning(repo string) bool { return bakePID(repo) != 0 }
+
+// bakePID is the live process of repo's bake, 0 when none.
+func bakePID(repo string) int {
 	b, err := os.ReadFile(bakePIDPath(repo))
 	if err != nil {
-		return false
+		return 0
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		return false
+	if err != nil || pid <= 0 || syscall.Kill(pid, 0) != nil {
+		return 0
 	}
-	return syscall.Kill(pid, 0) == nil
+	return pid
+}
+
+// BakeFinishLogPath is where a bake's background finish writes.
+func BakeFinishLogPath(repo string) string {
+	return filepath.Join(config.Dir(), "logs", "bake-"+repo+".finish.log")
 }
 
 func bakePIDPath(repo string) string {

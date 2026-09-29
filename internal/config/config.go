@@ -253,6 +253,17 @@ func (c *Config) RecordBake(repo, image string) {
 	c.AWS.BakedAMI = ""
 }
 
+// ForgetBake drops repo's image reference and its bake details under the
+// active driver (the image itself is gone or superseded).
+func (c *Config) ForgetBake(repo string) {
+	if c.gcp() {
+		delete(c.GCP.BakedImages, repo)
+	} else {
+		delete(c.AWS.BakedAMIs, repo)
+	}
+	delete(c.Images, repo)
+}
+
 // ClearBakes drops the active driver's baked-image references (teardown
 // deleted the images themselves).
 func (c *Config) ClearBakes() {
@@ -313,6 +324,16 @@ func (c Config) PoolRepos() []string {
 	for r := range c.bakedRepos() {
 		add(r)
 	}
+	return out
+}
+
+// BakedRepos lists the repos with an image under the active driver.
+func (c Config) BakedRepos() []string {
+	var out []string
+	for r := range c.bakedRepos() {
+		out = append(out, r)
+	}
+	slices.Sort(out)
 	return out
 }
 

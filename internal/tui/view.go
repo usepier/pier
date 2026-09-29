@@ -58,19 +58,18 @@ func (m model) bodyHeight() int {
 func (m model) header() string {
 	left := " " + sBrand.Render("⚓ pier") + "  "
 	for i, name := range tabNames {
-		label := name
-		if tab(i) == tabRepos {
-			if n := m.reminderCount(); n > 0 {
-				label += " " + sWarn.Render("•")
-			}
-		}
 		if tab(i) == m.tab {
 			left += sTabOn.Render(name)
-			if label != name {
-				left += sWarn.Render("•")
-			}
 		} else {
-			left += sTabOff.Render(label)
+			left += sTabOff.Render(name)
+		}
+		// The reminder dot always has its column, so tabs never shift.
+		if tab(i) == tabRepos {
+			if m.reminderCount() > 0 {
+				left += sWarn.Render("•")
+			} else {
+				left += " "
+			}
 		}
 	}
 
@@ -94,8 +93,8 @@ func (m model) header() string {
 		if parked > 0 {
 			meta = append(meta, fmt.Sprintf("%d parked", parked))
 		}
-		if len(m.ready) > 0 {
-			meta = append(meta, fmt.Sprintf("%d pooled", len(m.ready)))
+		if ready, _ := pier.PoolCounts(m.ready); ready > 0 {
+			meta = append(meta, fmt.Sprintf("%d pooled", ready))
 		}
 		if hourly > 0 {
 			meta = append(meta, fmt.Sprintf("~$%.2f/h", hourly))
