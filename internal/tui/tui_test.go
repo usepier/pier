@@ -27,6 +27,7 @@ type fake struct {
 	filled   []string
 	ready    map[string]int
 	setErr   error
+	enriched [][]pier.Session // what each status read was given
 }
 
 func newFake() *fake {
@@ -54,8 +55,11 @@ func (f *fake) Cloud() string { return "AWS eu-central-1" }
 func (f *fake) ListSessions(context.Context) ([]pier.Session, error) {
 	return f.sessions, nil
 }
-func (f *fake) Enrich(_ context.Context, s []pier.Session) []pier.Session { return s }
-func (f *fake) Repos([]pier.Session, string) []pier.Repo                  { return f.repos }
+func (f *fake) Enrich(_ context.Context, s []pier.Session) []pier.Session {
+	f.enriched = append(f.enriched, append([]pier.Session(nil), s...))
+	return s
+}
+func (f *fake) Repos([]pier.Session, string) []pier.Repo { return f.repos }
 func (f *fake) Headroom(context.Context) (pier.Quota, error) {
 	return pier.Quota{Detail: "10/32 vCPU"}, nil
 }
@@ -492,5 +496,53 @@ func TestSessionsSortByName(t *testing.T) {
 		if m.sessions[i-1].Name > m.sessions[i].Name {
 			t.Fatalf("rows out of order: %s before %s", m.sessions[i-1].Name, m.sessions[i].Name)
 		}
+	}
+}
+
+// A refresh shows the last status read until the new one lands, but the new
+// read must see the cloud's list: a session last read as idle arrives as
+// plain running, and reading the carried "idle" copy instead would skip it
+// and freeze its status (a finished setup kept showing as running).
+func TestRefreshReadsStatusFresh(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 140, 32)
+	f.enriched = nil
+	raw := []pier.Session{{ID: "i-3", Name: "perf-test", Repo: "flb-estimation", State: pier.StateRunning}}
+	next, cmd := m.Update(sessionsMsg{all: raw})
+	if s := next.(model).sessions[0]; s.State != pier.StateIdle || s.Setup != "running" {
+		t.Fatalf("the last read must stay on screen until the new one lands, got %s/%q", s.State, s.Setup)
+	}
+	msgs := make(chan tea.Msg, 8)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		go func() {
+			msg := c()
+			if b, ok := msg.(tea.BatchMsg); ok {
+				for _, c := range b {
+					run(c)
+				}
+				return
+			}
+			msgs <- msg
+		}()
+	}
+	run(cmd)
+	deadline := time.After(2 * time.Second)
+wait:
+	for {
+		select {
+		case msg := <-msgs:
+			if sm, ok := msg.(sessionsMsg); ok && sm.enriched {
+				break wait
+			}
+		case <-deadline:
+			t.Fatal("a refresh must read the sessions' status")
+		}
+	}
+	if got := f.enriched[0][0]; got.State != pier.StateRunning || got.Setup != "" {
+		t.Errorf("the status read must get the cloud's list, got %s/%q", got.State, got.Setup)
 	}
 }

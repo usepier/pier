@@ -200,8 +200,12 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-func pollCmd() tea.Cmd {
-	return tea.Tick(5*time.Second, func(time.Time) tea.Msg { return pollMsg{} })
+// Poll intervals: fast while something is changing, slow otherwise — the
+// VM changes state on its own too (idle, working, parking itself).
+const pollFast, pollSlow = 5 * time.Second, 30 * time.Second
+
+func pollCmd(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return pollMsg{} })
 }
 
 func (m model) fetch() tea.Msg {
@@ -244,11 +248,14 @@ func (m *model) fail(err error) {
 }
 
 // inFlight reports whether something is changing on its own (a create, a
-// refill, a bake), so the list keeps refreshing without a keypress.
+// setup, a refill, a bake), so the list refreshes fast without a keypress.
 func (m model) inFlight() bool {
 	for _, s := range m.all {
 		switch s.State {
 		case pier.StateCreating, pier.StateDeleting:
+			return true
+		}
+		if s.Setup == "running" {
 			return true
 		}
 		if s.PoolGen != "" && s.State != pier.StateParked && s.State != pier.StateDead {
@@ -291,9 +298,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.fail(msg.err)
+			// A failed read (a network blip) must not end the refreshing.
+			if !m.polling {
+				m.polling = true
+				return m, pollCmd(pollSlow)
+			}
 			return m, nil
 		}
 		m.loaded, m.authRequired = true, false
+		// The status read runs on the list as the cloud returned it. The
+		// carried copy below is display-only: reading that one would skip
+		// every session last seen idle or working (only plain running
+		// sessions are read) and freeze their status for good.
+		fresh := append([]pier.Session(nil), msg.all...) // carryStatus edits in place
 		if !msg.enriched {
 			// Keep what the last status read said until the new one lands,
 			// so rows don't blink between states on every refresh.
@@ -313,11 +330,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmds []tea.Cmd
 		if !msg.enriched {
-			cmds = append(cmds, m.enrich(msg.all))
+			cmds = append(cmds, m.enrich(fresh))
 		}
-		if (m.inFlight() || m.watch > 0) && !m.polling {
+		if !m.polling {
 			m.polling = true
-			cmds = append(cmds, pollCmd())
+			d := pollSlow
+			if m.inFlight() || m.watch > 0 {
+				d = pollFast
+			}
+			cmds = append(cmds, pollCmd(d))
 		}
 		return m, tea.Batch(cmds...)
 
