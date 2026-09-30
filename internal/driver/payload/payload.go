@@ -52,8 +52,12 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 	if err := os.WriteFile(supPath, supervisor, 0o755); err != nil {
 		return nil, err
 	}
+	gitcfg, err := gitConfig(spec.Repo)
+	if err != nil {
+		return nil, err
+	}
 	bootPath := filepath.Join(dir, "pier-bootstrap.sh")
-	if err := os.WriteFile(bootPath, []byte(renderBootstrap(spec, mode, sha, origin)), 0o755); err != nil {
+	if err := os.WriteFile(bootPath, []byte(renderBootstrap(spec, mode, sha, origin, gitcfg)), 0o755); err != nil {
 		return nil, err
 	}
 	p.Pushes = append([]Push{

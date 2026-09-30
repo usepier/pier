@@ -354,6 +354,14 @@ have before skipping the bundle. Pushing from a session works anytime with a
 token, and while attached with ssh keys only (the forwarded agent leaves
 when you do).
 
+Sessions commit as you: the author identity your laptop's git uses
+(fallbacks included, like macOS filling a missing `user.name` from your
+account's full name) becomes the session's global git config, along with
+portable settings such as `pull.rebase` and `push.autoSetupRemote`.
+Credential helpers, includes and signing stay behind, since they name things
+that exist only on the laptop. With no git identity at all, create stops and
+says how to set one.
+
 ### Secrets, deliberately boring
 
 Local files and secrets travel once, at create, in the files payload:

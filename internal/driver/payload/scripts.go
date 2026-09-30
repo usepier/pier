@@ -1,6 +1,7 @@
 package payload
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"time"
@@ -318,11 +319,11 @@ func BootstrapNote(image string) string {
 	return "bootstrapping (baked image: harnesses installed, prebuilt checkout reused when present)"
 }
 
-func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
+func renderBootstrap(spec driver.CreateSpec, mode, sha, origin, gitcfg string) string {
 	return strings.NewReplacer(
 		"{{REPO}}", filepath.Base(spec.Repo),
 		"{{BRANCH}}", spec.Branch,
-		"{{GITCONFIG}}", gitIdentity(spec.Repo),
+		"{{GITCONFIG}}", gitcfg,
 		"{{MODE}}", mode,
 		"{{SHA}}", sha,
 		"{{ORIGIN}}", origin,
@@ -330,16 +331,50 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
 	).Replace(bootstrapTmpl)
 }
 
-// gitIdentity replicates the laptop's git author identity as config lines
-// spliced into the bootstrap/freshen scripts. Values containing a quote are
-// dropped rather than escaped — the scripts single-quote them.
-func gitIdentity(repo string) string {
-	var gitcfg []string
-	for _, key := range []string{"user.name", "user.email"} {
-		out, err := gitOut(repo, "config", key)
-		if err == nil && out != "" && !strings.Contains(out, "'") {
-			gitcfg = append(gitcfg, "git config "+key+" '"+out+"'")
+// gitPortable are the laptop git settings a session carries: behavior with
+// no path or program in it. Credential helpers, includes, editors and
+// signing stay behind — they name things that exist only on the laptop.
+var gitPortable = []string{
+	"pull.rebase", "pull.ff", "push.autoSetupRemote", "push.default",
+	"init.defaultBranch", "rebase.autoStash", "rebase.updateRefs",
+	"merge.conflictStyle", "fetch.prune", "diff.algorithm", "rerere.enabled",
+}
+
+// gitConfig renders the laptop's git identity and portable settings as the
+// session's global git config, spliced into the bootstrap/freshen scripts
+// (which run inside the repo). The identity is what the laptop's git would
+// commit as (git var), fallbacks included: macOS fills a missing user.name
+// from the account's full name, which the VM's user doesn't have. No
+// identity at all is an error — every commit in the session would fail.
+func gitConfig(repo string) (string, error) {
+	ident, err := gitOut(repo, "var", "GIT_AUTHOR_IDENT")
+	name, email, ok := parseIdent(ident)
+	if err != nil || !ok {
+		return "", errors.New("git has no author identity on this machine, so commits in the session would fail — " +
+			"set it with `git config --global user.name \"Your Name\"` and `git config --global user.email you@example.com`")
+	}
+	lines := []string{
+		// A repo-local identity (an older bootstrap, the image's prebuild)
+		// would shadow the global one.
+		"git config --local --unset-all user.name 2>/dev/null || true",
+		"git config --local --unset-all user.email 2>/dev/null || true",
+		"git config --global user.name " + shQuote(name),
+		"git config --global user.email " + shQuote(email),
+	}
+	for _, key := range gitPortable {
+		if v, err := gitOut(repo, "config", "--get", key); err == nil && v != "" {
+			lines = append(lines, "git config --global "+key+" "+shQuote(v))
 		}
 	}
-	return strings.Join(gitcfg, "\n")
+	return strings.Join(lines, "\n"), nil
+}
+
+// parseIdent splits `git var GIT_AUTHOR_IDENT` output ("Name <email> 1700000000 +0100").
+func parseIdent(ident string) (name, email string, ok bool) {
+	i, j := strings.LastIndex(ident, " <"), strings.LastIndex(ident, ">")
+	if i <= 0 || j < i+2 {
+		return "", "", false
+	}
+	name, email = strings.TrimSpace(ident[:i]), ident[i+2:j]
+	return name, email, name != "" && email != ""
 }

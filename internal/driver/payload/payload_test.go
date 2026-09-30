@@ -151,7 +151,7 @@ func TestFetchURL(t *testing.T) {
 func TestRenderBootstrapModes(t *testing.T) {
 	spec := driver.CreateSpec{Name: "x", Repo: "/tmp/myrepo", Branch: "feat"}
 
-	origin := renderBootstrap(spec, "origin", "abc123", "https://github.com/o/r")
+	origin := renderBootstrap(spec, "origin", "abc123", "https://github.com/o/r", "")
 	for _, want := range []string{
 		"git fetch -q --no-tags origin abc123",
 		"git remote add origin 'https://github.com/o/r'",
@@ -196,7 +196,7 @@ func TestRenderBootstrapModes(t *testing.T) {
 		t.Error("origin mode must not fetch a bundle")
 	}
 
-	full := renderBootstrap(spec, "full", "abc123", "")
+	full := renderBootstrap(spec, "full", "abc123", "", "")
 	// The ref carries the session name: concurrent creates in one repo must
 	// not race on a shared refs/pier/export.
 	if !strings.Contains(full, "git fetch -q /tmp/pier.bundle refs/pier/export-x") {
@@ -606,5 +606,44 @@ func TestFilesTarWidensCarriedModes(t *testing.T) {
 	}
 	for name := range want {
 		t.Errorf("%s missing from the files tar", name)
+	}
+}
+
+// Sessions commit as whoever the laptop's git commits as — including the
+// fallbacks the VM doesn't share — and carry only settings with no laptop
+// path or program in them.
+func TestGitConfigCarriesTheEffectiveIdentity(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "dev@example.com")
+	git("config", "pull.rebase", "true")
+	git("config", "credential.helper", "!/opt/homebrew/bin/gh auth git-credential")
+	t.Setenv("GIT_AUTHOR_NAME", "Dev O'Neil") // stands in for the OS full-name fallback
+
+	cfg, err := gitConfig(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`git config --global user.name 'Dev O'\''Neil'`,
+		`git config --global user.email 'dev@example.com'`,
+		`git config --global pull.rebase 'true'`,
+		`git config --local --unset-all user.name`,
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("missing %q in:\n%s", want, cfg)
+		}
+	}
+	if strings.Contains(cfg, "credential") {
+		t.Errorf("laptop-only settings must stay behind:\n%s", cfg)
+	}
+
+	if _, _, ok := parseIdent(" <dev@example.com> 1700000000 +0000"); ok {
+		t.Error("an identity without a name must be rejected")
 	}
 }
