@@ -80,11 +80,15 @@ func BuildFreshen(ctx context.Context, dir string, spec driver.CreateSpec, oldBr
 	if err != nil {
 		return nil, err
 	}
+	gitcfg, err := gitConfig(spec.Repo)
+	if err != nil {
+		return nil, err
+	}
 	script := strings.NewReplacer(
 		"{{REPO}}", filepath.Base(spec.Repo),
 		"{{BRANCH}}", spec.Branch,
 		"{{OLDBRANCH}}", oldBranch,
-		"{{GITCONFIG}}", gitIdentity(spec.Repo),
+		"{{GITCONFIG}}", gitcfg,
 		"{{MODE}}", mode,
 		"{{SHA}}", sha,
 		"{{ORIGIN}}", origin,

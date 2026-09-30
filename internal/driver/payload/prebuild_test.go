@@ -165,7 +165,7 @@ func TestWaitSetup(t *testing.T) {
 // `git remote add` against a repo that already has them.
 func TestRenderBootstrapReusesPrebuiltCheckout(t *testing.T) {
 	spec := driver.CreateSpec{Name: "x", Repo: "/tmp/myrepo", Branch: "feat"}
-	b := renderBootstrap(spec, "origin", "abc123", "https://github.com/o/r")
+	b := renderBootstrap(spec, "origin", "abc123", "https://github.com/o/r", "")
 	for _, want := range []string{
 		`if [ -d .git ]; then prebuilt=1; else git init -q -b 'feat'; fi`,
 		`git remote set-url origin 'https://github.com/o/r' 2>/dev/null || git remote add origin 'https://github.com/o/r'`,
@@ -186,7 +186,7 @@ func TestRenderBootstrapReusesPrebuiltCheckout(t *testing.T) {
 // containers come back by themselves on the claim's boot.
 func TestSetupRunsOnceNotOnClaim(t *testing.T) {
 	spec := driver.CreateSpec{Name: "x", Repo: "/tmp/r", Branch: "feat"}
-	boot := renderBootstrap(spec, "origin", "abc", "")
+	boot := renderBootstrap(spec, "origin", "abc", "", "")
 	if !strings.Contains(boot, "tmux new-window -d -t main -n setup") {
 		t.Error("the bootstrap must run setup")
 	}

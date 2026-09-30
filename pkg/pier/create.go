@@ -67,15 +67,17 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 		return CreateResult{}, fmt.Errorf("runaway cap: %w", err)
 	}
 	repo := filepath.Base(req.RepoRoot)
-	image := c.cfg.BakedImage(repo)
-	// A repo with a bake hook has declared that stock isn't enough for it.
-	// Launching stock anyway is legal but almost never what was wanted: the
-	// create succeeds, then .pier/setup.sh dies minutes later on a missing
-	// toolchain. Say it now, while it's one sentence.
-	if image == "" && driver.BakeHook(req.RepoRoot) != "" {
-		req.Progress.emit(start, EventWarn, "no session image for "+repo+
-			" — .pier/bake.sh toolchains will be missing and .pier/setup.sh may fail; `pier bake` fixes it")
+	if c.cfg.BakedImage(repo) == "" {
+		// The config may just have lost track of an image the cloud still
+		// holds (a reset config, another laptop's bake).
+		if _, err := c.ReconcileImages(ctx); err != nil {
+			req.Progress.emit(start, EventWarn, "could not look up session images: "+err.Error())
+		}
 	}
+	if err := c.needImage(req.RepoRoot); err != nil {
+		return CreateResult{}, err
+	}
+	image := c.cfg.BakedImage(repo)
 
 	poolable := c.cfg.PoolSize(repo) > 0 && !req.NoPool
 	var res CreateResult
@@ -164,4 +166,19 @@ func (c *Client) bury(req CreateRequest, cause error) {
 func fileExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()
+}
+
+// needImage refuses a repo with a bake hook but no session image. The hook
+// declares that the stock image isn't enough: a session launched from it
+// runs .pier/setup.sh without the toolchains and fails minutes later.
+func (c *Client) needImage(repoRoot string) error {
+	repo := filepath.Base(repoRoot)
+	if c.cfg.BakedImage(repo) == "" && driver.BakeHook(repoRoot) != "" {
+		if BakeRunning(repo) {
+			return fmt.Errorf("%s's first session image is still being baked or saved — sessions can start once it's done (log: %s)",
+				repo, BakeFinishLogPath(repo))
+		}
+		return fmt.Errorf("%s has no session image, and its .pier/bake.sh toolchains are needed for sessions to work — run `pier bake` first", repo)
+	}
+	return nil
 }

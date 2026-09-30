@@ -116,11 +116,28 @@ type ClaimSpec struct {
 // RepoRoot set, the bake is a prebuild — the repo checked out and its
 // .pier/setup.sh run to completion, so sessions start from the result.
 type BakeSpec struct {
-	RepoName string   // repo basename; keys the image to its repo
-	RepoRoot string   // local repo root to prebuild from; "" = toolchains only
-	HookPath string   // local path to the repo's .pier/bake.sh; "" = none
-	Replaces []string // images this bake supersedes (previous bake, legacy shared image)
+	RepoName string // repo basename; keys the image to its repo
+	RepoRoot string // local repo root to prebuild from; "" = toolchains only
+	HookPath string // local path to the repo's .pier/bake.sh; "" = none
 	Progress func(step string)
+}
+
+// Baked is a bake whose image is being saved. Saving copies the bake disk
+// into image storage and can outlast the bake itself, so Bake returns as soon
+// as it starts; Instance, the stopped bake instance, is held until
+// FinishBake sees the image through.
+type Baked struct {
+	Image    string
+	Instance string
+}
+
+// Image is one of the caller's baked session images, as the cloud lists it.
+// The cloud is the record: the config only caches which image a repo uses,
+// so a lost config never orphans a still-billing image.
+type Image struct {
+	ID      string
+	Repo    string // the repo name the bake tagged it with (payload.Sanitize form)
+	Created time.Time
 }
 
 // Step reports one bake phase; a nil Progress discards it.
@@ -222,7 +239,19 @@ type Driver interface {
 	// Bake builds one repo's prebaked session image: harnesses, the repo's
 	// .pier/bake.sh toolchains, and (prebuild) its checkout with
 	// .pier/setup.sh already run, so creates skip the repo's own setup cost.
-	Bake(ctx context.Context, spec BakeSpec) (imageID string, err error)
+	// It returns once the image is being saved; on error nothing is left.
+	Bake(ctx context.Context, spec BakeSpec) (Baked, error)
+	// FinishBake waits until the bake's image can launch sessions, then
+	// removes the bake instance. An image that failed is deleted as well; a
+	// cancelled wait leaves both for the next bake, image reconcile or sweep.
+	FinishBake(ctx context.Context, b Baked, step func(string)) error
+
+	// Images lists the caller's available baked images: tagged with the
+	// caller's identity, or with none (bakes from before images carried one).
+	// Images still being created are left out.
+	Images(ctx context.Context) ([]Image, error)
+	// DeleteImage removes an image and its storage (snapshots).
+	DeleteImage(ctx context.Context, id string) error
 
 	// Headroom reports account capacity (vCPU quota) for the create-time
 	// opportunistic check and the TUI header.

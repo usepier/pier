@@ -239,3 +239,38 @@ func TestWaitImageOutlastsSlowSnapshots(t *testing.T) {
 		t.Fatalf("a failed image must stop the wait with its state, got %v", err)
 	}
 }
+
+// A bake hands its stopped instance to FinishBake, which must terminate it
+// once the image is saved — and leave both alone while the image is still
+// on its way, so a slow snapshot is never cut short.
+func TestFinishBakeReleasesTheBakeInstance(t *testing.T) {
+	swap(t, &imagePoll, time.Millisecond)
+	bin := t.TempDir()
+	log := filepath.Join(bin, "log")
+	script := "#!/bin/sh\necho \"$2\" >> " + log + "\ncase \"$2\" in\n" +
+		"describe-images) echo \"$STATE snap-1\" ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "aws"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	d := &Driver{}
+	b := driver.Baked{Image: "ami-1", Instance: "i-bake"}
+
+	t.Setenv("STATE", "available")
+	if err := d.FinishBake(context.Background(), b, func(string) {}); err != nil {
+		t.Fatalf("an available image must finish the bake, got %v", err)
+	}
+	if ran, _ := os.ReadFile(log); !strings.Contains(string(ran), "terminate-instances") {
+		t.Errorf("the bake instance must be terminated once the image is saved, ran:\n%s", ran)
+	}
+
+	os.Remove(log)
+	swap(t, &imageWait, 0)
+	t.Setenv("STATE", "pending")
+	if err := d.FinishBake(context.Background(), b, func(string) {}); err == nil {
+		t.Fatal("an image still saving at the deadline must be reported")
+	}
+	if ran, _ := os.ReadFile(log); strings.Contains(string(ran), "terminate-instances") || strings.Contains(string(ran), "deregister-image") {
+		t.Errorf("an image still saving must keep its instance and itself, ran:\n%s", ran)
+	}
+}
