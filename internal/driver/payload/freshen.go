@@ -15,7 +15,7 @@ import (
 // what's cheap-but-stale current again — this script is that step. It runs on
 // the just-resumed member (a boot: /tmp is clean, and any tmux server is the
 // restore of the member's own fill-time layout, which the script discards)
-// after the same cargo pushes as create, minus supervisor + user-data.
+// after the same cargo pushes as create, minus user-data.
 
 var freshenTmpl = `#!/usr/bin/env bash
 # pier freshen — runs at claim, as agent, on a just-resumed warm pool member.
@@ -32,6 +32,10 @@ if [ -f /etc/systemd/system/pier-restore.service ]; then
 fi
 tmux kill-server 2>/dev/null || true
 rm -rf "$HOME/.pier/tmux"
+
+# The supervisor is this pier's, not the fill's: a member stays claimable
+# across pier upgrades.
+` + installSupervisor + `
 
 tar -xf /tmp/pier-files.tar -C "$HOME" --strip-components=1 home 2>/dev/null || true
 set -a; . "$HOME/.config/pier/env" 2>/dev/null || true; set +a
@@ -63,7 +67,7 @@ tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
 sudo hostnamectl set-hostname '{{HOSTNAME}}' 2>/dev/null || true
 
 ` + sessionUp(false) + `
-rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-freshen.sh
+rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-supervisor /tmp/pier-freshen.sh
 echo freshened
 `
 
@@ -75,7 +79,7 @@ echo freshened
 // supervisor timeouts are deliberately NOT reset here: fill leaves a 2m idle
 // leash that could self-park the member mid-push, so the claim flow resets
 // the conf via Exec right after Resume, before any of this lands.
-func BuildFreshen(ctx context.Context, dir string, spec driver.CreateSpec, oldBranch string, manifest []string, env map[string]string, progress func(string)) (*Payload, error) {
+func BuildFreshen(ctx context.Context, dir string, spec driver.CreateSpec, oldBranch string, supervisor []byte, manifest []string, env map[string]string, progress func(string)) (*Payload, error) {
 	p, mode, sha, origin, err := buildCommon(ctx, dir, spec, manifest, env, progress)
 	if err != nil {
 		return nil, err
@@ -99,6 +103,10 @@ func BuildFreshen(ctx context.Context, dir string, spec driver.CreateSpec, oldBr
 	if err := os.WriteFile(fp, []byte(script), 0o755); err != nil {
 		return nil, err
 	}
-	p.Pushes = append([]Push{{fp, "/tmp/pier-freshen.sh"}}, p.Pushes...)
+	supPath := filepath.Join(dir, "pier-supervisor")
+	if err := os.WriteFile(supPath, supervisor, 0o755); err != nil {
+		return nil, err
+	}
+	p.Pushes = append([]Push{{fp, "/tmp/pier-freshen.sh"}, {supPath, "/tmp/pier-supervisor"}}, p.Pushes...)
 	return p, nil
 }

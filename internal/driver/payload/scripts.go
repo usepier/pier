@@ -188,18 +188,11 @@ grep -q 'BROWSER=/usr/local/bin/xdg-open' "$HOME/.bashrc" 2>/dev/null || echo 'e
 	return s
 }
 
-var bootstrapTmpl = `#!/usr/bin/env bash
-# pier bootstrap — runs once, as agent, on the fresh instance.
-set -euo pipefail
-
-# Stock image: harness install still running under cloud-init; wait it out.
-# Guard on binaries the stock image LACKS: Ubuntu ships git and tmux, so
-# guarding on those skipped the wait everywhere (the same trap the
-# user-data idempotency guards document) and .pier/setup.sh raced the
-# node/docker/claude installs it depends on.
-command -v docker >/dev/null && command -v node >/dev/null && command -v claude >/dev/null || sudo cloud-init status --wait >/dev/null || true
-
-sudo install -m 0755 /tmp/pier-supervisor /usr/local/bin/pier-supervisor
+// installSupervisor installs /tmp/pier-supervisor and its units and
+// (re)starts it. Bootstrap runs it on every new session, freshen on every
+// claim, so a session always runs the in-VM half of the pier that made or
+// claimed it — never an image's or a pool fill's older one.
+const installSupervisor = `sudo install -m 0755 /tmp/pier-supervisor /usr/local/bin/pier-supervisor
 sudo tee /etc/systemd/system/pier-supervisor.service >/dev/null <<'UNIT'
 [Unit]
 Description=pier session supervisor (self-park watchdog)
@@ -252,7 +245,20 @@ sudo systemctl enable pier-supervisor.service
 sudo systemctl restart pier-supervisor.service
 # --now on a fresh instance finds no saved layout and just writes the marker.
 sudo systemctl enable --now pier-restore.service
+`
 
+var bootstrapTmpl = `#!/usr/bin/env bash
+# pier bootstrap — runs once, as agent, on the fresh instance.
+set -euo pipefail
+
+# Stock image: harness install still running under cloud-init; wait it out.
+# Guard on binaries the stock image LACKS: Ubuntu ships git and tmux, so
+# guarding on those skipped the wait everywhere (the same trap the
+# user-data idempotency guards document) and .pier/setup.sh raced the
+# node/docker/claude installs it depends on.
+command -v docker >/dev/null && command -v node >/dev/null && command -v claude >/dev/null || sudo cloud-init status --wait >/dev/null || true
+
+` + installSupervisor + `
 tar -xf /tmp/pier-files.tar -C "$HOME" --strip-components=1 home 2>/dev/null || true
 set -a; . "$HOME/.config/pier/env" 2>/dev/null || true; set +a
 

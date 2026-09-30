@@ -395,3 +395,12 @@ func (d *Driver) waitSSH(ctx context.Context, id string, timeout time.Duration) 
 	}
 	return fmt.Errorf("session %s not reachable after %s", id, timeout)
 }
+
+// Supervisor returns the supervisor build for instanceType's architecture.
+func (d *Driver) Supervisor(ctx context.Context, instanceType string) ([]byte, error) {
+	arch, err := d.archOf(ctx, instanceType)
+	if err != nil {
+		return nil, err
+	}
+	return d.SupervisorBin(arch)
+}
