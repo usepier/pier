@@ -419,7 +419,7 @@ func (c *Client) poolParams(repoRoot string, progress Progress, start time.Time)
 	return pool.Params{
 		Driver:      c.drv,
 		RepoRoot:    repoRoot,
-		Gen:         pool.Generation(c.drv.Name(), image, c.MachineType(), c.DiskGiB(), pool.SetupScript(repoRoot), c.buildFingerprint()),
+		Gen:         pool.Generation(c.drv.Name(), image, c.MachineType(), c.DiskGiB(), pool.SetupScript(repoRoot)),
 		Size:        c.cfg.PoolSize(repo),
 		MaxAge:      maxAge,
 		Image:       image,
@@ -588,20 +588,4 @@ func HourlyUSD(s Session) float64 {
 	}
 	f, _ := strconv.ParseFloat(m[1], 64)
 	return f
-}
-
-// buildFingerprint identifies the in-VM half of this pier: a hash of the
-// supervisor binaries it installs. Pooled sessions filled by a different
-// build are stale — a claim doesn't reinstall the supervisor.
-func (c *Client) buildFingerprint() string {
-	if c.opts.SupervisorBin == nil {
-		return ""
-	}
-	h := sha256.New()
-	for _, arch := range []string{"arm64", "amd64"} {
-		if b, err := c.opts.SupervisorBin(arch); err == nil {
-			h.Write(b)
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil))[:12]
 }

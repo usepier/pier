@@ -427,3 +427,8 @@ func (d *Driver) SSHTarget(ctx context.Context, id string) ([]string, string, er
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)
 }
+
+// Supervisor returns the supervisor build for machineType's architecture.
+func (d *Driver) Supervisor(_ context.Context, machineType string) ([]byte, error) {
+	return d.SupervisorBin(archOf(machineType))
+}

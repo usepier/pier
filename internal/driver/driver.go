@@ -198,6 +198,10 @@ type Driver interface {
 	// the instance itself.
 	Claim(ctx context.Context, id string, spec ClaimSpec) error
 
+	// Supervisor returns the in-VM supervisor build for instances of this
+	// type (its CPU architecture): a claim installs it on the member.
+	Supervisor(ctx context.Context, instanceType string) ([]byte, error)
+
 	// MarkReady writes the ready tag/label: the session is attachable. It's
 	// a create's last act, and a claim's — Claim clears it at its commit
 	// point, so a claimed session lists as starting, not parked, while it

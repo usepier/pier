@@ -20,8 +20,8 @@ import (
 // Claim tries to turn a warm pool member into the requested session:
 // tag-claim it (nonce read-back settles races), resume it, freshen it —
 // secrets re-pushed, repo moved to the requested branch/base, dirty patch
-// applied, the user's supervisor timeouts restored, setup re-run async to
-// catch drift since fill. Returns (nil, nil) when no member is claimable or
+// applied, this pier's supervisor installed with the user's timeouts. Setup
+// doesn't run again: the member finished it at fill. Returns (nil, nil) when no member is claimable or
 // a freshen fails (the member is destroyed: its state is untrusted) — either
 // way the caller falls back to a fresh create.
 func Claim(ctx context.Context, p Params, sessions []driver.Session, name, branch, baseRef string) (*driver.Session, error) {
@@ -109,7 +109,14 @@ func freshen(ctx context.Context, p Params, member *driver.Session, name, branch
 		Name: name, Repo: p.RepoRoot, Branch: branch, BaseRef: baseRef,
 		IdleTimeout: p.IdleTimeout, UnattendedCap: p.UnattendedCap,
 	}
-	pl, plErr := payload.BuildFreshen(ctx, work, spec, member.Name, p.Manifest, p.SessionEnv, progress)
+	// The claiming pier's supervisor replaces the fill's, so a member stays
+	// claimable across pier upgrades.
+	supervisor, err := p.Driver.Supervisor(ctx, member.InstanceType)
+	if err != nil {
+		<-resumed
+		return err
+	}
+	pl, plErr := payload.BuildFreshen(ctx, work, spec, member.Name, supervisor, p.Manifest, p.SessionEnv, progress)
 	if err := <-resumed; err != nil {
 		return err
 	}

@@ -222,6 +222,27 @@ func TestFreshenDropsRestoredLayout(t *testing.T) {
 	}
 }
 
+// A member filled by an older pier must come out of a claim running the
+// claiming pier's supervisor, installed exactly the way a create installs it
+// — only after the restored layout is gone, since restore runs the old
+// binary.
+func TestFreshenInstallsTheClaimingSupervisor(t *testing.T) {
+	install := strings.Index(freshenTmpl, installSupervisor)
+	rm := strings.Index(freshenTmpl, `rm -rf "$HOME/.pier/tmux"`)
+	if install < 0 {
+		t.Fatal("freshen must install the claiming pier's supervisor")
+	}
+	if install < rm {
+		t.Errorf("the supervisor install (%d) must follow dropping the restored layout (%d)", install, rm)
+	}
+	if !strings.Contains(installSupervisor, "systemctl restart pier-supervisor.service") {
+		t.Error("the new binary must replace the running supervisor, not wait for the next boot")
+	}
+	if !strings.Contains(bootstrapTmpl, installSupervisor) {
+		t.Error("bootstrap and freshen must install the supervisor the same way")
+	}
+}
+
 func TestExportRef(t *testing.T) {
 	if got := exportRef("fix-auth"); got != "refs/pier/export-fix-auth" {
 		t.Errorf("exportRef(fix-auth) = %q", got)

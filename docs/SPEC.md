@@ -412,12 +412,14 @@ protected by the repository's `.gitignore`.
    **setup-complete** members ready, overridable per repo with
    `pier pool set <n>` or the app's Repos tab; `pier <branch>`
    then claims one — resume + freshen (secrets re-push, branch at base,
-   dirty patch, supervisor conf reset, async setup re-run for drift) instead
-   of create + boot + full setup — and refills the pool detached in the
-   background. Members are normal per-user instances tagged
-   `pier:pool=<gen>`, where gen fingerprints
+   dirty patch, the claiming pier's supervisor installed with the user's
+   timeouts; setup doesn't run again) instead of create + boot + full setup
+   — and refills the pool detached in the background. Members are normal
+   per-user instances tagged `pier:pool=<gen>`, where gen fingerprints
    driver|image|type|disk|setup-script: a re-bake, config change, or setup
-   edit strands the old generation, which recycles at the next claim/fill;
+   edit strands the old generation, which recycles at the next claim/fill.
+   The pier build is deliberately not part of it: the claim reinstalls the
+   supervisor, so a pier upgrade leaves pools claimable;
    members older than `pool.max_age` (default 14d) recycle too, bounding
    repo drift. Concurrent claims race on a nonce written to the claim
    tag/label and read back (providers have no tag CAS); the loser tries the
