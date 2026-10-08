@@ -527,15 +527,44 @@ shows headroom (e.g. `12/32 vCPU`).
 ## 11. CLI
 
 Every frontend — this CLI, the app (`pier` with no arguments), and the
-coming Mac app — runs on `pkg/pier`, which owns the capabilities and never
-prints, exits or reads stdin. The Mac app will reach it through a
-`pier api` JSON-RPC server over stdio (the LSP model: a child process, no
-daemon, no port).
+Mac app — runs on `pkg/pier`, which owns the capabilities and never
+prints, exits or reads stdin. The Mac app reaches it through `pier api`.
+
+### 11.1 `pier api`
+
+JSON-RPC 2.0 over stdin/stdout, one message per line: a child process of
+its client, never a daemon, no port. It exits when its stdin closes, giving
+in-flight work three seconds to see its cancellation.
+
+- **Handshake.** `initialize` returns the protocol version, pier's version
+  and whether this machine is set up. The Mac app bundles its own pier, so
+  a protocol mismatch is a broken install.
+- **Calls** run concurrently. `$/cancelRequest {id}` cancels one; long ones
+  report `$/progress {id, event}` as they go.
+- **Live data** is a subscription. `<topic>.watch` returns
+  `{sub, seq, snapshot}` and pushes `sub.event {sub, seq, topic, data}`
+  with seq counting up by one, until `sub.cancel {sub}`. A gap means a
+  missed event: resubscribe. `overview` carries everything the sidebar,
+  Home and the cockpits show, refreshed on the TUI's cadence (fast while
+  something changes, slow when quiet, slower when the client reports
+  `client.activity {focused: false}`); the stray sweep runs at most every
+  ten minutes.
+- **Errors** carry `data.kind` (`auth_expired` with the login command that
+  fixes it, `not_set_up`, `parked`, `no_key`, …) so clients never parse
+  messages.
+- **Shapes** live in `pkg/pier/wire`. `make api-types` regenerates the Mac
+  app's TypeScript from them (`internal/api/tsgen`), and CI fails when the
+  generated file is stale.
+- **Stdout is the protocol's.** The real descriptor moves aside and fd 1
+  becomes stderr, so a stray print can only reach the log.
+- **Environment.** A GUI-launched process gets launchd's minimal PATH, so
+  `pier api` adopts the login shell's PATH and cloud/GitHub variables.
 
 ```
 pier                    the app: Sessions · Repos · Settings tabs (new = background create,
                         listed as "creating" until the create writes its ready tag)
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
+pier new <branch> [base]  the same, for a branch named like a command
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
 pier proxy              every running session as <session>.pier, listening ports mirrored

@@ -21,5 +21,10 @@ install: build
 test:
 	go vet ./... && go test -race ./...
 
+# The Mac app's TypeScript twin of the `pier api` protocol (pkg/pier/wire).
+api-types:
+	@mkdir -p macos/src/api
+	go run ./internal/api/tsgen -o macos/src/api/protocol.gen.ts
+
 clean:
 	rm -f pier $(ASSETS)/pier-supervisor-linux-*

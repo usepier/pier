@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -157,12 +158,15 @@ func Path() string {
 
 func Dir() string { return filepath.Dir(Path()) }
 
+// ErrNoConfig: pier was never set up on this machine.
+var ErrNoConfig = errors.New("no config")
+
 func Load() (Config, error) {
 	c := Default()
 	md, err := toml.DecodeFile(Path(), &c)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return c, fmt.Errorf("no config at %s — run `pier setup` first", Path())
+			return c, fmt.Errorf("%w at %s — run `pier setup` first", ErrNoConfig, Path())
 		}
 		return c, err
 	}

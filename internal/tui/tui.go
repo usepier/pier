@@ -328,11 +328,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// carried copy below is display-only: reading that one would skip
 		// every session last seen idle or working (only plain running
 		// sessions are read) and freeze their status for good.
-		fresh := append([]pier.Session(nil), msg.all...) // carryStatus edits in place
+		fresh := append([]pier.Session(nil), msg.all...) // CarryStatus edits in place
 		if !msg.enriched {
 			// Keep what the last status read said until the new one lands,
 			// so rows don't blink between states on every refresh.
-			msg.all = carryStatus(m.all, msg.all)
+			msg.all = pier.CarryStatus(m.all, msg.all)
 		}
 		m.all = msg.all
 		m.sessions, m.ready = pier.SplitPool(msg.all)
@@ -447,27 +447,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onKey(msg)
 	}
 	return m, nil
-}
-
-// carryStatus copies the previous status read onto a fresh list, for the
-// sessions still in the same cloud state.
-func carryStatus(prev, next []pier.Session) []pier.Session {
-	old := map[string]pier.Session{}
-	for _, s := range prev {
-		old[s.ID] = s
-	}
-	for i, s := range next {
-		p, ok := old[s.ID]
-		if !ok || s.ID == "" || s.State != pier.StateRunning {
-			continue
-		}
-		switch p.State {
-		case pier.StateRunning, pier.StateWorking, pier.StateIdle:
-			next[i].State, next[i].Attached = p.State, p.Attached
-			next[i].Strained, next[i].Setup = p.Strained, p.Setup
-		}
-	}
-	return next
 }
 
 func clamp(i, n int) int {

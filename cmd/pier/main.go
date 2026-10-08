@@ -127,6 +127,8 @@ func main() {
 		return
 	}
 	switch args[0] {
+	case "api":
+		cmdAPI(args[1:])
 	case "new":
 		cmdNew(args[1:])
 	case "ls":

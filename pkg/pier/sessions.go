@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -262,6 +263,14 @@ func (c *Client) Resize(ctx context.Context, s Session, machineType string) erro
 // and rough cost.
 func (c *Client) Machines(s Session) []Machine { return c.drv.Machines(s.InstanceType) }
 
+// HasKey reports whether this machine holds the session's ssh key. Each
+// session's key lives only on the machine that created (or claimed) it, so
+// a session listed from elsewhere can be seen but not reached.
+func (c *Client) HasKey(s Session) bool {
+	_, err := os.Stat(filepath.Join(config.Dir(), "keys", s.ID+".pem"))
+	return err == nil
+}
+
 // Headroom reports the account's vCPU quota use.
 func (c *Client) Headroom(ctx context.Context) (Quota, error) { return c.drv.Headroom(ctx) }
 
@@ -418,4 +427,27 @@ func Activity(s Session) string {
 		return "quiet — parks itself when the idle timer runs out"
 	}
 	return ""
+}
+
+// CarryStatus copies the previous status read onto a fresh list, for the
+// sessions still in the same cloud state, so a frontend that shows the list
+// before Enrich lands doesn't blink rows between states on every refresh.
+// It edits next in place and returns it.
+func CarryStatus(prev, next []Session) []Session {
+	old := map[string]Session{}
+	for _, s := range prev {
+		old[s.ID] = s
+	}
+	for i, s := range next {
+		p, ok := old[s.ID]
+		if !ok || s.ID == "" || s.State != driver.StateRunning {
+			continue
+		}
+		switch p.State {
+		case driver.StateRunning, driver.StateWorking, driver.StateIdle:
+			next[i].State, next[i].Attached = p.State, p.Attached
+			next[i].Strained, next[i].Setup = p.Strained, p.Setup
+		}
+	}
+	return next
 }

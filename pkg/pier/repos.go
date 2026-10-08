@@ -29,6 +29,7 @@ import (
 type Repo struct {
 	Name    string
 	Current bool   // the repo this process runs from (editable, reminders computed)
+	Root    string // the local checkout reminders and pool staleness were computed from; "" = none
 	Image   string // session image id; "" = none yet
 	// Baked is what the image was baked from; nil for images baked before
 	// pier recorded it (or no image).
@@ -53,6 +54,22 @@ type Reminder struct {
 // from — sorted by name. sessions is a Sessions() result, so the page and
 // the census never disagree.
 func (c *Client) Repos(sessions []Session, curRoot string) []Repo {
+	var roots []string
+	if curRoot != "" {
+		roots = []string{curRoot}
+	}
+	out := c.ReposFor(sessions, roots)
+	for i := range out {
+		out[i].Current = curRoot != "" && out[i].Root == curRoot
+	}
+	return out
+}
+
+// ReposFor is Repos for a frontend with several local checkouts (the Mac
+// app's linked ones) instead of one working directory: each root's repo is
+// listed, with its reminders and pool staleness computed against that
+// checkout. The first root wins when two share a name.
+func (c *Client) ReposFor(sessions []Session, roots []string) []Repo {
 	names := map[string]bool{}
 	for _, r := range c.cfg.PoolRepos() {
 		names[r] = true
@@ -68,22 +85,26 @@ func (c *Client) Repos(sessions []Session, curRoot string) []Repo {
 			names[s.Repo] = true
 		}
 	}
-	cur := ""
-	if curRoot != "" {
-		cur = filepath.Base(curRoot)
-		names[cur] = true
-	}
-	curGen := ""
-	if cur != "" {
-		curGen = c.poolGen(curRoot)
+	rootOf := map[string]string{}
+	for _, root := range roots {
+		name := filepath.Base(root)
+		names[name] = true
+		if _, ok := rootOf[name]; !ok {
+			rootOf[name] = root
+		}
 	}
 	maxAge, _ := c.cfg.PoolMaxAge() // unparsable → 0, which skips the age check
 	now := time.Now()
 	var out []Repo
 	for name := range names {
-		st := FoldPool(sessions, name, cur, curGen, maxAge, now)
+		root := rootOf[name]
+		cur, gen := "", ""
+		if root != "" {
+			cur, gen = name, c.poolGen(root)
+		}
+		st := FoldPool(sessions, name, cur, gen, maxAge, now)
 		r := Repo{
-			Name: name, Current: name == cur,
+			Name: name, Root: root,
 			Image:    c.cfg.BakedImage(name),
 			PoolSize: c.cfg.PoolSize(name),
 			Ready:    st.Ready, Filling: st.Filling, Stale: st.Stale, PoolAges: st.Ages,
@@ -97,10 +118,6 @@ func (c *Client) Repos(sessions []Session, curRoot string) []Repo {
 			}
 		}
 		r.MonthlyUSD = float64(st.Ready+st.Filling)*c.DiskMonthlyUSD() + imageMonthlyUSD(r.Image)
-		root := ""
-		if r.Current {
-			root = curRoot
-		}
 		r.Reminders = c.reminders(name, root)
 		out = append(out, r)
 	}
@@ -669,4 +686,36 @@ func CheckoutKey(co Checkout) string {
 		return co.Origin
 	}
 	return "name:" + co.Name
+}
+
+// CheckoutInfo is what a create from a checkout's HEAD would carry.
+type CheckoutInfo struct {
+	Checkout
+	Branch string // checked-out branch, "" when detached
+	Head   string // short commit
+	Dirty  int    // uncommitted changes: tracked edits and untracked files
+	Base   string // the origin branch a session from HEAD builds on
+}
+
+// InspectCheckout describes the repository containing dir for a frontend
+// about to create a session from it.
+func InspectCheckout(dir string) (CheckoutInfo, error) {
+	root, err := RepoRoot(dir)
+	if err != nil {
+		return CheckoutInfo{}, err
+	}
+	git := func(args ...string) string {
+		out, _ := exec.Command("git", append([]string{"-C", root}, args...)...).Output()
+		return strings.TrimSpace(string(out))
+	}
+	info := CheckoutInfo{
+		Checkout: Checkout{Path: root, Name: filepath.Base(root), Origin: payload.RepoOrigin(root)},
+		Branch:   git("symbolic-ref", "--short", "-q", "HEAD"),
+		Head:     git("rev-parse", "--short", "HEAD"),
+		Base:     payload.BaseBranch(root, "HEAD"),
+	}
+	if st := git("status", "--porcelain"); st != "" {
+		info.Dirty = len(strings.Split(st, "\n"))
+	}
+	return info, nil
 }
