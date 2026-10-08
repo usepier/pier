@@ -59,6 +59,11 @@ type Params struct {
 	Agent    *driver.AgentSpec
 	Progress func(string)
 	Out      io.Writer // scp meters during a claim; nil discards
+	// Mine says whether this machine made a member. Only its own members
+	// are claimed, counted, recycled or drained here: another machine's
+	// can't be reached from this one (its key lives there) and follow
+	// that machine's config. nil: every member.
+	Mine func(driver.Session) bool
 }
 
 func (p *Params) progress() func(string) {
@@ -98,10 +103,10 @@ func SetupScript(repoRoot string) []byte {
 }
 
 // Members filters a List to the unclaimed pool members of one repo (basename).
-func Members(sessions []driver.Session, repo string) []driver.Session {
+func Members(sessions []driver.Session, repo string, mine func(driver.Session) bool) []driver.Session {
 	var out []driver.Session
 	for _, s := range sessions {
-		if s.PoolGen != "" && s.Repo == repo {
+		if s.PoolGen != "" && s.Repo == repo && (mine == nil || mine(s)) {
 			out = append(out, s)
 		}
 	}

@@ -67,7 +67,9 @@ func (c *Client) Teardown(ctx context.Context, progress Progress) error {
 		}
 	}
 	for repo := range repos {
-		if _, err := pool.Drain(ctx, c.drv, sessions, repo, progress.stepper(start)); err != nil {
+		// Every member of yours, whichever machine made it: teardown takes
+		// away the groundwork they all depend on.
+		if _, err := pool.Drain(ctx, c.drv, sessions, repo, nil, progress.stepper(start)); err != nil {
 			return err
 		}
 	}

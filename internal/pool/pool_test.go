@@ -140,3 +140,22 @@ func TestPlaceholderName(t *testing.T) {
 		t.Errorf("two placeholders collided: %q", name)
 	}
 }
+
+// A machine's pool is the members it made: another machine's are never
+// claimed, counted, recycled or drained here.
+func TestMembersAreThisMachines(t *testing.T) {
+	sessions := []driver.Session{
+		{ID: "i-mine", Repo: "shop", PoolGen: "g"},
+		{ID: "i-other-mac", Repo: "shop", PoolGen: "old"},
+		{ID: "i-session", Repo: "shop"},
+		{ID: "i-elsewhere", Repo: "api", PoolGen: "g"},
+	}
+	mine := func(s driver.Session) bool { return s.ID != "i-other-mac" }
+	got := Members(sessions, "shop", mine)
+	if len(got) != 1 || got[0].ID != "i-mine" {
+		t.Errorf("members = %+v", got)
+	}
+	if all := Members(sessions, "shop", nil); len(all) != 2 {
+		t.Errorf("without a filter every member counts: %+v", all)
+	}
+}

@@ -95,6 +95,13 @@ func (c *Client) ReposFor(sessions []Session, roots []string) []Repo {
 	}
 	maxAge, _ := c.cfg.PoolMaxAge() // unparsable → 0, which skips the age check
 	now := time.Now()
+	// The pool this machine can claim from is the members it made.
+	var own []Session
+	for _, s := range sessions {
+		if s.PoolGen == "" || c.HasKey(s) {
+			own = append(own, s)
+		}
+	}
 	var out []Repo
 	for name := range names {
 		root := rootOf[name]
@@ -102,7 +109,7 @@ func (c *Client) ReposFor(sessions []Session, roots []string) []Repo {
 		if root != "" {
 			cur, gen = name, c.poolGen(root)
 		}
-		st := FoldPool(sessions, name, cur, gen, maxAge, now)
+		st := FoldPool(own, name, cur, gen, maxAge, now)
 		r := Repo{
 			Name: name, Root: root,
 			Image:    c.cfg.BakedImage(name),
@@ -444,6 +451,7 @@ func (c *Client) poolParams(repoRoot string, progress Progress, start time.Time)
 		Image:       image,
 		IdleTimeout: idle, UnattendedCap: cap_,
 		Manifest: c.cfg.Secrets.Manifest, SessionEnv: SessionEnv(c.cfg),
+		Mine:     c.HasKey,
 		Progress: progress.stepper(start),
 		Out:      c.opts.Out,
 	}, nil
@@ -484,7 +492,7 @@ func (c *Client) DrainPool(ctx context.Context, repo string, progress Progress) 
 	if err != nil {
 		return 0, err
 	}
-	return pool.Drain(ctx, c.drv, sessions, repo, progress.stepper(time.Now()))
+	return pool.Drain(ctx, c.drv, sessions, repo, c.HasKey, progress.stepper(time.Now()))
 }
 
 // Refill tops the repo's pooled sessions up to target, in the foreground.

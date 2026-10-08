@@ -24,7 +24,7 @@ func Fill(ctx context.Context, p Params) error {
 		return err
 	}
 	repo := filepath.Base(p.RepoRoot)
-	plan := Reconcile(Members(sessions, repo), p.Size, p.Gen, p.MaxAge, time.Now())
+	plan := Reconcile(Members(sessions, repo, p.Mine), p.Size, p.Gen, p.MaxAge, time.Now())
 	// These destroys act on a List snapshot seconds old. A claim committing in
 	// that window turns a member into a session this loop would still destroy —
 	// but claims only take Ready members and this loop only stale ones, so the
@@ -100,15 +100,15 @@ func waitSetup(ctx context.Context, p Params, id string) error {
 	return nil
 }
 
-// Drain destroys every pool member of the repo, any generation, and returns
-// how many it took down. Claimed members are sessions, not members — they
-// are never touched.
-func Drain(ctx context.Context, drv driver.Driver, sessions []driver.Session, repo string, progress func(string)) (int, error) {
+// Drain destroys every pool member of the repo that mine accepts (nil: all
+// of them), any generation, and returns how many it took down. Claimed
+// members are sessions, not members — they are never touched.
+func Drain(ctx context.Context, drv driver.Driver, sessions []driver.Session, repo string, mine func(driver.Session) bool, progress func(string)) (int, error) {
 	if progress == nil {
 		progress = func(string) {}
 	}
 	n := 0
-	for _, m := range Members(sessions, repo) {
+	for _, m := range Members(sessions, repo, mine) {
 		if m.State == driver.StateDeleting {
 			continue
 		}

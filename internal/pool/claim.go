@@ -32,7 +32,7 @@ func Claim(ctx context.Context, p Params, sessions []driver.Session, name, branc
 	if err := payload.ValidateNames(driver.CreateSpec{Name: name, Repo: p.RepoRoot, Branch: branch, BaseRef: baseRef}); err != nil {
 		return nil, err
 	}
-	plan := Reconcile(Members(sessions, filepath.Base(p.RepoRoot)), p.Size, p.Gen, p.MaxAge, time.Now())
+	plan := Reconcile(Members(sessions, filepath.Base(p.RepoRoot), p.Mine), p.Size, p.Gen, p.MaxAge, time.Now())
 	if len(plan.Ready) == 0 {
 		return nil, nil
 	}
