@@ -270,9 +270,10 @@ func Generate(wireDir string) (string, error) {
 		w.b.Reset()
 		fmt.Fprintf(&maps, "  %q: { params: %s; result: %s };\n", m.Name, w.ref(m.Params), w.ref(m.Result))
 	}
-	fmt.Fprintf(&maps, "}\n\n/** Every subscription topic: its watch params and the data its events carry. */\nexport interface Watches {\n")
+	fmt.Fprintf(&maps, "}\n\n/** Every subscription topic: its watch params, its snapshot, and the data its events carry. */\nexport interface Watches {\n")
 	for _, m := range watches {
-		fmt.Fprintf(&maps, "  %q: { params: %s; data: %s };\n", m.Topic, w.ref(m.Params), w.ref(m.Data))
+		snap, _ := m.Result.FieldByName("Snapshot")
+		fmt.Fprintf(&maps, "  %q: { params: %s; snapshot: %s; data: %s };\n", m.Topic, w.ref(m.Params), w.ref(snap.Type), w.ref(m.Data))
 	}
 	fmt.Fprintf(&maps, "}\n\n")
 	for _, side := range []struct {

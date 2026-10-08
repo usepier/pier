@@ -51,10 +51,16 @@ func (u *Sub[D]) Done() <-chan struct{} { return u.ctx.Done() }
 // keep emitting through the Sub until its Done closes — from goroutines it
 // starts; start itself must return promptly.
 func watch[P, D any](topic, doc string, start func(ctx context.Context, s *Server, p P, sub *Sub[D]) (D, error)) {
+	watchChanges(topic, doc, start)
+}
+
+// watchChanges is watch for a topic whose updates are changes to its
+// snapshot (type S) rather than whole new ones.
+func watchChanges[P, S, D any](topic, doc string, start func(ctx context.Context, s *Server, p P, sub *Sub[D]) (S, error)) {
 	name := topic + ".watch"
 	methods[name] = &method{
 		Name: name, Doc: doc, Topic: topic,
-		Params: reflect.TypeFor[P](), Result: reflect.TypeFor[wire.WatchResult[D]](), Data: reflect.TypeFor[D](),
+		Params: reflect.TypeFor[P](), Result: reflect.TypeFor[wire.WatchResult[S]](), Data: reflect.TypeFor[D](),
 		run: func(ctx context.Context, s *Server, c *Call, raw json.RawMessage) (any, error) {
 			var p P
 			if len(raw) > 0 && string(raw) != "null" {
@@ -74,7 +80,7 @@ func watch[P, D any](topic, doc string, start func(ctx context.Context, s *Serve
 				s.cancelSub(id)
 				return nil, err
 			}
-			return afterReply{result: wire.WatchResult[D]{Sub: id, Snapshot: snap}, then: func() { close(sub.opened) }}, nil
+			return afterReply{result: wire.WatchResult[S]{Sub: id, Snapshot: snap}, then: func() { close(sub.opened) }}, nil
 		},
 	}
 }

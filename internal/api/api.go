@@ -65,6 +65,11 @@ type Server struct {
 
 	overview *overviewPoller
 	termReg  *terminals
+	notices  *notices
+	client   wire.InitializeParams // what the client said it handles
+
+	chatMu sync.Mutex
+	chats  map[string]*chatSession // followed chats by session id
 }
 
 // Serve runs a server until its input closes or ctx ends.
@@ -76,8 +81,10 @@ func Serve(ctx context.Context, o Options) error {
 		subs:  map[string]*subscription{},
 		// Until the client says otherwise it is looking.
 		activity: wire.ClientActivity{Focused: true},
+		chats:    map[string]*chatSession{},
 	}
 	s.overview = newOverviewPoller(s)
+	s.notices = newNotices(s)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.root = ctx
@@ -109,6 +116,7 @@ func Serve(ctx context.Context, o Options) error {
 	// that ignores cancellation must not keep the process alive.
 	cancel()
 	s.closeTerminals()
+	s.notices.stop()
 	settled := make(chan struct{})
 	go func() {
 		s.overview.stop()

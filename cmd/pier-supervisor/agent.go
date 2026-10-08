@@ -86,22 +86,44 @@ type agents struct {
 	notify func() // the state changed: publish it
 }
 
+// savedAgents is state.json: the agents, and the boot they ran in.
+type savedAgents struct {
+	Boot   string       `json:"boot"`
+	Agents []agentState `json:"agents"`
+}
+
+// bootID names this boot of the machine; a var so tests can reboot.
+var bootID = func() string {
+	b, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	return strings.TrimSpace(string(b))
+}
+
 func newAgents(home string, notify func()) *agents {
 	a := &agents{byPane: map[string]*agentState{}, home: home, notify: notify}
-	if b, err := os.ReadFile(filepath.Join(agentDir(home), "state.json")); err == nil {
-		var saved []agentState
-		if json.Unmarshal(b, &saved) == nil {
-			for _, s := range saved {
-				// A boot ended every process: what was running is gone.
-				s.Pending = nil
-				if s.State == agentWorking || s.State == agentWaiting {
-					s.Last = "interrupted when the session parked"
-				}
-				s.State = agentEnded
-				st := s
-				a.byPane[s.Pane] = &st
-			}
+	b, err := os.ReadFile(filepath.Join(agentDir(home), "state.json"))
+	if err != nil {
+		return a
+	}
+	var saved savedAgents
+	if json.Unmarshal(b, &saved) != nil {
+		return a
+	}
+	sameBoot := saved.Boot != "" && saved.Boot == bootID()
+	for _, s := range saved.Agents {
+		if s.Pending != nil {
+			// The hook that asked lost its supervisor: the agent asks in
+			// its terminal now.
+			s.Pending, s.Waiting = nil, "input"
 		}
+		if !sameBoot {
+			// A boot ended every process: what was running is gone.
+			if s.State == agentWorking || s.State == agentWaiting {
+				s.Last = "interrupted when the session parked"
+			}
+			s.State, s.Waiting = agentEnded, ""
+		}
+		st := s
+		a.byPane[s.Pane] = &st
 	}
 	return a
 }
@@ -120,7 +142,7 @@ func (a *agents) snapshot() []agentState {
 
 // changed persists the states and tells the hub. Called without mu.
 func (a *agents) changed() {
-	b, _ := json.Marshal(a.snapshot())
+	b, _ := json.Marshal(savedAgents{Boot: bootID(), Agents: a.snapshot()})
 	_ = os.MkdirAll(agentDir(a.home), 0o700)
 	_ = writeAtomic(filepath.Join(agentDir(a.home), "state.json"), b)
 	if a.notify != nil {
@@ -189,6 +211,8 @@ func (a *agents) hook(kind, event, pane string, payload map[string]any) {
 	now := time.Now()
 	s.Activity = now
 	if v := str("session_id"); v != "" {
+		s.Conversation = v
+	} else if v := str("thread-id"); v != "" { // codex
 		s.Conversation = v
 	}
 	if v := str("transcript_path"); v != "" {
@@ -525,6 +549,7 @@ func registerAgentOps(a *agents, h *hub, home string, touch func()) {
 		if err := enqueue(home, p); err != nil {
 			return nil, err
 		}
+		a.changed()
 		return map[string]bool{"queued": true}, nil
 	}
 	ops["interrupt"] = func(json.RawMessage) (any, error) {
@@ -536,6 +561,21 @@ func registerAgentOps(a *agents, h *hub, home string, touch func()) {
 		return nil, nil
 	}
 	h.onLastApprover = a.releaseAll
+}
+
+// agentTopic is what the "agent" stream topic carries: every agent, and
+// the prompts waiting to be typed in.
+type agentTopic struct {
+	Agents []agentState `json:"agents"`
+	Queue  []prompt     `json:"queue"`
+}
+
+func (a *agents) topic() agentTopic {
+	q := queued(a.home)
+	for i := range q {
+		q[i].Text = truncate(q[i].Text, 2000)
+	}
+	return agentTopic{Agents: a.snapshot(), Queue: q}
 }
 
 // agentSummary is the primary agent in the status beacon: enough for a

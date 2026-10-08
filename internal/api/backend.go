@@ -50,7 +50,15 @@ type Backend interface {
 	KillWindow(ctx context.Context, s pier.Session, window string) error
 	RenameWindow(ctx context.Context, s pier.Session, window, name string) error
 	Follow(ctx context.Context, s pier.Session, topics []string, fn func(ev string, data json.RawMessage)) error
+	FollowTranscript(ctx context.Context, s pier.Session, topics []string, file string, from int64, fn func(ev string, data json.RawMessage)) error
 	ContainerAction(ctx context.Context, s pier.Session, container, action string) error
+	SendPrompt(ctx context.Context, s pier.Session, id, text, mode string) error
+	StartDeliver(s pier.Session, id, text, mode string) (pier.Job, error)
+	Interrupt(ctx context.Context, s pier.Session) error
+	Decide(ctx context.Context, s pier.Session, requestID, behavior, message string, updatedInput json.RawMessage) error
+	Upload(ctx context.Context, s pier.Session, name string, data []byte) (string, error)
+	ListFiles(ctx context.Context, s pier.Session) ([]string, bool, error)
+	PeekAgent(ctx context.Context, s pier.Session, lines int) (string, error)
 }
 
 var _ Backend = (*pier.Client)(nil)

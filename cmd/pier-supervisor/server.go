@@ -30,9 +30,9 @@ import (
 var sockPath = "/run/pier/supervisor.sock"
 
 const (
-	// streamProto changes when the stream protocol breaks compatibility; a
+	// streamProto goes up with every change to the stream protocol; a
 	// frontend that needs newer replaces the supervisor.
-	streamProto = 1
+	streamProto = 2
 )
 
 type message struct {
@@ -62,6 +62,10 @@ type hub struct {
 	// onLastApprover runs when the last frontend able to answer
 	// permission requests disconnects.
 	onLastApprover func()
+	// findTranscript names the agent's transcript and its kind, for tail.
+	findTranscript func() (path, kind string)
+	tailEvery      time.Duration
+	tailChunk      int
 }
 
 type result struct {
@@ -71,9 +75,10 @@ type result struct {
 }
 
 type client struct {
-	mu     sync.Mutex
-	w      *bufio.Writer
-	topics map[string]bool
+	mu       sync.Mutex
+	w        *bufio.Writer
+	topics   map[string]bool
+	stopTail chan struct{} // closes the running tail, if any
 }
 
 func (c *client) send(m message) error {
@@ -89,8 +94,7 @@ func (c *client) send(m message) error {
 }
 
 func newHub() *hub {
-	boot, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	return &hub{subs: map[*client]bool{}, running: map[string]chan struct{}{}, boot: strings.TrimSpace(string(boot))}
+	return &hub{subs: map[*client]bool{}, running: map[string]chan struct{}{}, boot: bootID(), tailEvery: tailEvery, tailChunk: tailChunk}
 }
 
 // serve accepts frontends on the socket until the process ends.
@@ -121,6 +125,7 @@ func (h *hub) handle(conn net.Conn) {
 	h.subs[c] = true
 	h.mu.Unlock()
 	defer func() {
+		c.untail()
 		h.mu.Lock()
 		delete(h.subs, c)
 		h.mu.Unlock()
@@ -159,6 +164,22 @@ func (h *hub) handle(conn net.Conn) {
 			}
 		case "ping":
 			c.send(message{Ev: "pong", ID: r.ID})
+		case "tail":
+			// Send the agent's transcript from where the client's copy
+			// ends: {"file": its path, "from": its length}.
+			var a struct {
+				File string `json:"file"`
+				From int64  `json:"from"`
+			}
+			json.Unmarshal(r.Args, &a)
+			c.untail()
+			stop := make(chan struct{})
+			c.mu.Lock()
+			c.stopTail = stop
+			c.mu.Unlock()
+			go h.tail(c, a.File, max(a.From, 0), stop)
+		case "untail":
+			c.untail()
 		default:
 			go func() {
 				data, err := h.op(r)
@@ -171,6 +192,20 @@ func (h *hub) handle(conn net.Conn) {
 			}()
 		}
 	}
+}
+
+func (c *client) untail() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopTail != nil {
+		close(c.stopTail)
+		c.stopTail = nil
+	}
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func (c *client) wants(topic string) bool {

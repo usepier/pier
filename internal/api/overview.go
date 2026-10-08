@@ -197,6 +197,14 @@ func (p *overviewPoller) refresh(ctx context.Context) {
 		return
 	}
 	p.publish(be, enriched, true)
+	p.s.notices.poll(enriched)
+	if sweep {
+		ids := make([]string, len(enriched))
+		for i, s := range enriched {
+			ids[i] = s.ID
+		}
+		pier.PruneMirrors(ids)
+	}
 }
 
 func (p *overviewPoller) quotaDue(ctx context.Context, be Backend) {

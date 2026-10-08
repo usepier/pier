@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/usepier/pier/internal/config"
@@ -97,4 +99,98 @@ func (c *Client) Decide(ctx context.Context, s Session, requestID, behavior, mes
 	}
 	_, err := c.Op(ctx, s, "decide", args)
 	return err
+}
+
+// AgentDetail is the session's agent as its stream reports it ("agent").
+type AgentDetail struct {
+	AgentStatus
+	Model string
+	// Pending is the permission request waiting on a frontend.
+	Pending *PermissionRequest
+	// Queue is the prompts waiting to be typed in, oldest first.
+	Queue []QueuedPrompt
+}
+
+// PermissionRequest is the agent asking to use a tool.
+type PermissionRequest struct {
+	ID    string
+	Tool  string
+	Input json.RawMessage
+	At    time.Time
+}
+
+// QueuedPrompt is a prompt the session holds for its agent.
+type QueuedPrompt struct {
+	ID   string
+	Text string
+	At   time.Time
+}
+
+// ParseAgent reads an "agent" message: the agent prompts go to (or, with
+// none running, the last one that ran). nil when no agent ever ran.
+func ParseAgent(data json.RawMessage) (*AgentDetail, error) {
+	var raw struct {
+		Agents []struct {
+			Kind    string    `json:"kind"`
+			State   string    `json:"state"`
+			Waiting string    `json:"waiting"`
+			Model   string    `json:"model"`
+			Since   time.Time `json:"since"`
+			Last    string    `json:"last"`
+			Pending *struct {
+				ID    string          `json:"id"`
+				Tool  string          `json:"tool"`
+				Input json.RawMessage `json:"input"`
+				At    time.Time       `json:"at"`
+			} `json:"pending"`
+		} `json:"agents"`
+		Queue []struct {
+			ID   string    `json:"id"`
+			Text string    `json:"text"`
+			At   time.Time `json:"at"`
+		} `json:"queue"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	pick := -1
+	for i, a := range raw.Agents {
+		switch {
+		case pick < 0:
+			pick = i
+		case (a.State != "ended") != (raw.Agents[pick].State != "ended"):
+			if a.State != "ended" {
+				pick = i
+			}
+		case a.Since.After(raw.Agents[pick].Since):
+			pick = i
+		}
+	}
+	if pick < 0 {
+		return nil, nil
+	}
+	a := raw.Agents[pick]
+	d := &AgentDetail{AgentStatus: AgentStatus{Kind: a.Kind, State: a.State, Waiting: a.Waiting, Since: a.Since, Last: a.Last, Queued: len(raw.Queue)}, Model: a.Model}
+	if p := a.Pending; p != nil {
+		d.Pending = &PermissionRequest{ID: p.ID, Tool: p.Tool, Input: p.Input, At: p.At}
+	}
+	for _, q := range raw.Queue {
+		d.Queue = append(d.Queue, QueuedPrompt{ID: q.ID, Text: q.Text, At: q.At})
+	}
+	return d, nil
+}
+
+// PeekAgent is the bottom of the agent's pane as text: a look at what it is
+// doing without attaching (which would keep the session awake).
+func (c *Client) PeekAgent(ctx context.Context, s Session, lines int) (string, error) {
+	if err := CheckReady(s); err != nil {
+		return "", err
+	}
+	if lines <= 0 || lines > 200 {
+		lines = 40
+	}
+	script := `w=$(tmux list-windows -t main -F '#{window_id} #{@pier-role}' 2>/dev/null | awk '$2=="agent"{print $1; exit}')
+[ -n "$w" ] && tmux capture-pane -p -J -t "$w" -S -` + strconv.Itoa(lines)
+	out, err := c.exec(ctx, s.ID, script)
+	return strings.TrimRight(out, "\n "), err
 }

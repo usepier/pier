@@ -62,6 +62,9 @@ type Session struct {
 	CapAt     *time.Time `json:"capAt,omitempty"`
 	// Agent is the agent pier launched in the session, as last reported.
 	Agent *AgentStatus `json:"agent,omitempty"`
+	// Attention says why the session needs the user, if it does:
+	// needs_input, setup_failed or create_failed.
+	Attention string `json:"attention,omitempty"`
 }
 
 // AgentState is where a session's agent is.

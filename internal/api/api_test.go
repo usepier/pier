@@ -30,6 +30,13 @@ type fake struct {
 	created    []pier.CreateRequest
 	termScript string
 	block      chan struct{} // Resume waits on it when set
+	// tx is the transcript FollowTranscript sends, a chunk per entry;
+	// more feeds later chunks.
+	tx      []pier.TranscriptChunk
+	more    chan pier.TranscriptChunk
+	agent   string // the agent topic's data
+	prompts []string
+	decided []string
 }
 
 func (f *fake) Cloud() string         { return "AWS test-1" }
@@ -144,6 +151,55 @@ func (f *fake) Follow(ctx context.Context, s pier.Session, topics []string, fn f
 	}
 	<-ctx.Done()
 	return ctx.Err()
+}
+func (f *fake) FollowTranscript(ctx context.Context, s pier.Session, topics []string, file string, from int64, fn func(string, json.RawMessage)) error {
+	f.mu.Lock()
+	tx, agent, more := f.tx, f.agent, f.more
+	f.mu.Unlock()
+	if agent != "" {
+		fn("agent", json.RawMessage(agent))
+	}
+	for _, ch := range tx {
+		if ch.File == file && ch.Next <= from {
+			continue // the caller has it
+		}
+		b, _ := json.Marshal(ch)
+		fn("tx", b)
+	}
+	for {
+		select {
+		case ch := <-more:
+			b, _ := json.Marshal(ch)
+			fn("tx", b)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+func (f *fake) SendPrompt(_ context.Context, s pier.Session, id, text, mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prompts = append(f.prompts, s.ID+":"+id+":"+text)
+	return nil
+}
+func (f *fake) StartDeliver(s pier.Session, id, text, mode string) (pier.Job, error) {
+	return pier.Job{ID: "j-deliver", Kind: pier.JobDeliver, Session: s.Name, PID: 1}, nil
+}
+func (f *fake) Interrupt(context.Context, pier.Session) error { return nil }
+func (f *fake) Decide(_ context.Context, _ pier.Session, id, behavior, _ string, _ json.RawMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.decided = append(f.decided, id+":"+behavior)
+	return nil
+}
+func (f *fake) Upload(_ context.Context, _ pier.Session, name string, data []byte) (string, error) {
+	return "/home/agent/.pier/uploads/x-" + name, nil
+}
+func (f *fake) ListFiles(context.Context, pier.Session) ([]string, bool, error) {
+	return []string{"go.mod", "src/main.go"}, false, nil
+}
+func (f *fake) PeekAgent(context.Context, pier.Session, int) (string, error) {
+	return "● Running tests…", nil
 }
 func (f *fake) ContainerAction(_ context.Context, _ pier.Session, c, action string) error {
 	if action != "restart" {

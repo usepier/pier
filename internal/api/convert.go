@@ -31,6 +31,14 @@ func wireSession(be Backend, s pier.Session) wire.Session {
 	if a := s.Agent; a != nil {
 		w.Agent = &wire.AgentStatus{Kind: a.Kind, State: wire.AgentState(a.State), Waiting: a.Waiting, Since: a.Since.UTC(), Last: a.Last, Queued: a.Queued}
 	}
+	switch {
+	case s.State == pier.StateFailed:
+		w.Attention = "create_failed"
+	case s.Setup == "failed":
+		w.Attention = "setup_failed"
+	case s.Agent != nil && s.Agent.State == "waiting" && s.State != pier.StateParked:
+		w.Attention = "needs_input"
+	}
 	return w
 }
 

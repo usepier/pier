@@ -290,7 +290,11 @@ func (c *Client) Remove(ctx context.Context, s Session) error {
 		return tombstone.Dismiss(config.Dir(), s.Name)
 	}
 	c.forget(s.ID)
-	return c.drv.Destroy(ctx, s.ID)
+	if err := c.drv.Destroy(ctx, s.ID); err != nil {
+		return err
+	}
+	os.RemoveAll(MirrorDir(s.ID)) // this machine's copy of its chat
+	return nil
 }
 
 // Keep disables idle self-park; the supervisor re-reads its conf every

@@ -210,6 +210,16 @@ someone attaches to its window, or after two minutes. Restore keeps the
 agent window's role and relaunches it on the conversation its hooks last
 reported, hooks included.
 
+The stream also tails the agent's transcript — the JSON lines claude and
+codex write as they go — in complete lines from the offset a frontend
+already has, following the agent onto a new file when its conversation
+changes. The laptop keeps a copy of it (under the user cache directory,
+one writer at a time), so a chat reads while its session is parked and a
+reconnect fetches only what is new; `pkg/pier/chat` turns the lines into
+chat items. The agent's state, its pending permission request and its
+prompt queue go out on the stream's `agent` topic. The agents' state
+survives a supervisor restart (an upgrade) but not a boot.
+
 `pier park <match>` parks a session on demand: a cloud stop, like any other.
 A stop from outside reaches the supervisor as systemd's SIGTERM, and it takes
 one last tmux snapshot then — its unit stops before pier-restore.service,
@@ -584,6 +594,19 @@ in-flight work three seconds to see its cancellation.
   something changes, slow when quiet, slower when the client reports
   `client.activity {focused: false}`); the stray sweep runs at most every
   ten minutes.
+- **Chat.** `chat.watch` sends a session's newest chat items with its
+  agent's state, then changes (append, update, reset, agent) as the agent
+  writes; a parked session answers from this machine's copy with
+  `live: false` and `asOf`. `chat.history` pages older items in. `chat.send`
+  queues a prompt once per id — on a parked session, through a background
+  job that wakes it. `chat.decide` answers a permission request,
+  `chat.interrupt` stops a turn and `chat.peek` shows the bottom of the
+  agent's pane without attaching; `files.upload` puts a pasted image into
+  the session and `files.list` lists its checkout for @-mentions. A client
+  that sets `approvals` in `initialize` answers permission requests: while
+  it runs, a session whose agent is at work is followed even without an
+  open chat, so its requests reach the client. `notify` tells the client
+  once about a finished turn, a needed answer, a failed setup or create.
 - **Errors** carry `data.kind` (`auth_expired` with the login command that
   fixes it, `not_set_up`, `parked`, `no_key`, …) so clients never parse
   messages.

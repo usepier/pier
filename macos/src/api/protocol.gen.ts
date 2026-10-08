@@ -16,6 +16,110 @@ export interface CancelParams {
   id: number | string;
 }
 
+/** ChatChange is one update of a chat watch. */
+export interface ChatChange {
+  op: ChatOp;
+  items?: ChatItem[];
+  /** More goes with a reset: older items exist. */
+  more?: boolean;
+  agent?: AgentDetail;
+  partial?: boolean;
+  /**
+   * Live and AsOf come with an agent change when the session's stream
+   * comes or goes.
+   */
+  live?: boolean;
+  asOf?: string;
+}
+
+/**
+ * AgentDetail is the agent's full state for a chat: what AgentStatus says,
+ * the permission request waiting on you, and the prompts the session holds
+ * for it.
+ */
+export interface AgentDetail extends AgentStatus {
+  model?: string;
+  pending?: PermissionRequest;
+  queue: QueuedPrompt[];
+}
+
+/** AgentStatus is a session's agent in a list view. */
+export interface AgentStatus {
+  /** claude | codex */
+  kind: string;
+  state: AgentState;
+  /** permission | input */
+  waiting?: string;
+  since: string;
+  /** its last message, trimmed */
+  last?: string;
+  queued?: number;
+}
+
+/** AgentState is where a session's agent is. */
+export type AgentState = "starting" | "ready" | "working" | "waiting" | "ended";
+
+/** ChatItem is one entry of the conversation. */
+export interface ChatItem {
+  id: string;
+  kind: ChatKind;
+  time: string;
+  text?: string;
+  /** Images counts images attached to a prompt. */
+  images?: number;
+  model?: string;
+  tool?: ToolCall;
+  /** Sidechain marks a subagent's item. */
+  sidechain?: boolean;
+}
+
+/** ChatKind is what an item is. */
+export type ChatKind = "user" | "assistant" | "thinking" | "tool" | "status" | "error" | "unknown";
+
+/** ChatOp says how an update applies. */
+export type ChatOp = "append" | "update" | "reset" | "agent";
+
+/** ChatSendParams sends a prompt to a session's agent. */
+export interface ChatSendParams {
+  sessionId: string;
+  /** PromptID makes the send happen once: retry with the same id. */
+  promptId: string;
+  text: string;
+  /**
+   * Mode "now" types it in at once, even mid-turn; otherwise it waits for
+   * the agent to be free.
+   */
+  mode?: string;
+}
+
+/** ChatSendResult says how a prompt is on its way. */
+export interface ChatSendResult {
+  /**
+   * Job is set when the session was parked: a background job wakes it and
+   * queues the prompt.
+   */
+  job?: Job;
+}
+
+/** ChatSnapshot is a chat as a watch begins. */
+export interface ChatSnapshot {
+  items: ChatItem[];
+  /** More says older items exist (chat.history pages them in). */
+  more: boolean;
+  agent?: AgentDetail;
+  /**
+   * Live is false for a session that isn't running: the items are what
+   * this Mac last saw, as of AsOf.
+   */
+  live: boolean;
+  asOf?: string;
+  /**
+   * Partial says some of the transcript couldn't be read: the terminal
+   * view shows the whole conversation.
+   */
+  partial?: boolean;
+}
+
 /** Check is one doctor check. */
 export interface Check {
   name: string;
@@ -87,6 +191,15 @@ export interface CreateParams {
   noPool?: boolean;
 }
 
+/** DecideParams answers a permission request. */
+export interface DecideParams {
+  sessionId: string;
+  requestId: string;
+  /** allow | deny */
+  behavior: string;
+  message?: string;
+}
+
 /** DrainResult says how many pooled sessions a drain removed. */
 export interface DrainResult {
   removed: number;
@@ -120,10 +233,43 @@ export interface Container {
   ports: string;
 }
 
+/**
+ * FileList is the paths of a session's checkout (tracked and untracked,
+ * ignored ones left out), relative to the repo root.
+ */
+export interface FileList {
+  paths: string[];
+  truncated: boolean;
+}
+
+/** FileListParams lists a session's files. */
+export interface FileListParams {
+  sessionId: string;
+}
+
+/** HistoryPage is a page of older items, oldest first. */
+export interface HistoryPage {
+  items: ChatItem[];
+  more: boolean;
+}
+
+/** HistoryParams pages older chat items in. */
+export interface HistoryParams {
+  sessionId: string;
+  /** the oldest item id the client has */
+  before: string;
+  limit?: number;
+}
+
 /** InitializeParams opens a session with the server. */
 export interface InitializeParams {
   protocol: number;
   client: ClientInfo;
+  /**
+   * Approvals says the client shows the agents' permission requests and
+   * answers them (chat.decide): while it runs, agents ask it first.
+   */
+  approvals?: boolean;
 }
 
 /** ClientInfo names the client in initialize. */
@@ -227,6 +373,19 @@ export interface NewWindowParams {
 }
 
 /**
+ * Notice is something worth telling the user about a session (notify):
+ * its agent finished or needs them, a setup or create failed.
+ */
+export interface Notice {
+  id: string;
+  /** finished | needs_input | setup_failed | create_failed */
+  kind: string;
+  sessionId: string;
+  title: string;
+  body: string;
+}
+
+/**
  * Overview is everything the sidebar, Home and the cockpits show, refreshed
  * as a whole.
  */
@@ -267,6 +426,27 @@ export interface PathParams {
   path: string;
 }
 
+/** Peek is the bottom of the agent's pane as plain text. */
+export interface Peek {
+  text: string;
+}
+
+/** PeekParams asks for the bottom of the agent's pane. */
+export interface PeekParams {
+  sessionId: string;
+  lines?: number;
+}
+
+/** PermissionRequest is the agent asking to use a tool. */
+export interface PermissionRequest {
+  id: string;
+  tool: string;
+  /** the call in one line */
+  summary: string;
+  input?: string;
+  at: string;
+}
+
 /** PoolSizeParams sets a repo's pool size; Path is its linked checkout. */
 export interface PoolSizeParams {
   path: string;
@@ -294,6 +474,13 @@ export interface Process {
 export interface ProgressParams {
   id: number | string;
   event: Event;
+}
+
+/** QueuedPrompt is a prompt the session holds until its agent can take it. */
+export interface QueuedPrompt {
+  id: string;
+  text: string;
+  at: string;
 }
 
 /** Quota is the account's vCPU headroom in the active region. */
@@ -422,23 +609,12 @@ export interface Session {
   capAt?: string;
   /** Agent is the agent pier launched in the session, as last reported. */
   agent?: AgentStatus;
+  /**
+   * Attention says why the session needs the user, if it does:
+   * needs_input, setup_failed or create_failed.
+   */
+  attention?: string;
 }
-
-/** AgentStatus is a session's agent in a list view. */
-export interface AgentStatus {
-  /** claude | codex */
-  kind: string;
-  state: AgentState;
-  /** permission | input */
-  waiting?: string;
-  since: string;
-  /** its last message, trimmed */
-  last?: string;
-  queued?: number;
-}
-
-/** AgentState is where a session's agent is. */
-export type AgentState = "starting" | "ready" | "working" | "waiting" | "ended";
 
 /** SessionRef names a session by id. */
 export interface SessionRef {
@@ -577,6 +753,62 @@ export interface TermSize {
   rows: number;
 }
 
+/** ToolCall is one tool call with its outcome. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  view: ToolView;
+  status: ToolStatus;
+  /** Summary is the call in one line: the command, the file, the pattern. */
+  summary: string;
+  /** Input is the call's arguments as JSON, trimmed. */
+  input?: string;
+  /** trimmed */
+  result?: string;
+  truncated?: boolean;
+  edit?: EditView;
+  bash?: BashView;
+  todos?: TodoItem[];
+}
+
+/** BashView is a command and its output. */
+export interface BashView {
+  command: string;
+  description?: string;
+  /** stdout then stderr, trimmed */
+  output?: string;
+  exitCode?: number;
+}
+
+/** EditView is a file change. */
+export interface EditView {
+  path: string;
+  created?: boolean;
+  hunks: Hunk[];
+}
+
+/** Hunk is a run of changed lines; each line starts with ' ', '-' or '+'. */
+export interface Hunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: string[];
+}
+
+/** TodoItem is one entry of the agent's task list. */
+export interface TodoItem {
+  content: string;
+  /** pending | in_progress | completed */
+  status: string;
+}
+
+/** ToolStatus is where a tool call is. */
+export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
+
+/** ToolView is how a tool call is best shown. */
+export type ToolView = "edit" | "write" | "bash" | "read" | "todo" | "search" | "web" | "task" | "generic";
+
 /** Totals are the account-wide numbers the header shows. */
 export interface Totals {
   /** includes starting */
@@ -587,6 +819,20 @@ export interface Totals {
   hourlyUsd: number;
   /** parked disks, pools and images */
   idleMonthlyUsd: number;
+}
+
+/** UploadParams puts a file into a session (an image pasted into the chat). */
+export interface UploadParams {
+  sessionId: string;
+  /** its name, for the extension */
+  name: string;
+  /** base64 */
+  data: string;
+}
+
+/** Uploaded is where an upload landed in the session. */
+export interface Uploaded {
+  path: string;
 }
 
 /** Window is one tmux window of a session. */
@@ -623,12 +869,28 @@ export interface Methods {
   "account.headroom": { params: Empty; result: Quota };
   /** Runs the cloud login that fixes the last expired-login error, narrating its output (browser prompts, device codes) as progress. */
   "auth.login": { params: Empty; result: null };
+  /** Answers the agent's permission request: allow or deny. */
+  "chat.decide": { params: DecideParams; result: null };
+  /** Older items of a session's chat, before the oldest one the client has. */
+  "chat.history": { params: HistoryParams; result: HistoryPage };
+  /** Stops the agent's turn, as Esc does at its prompt. */
+  "chat.interrupt": { params: SessionRef; result: null };
+  /** The bottom of the agent's pane as text: what it is doing, without attaching. */
+  "chat.peek": { params: PeekParams; result: Peek };
+  /** Sends a prompt to a session's agent, once per promptId. A parked session is woken by a background job that delivers it. */
+  "chat.send": { params: ChatSendParams; result: ChatSendResult };
+  /** A session's agent conversation: the newest items, then changes as the agent writes them. Parked sessions answer from this machine's copy. */
+  "chat.watch": { params: SessionRef; result: WatchResult<ChatSnapshot> };
   /** Starts, stops or restarts one of a session's containers. */
   "containers.action": { params: ContainerParams; result: null };
   /** Checks the environment and the cloud account. */
   "doctor.run": { params: Empty; result: Check[] };
   /** What runs in a session — windows, containers, processes, ports, load — pushed every few seconds while watched. */
   "env.watch": { params: SessionRef; result: WatchResult<Env> };
+  /** The paths in a session's checkout, tracked and untracked (ignored ones left out). */
+  "files.list": { params: FileListParams; result: FileList };
+  /** Puts a file (an image pasted into the chat) into a session; the result is its path there. */
+  "files.upload": { params: UploadParams; result: Uploaded };
   /** Bakes the checkout's repo into a session image in a background job. */
   "image.bake": { params: BakeParams; result: Job };
   /** Opens the session: the protocol version both sides speak, and whether pier is set up. */
@@ -697,16 +959,19 @@ export interface Methods {
   "tmux.windows": { params: SessionRef; result: Window[] };
 }
 
-/** Every subscription topic: its watch params and the data its events carry. */
+/** Every subscription topic: its watch params, its snapshot, and the data its events carry. */
 export interface Watches {
-  "env": { params: SessionRef; data: Env };
-  "job": { params: JobRef; data: JobUpdate };
-  "overview": { params: Empty; data: Overview };
+  "chat": { params: SessionRef; snapshot: ChatSnapshot; data: ChatChange };
+  "env": { params: SessionRef; snapshot: Env; data: Env };
+  "job": { params: JobRef; snapshot: JobUpdate; data: JobUpdate };
+  "overview": { params: Empty; snapshot: Overview; data: Overview };
 }
 
 export interface ServerNotifications {
   /** One progress event of a long request. */
   "$/progress": ProgressParams;
+  /** Something about a session deserves the user's attention: its agent finished or needs them, its setup or create failed. Each id is sent once. */
+  "notify": Notice;
   /** One update of a subscription. */
   "sub.event": SubEvent;
   /** A terminal's process ended. */

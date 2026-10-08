@@ -46,6 +46,26 @@ func TestAgentStateAfterABoot(t *testing.T) {
 	}
 }
 
+// A supervisor restart (an upgrade) keeps the agents: they still run. A
+// request that was waiting went back to the agent's terminal.
+func TestAgentStateAfterARestart(t *testing.T) {
+	old := bootID
+	bootID = func() string { return "boot-1" }
+	t.Cleanup(func() { bootID = old })
+	home := t.TempDir()
+	a := newAgents(home, nil)
+	a.hook("claude", "UserPromptSubmit", "%1", map[string]any{"session_id": "s-1"})
+	a.mu.Lock()
+	a.byPane["%1"].Pending, a.byPane["%1"].State, a.byPane["%1"].Waiting = &pending{ID: "p1", Tool: "Bash"}, agentWaiting, "permission"
+	a.mu.Unlock()
+	a.changed()
+	b := newAgents(home, nil)
+	s := b.byPane["%1"]
+	if s == nil || s.State != agentWaiting || s.Pending != nil || s.Waiting != "input" {
+		t.Errorf("after a restart: %+v", s)
+	}
+}
+
 func TestPermissionGating(t *testing.T) {
 	a := newAgents(t.TempDir(), nil)
 	// Nobody can answer: the agent asks in its terminal straight away.

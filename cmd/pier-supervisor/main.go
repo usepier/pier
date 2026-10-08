@@ -160,7 +160,8 @@ func main() {
 	theAgents = ag
 	var touchedAt atomic.Int64
 	registerAgentOps(ag, h, home, func() { touchedAt.Store(time.Now().UnixNano()) })
-	ag.notify = func() { h.publish("agent", ag.snapshot()) }
+	ag.notify = func() { h.publish("agent", ag.topic()) }
+	h.findTranscript = ag.transcript
 	go func() {
 		if err := h.serve(); err != nil {
 			fmt.Println("pier-supervisor: stream socket:", err)

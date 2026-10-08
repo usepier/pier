@@ -15,6 +15,9 @@ type ClientInfo struct {
 type InitializeParams struct {
 	Protocol int        `json:"protocol"`
 	Client   ClientInfo `json:"client"`
+	// Approvals says the client shows the agents' permission requests and
+	// answers them (chat.decide): while it runs, agents ask it first.
+	Approvals bool `json:"approvals,omitempty"`
 }
 
 // InitializeResult tells the client what it is talking to.

@@ -11,6 +11,9 @@ import (
 func init() {
 	handle("initialize", "Opens the session: the protocol version both sides speak, and whether pier is set up.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.InitializeParams) (wire.InitializeResult, error) {
+			s.mu.Lock()
+			s.client = p
+			s.mu.Unlock()
 			r := wire.InitializeResult{Protocol: wire.ProtocolVersion, Version: s.opts.Version}
 			if be, err := s.backend(); err == nil {
 				r.Configured, r.Cloud = true, be.Cloud()

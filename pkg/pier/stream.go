@@ -19,26 +19,45 @@ import (
 
 // streamProto is the supervisor stream protocol this pier speaks; a
 // supervisor reporting an older one is replaced.
-const streamProto = 1
+const streamProto = 2
 
 // errNoStream: the session's supervisor predates the stream.
 var errNoStream = errors.New("no stream socket")
 
-// Follow streams a session's topics ("status", "env") to fn, one message
-// at a time (its event name and JSON data), until ctx ends or the
+// errUpgradeLater: replacing an outdated supervisor now would drop the
+// agent's pending request and its turn's idle clock.
+var errUpgradeLater = errors.New("the session runs an older pier supervisor — it is updated once its agent's turn ends")
+
+// Follow streams a session's topics ("status", "env", "agent") to fn, one
+// message at a time (its event name and JSON data), until ctx ends or the
 // connection drops. An older supervisor is upgraded in place first.
 func (c *Client) Follow(ctx context.Context, s Session, topics []string, fn func(ev string, data json.RawMessage)) error {
-	err := c.follow(ctx, s, topics, fn)
+	return c.followUpgrading(ctx, s, topics, nil, fn)
+}
+
+// FollowTranscript is Follow plus the agent's transcript, as "tx" messages
+// (see TranscriptChunk), from where the caller's copy of it ends: the
+// file it is of and its length ("" and 0 for none).
+func (c *Client) FollowTranscript(ctx context.Context, s Session, topics []string, file string, from int64, fn func(ev string, data json.RawMessage)) error {
+	tail := map[string]any{"op": "tail", "args": map[string]any{"file": file, "from": from}}
+	return c.followUpgrading(ctx, s, topics, []any{tail}, fn)
+}
+
+func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage)) error {
+	err := c.follow(ctx, s, topics, extra, fn)
 	if errors.Is(err, errNoStream) {
+		if a := s.Agent; a != nil && (a.State == "working" || a.State == "waiting") {
+			return errUpgradeLater
+		}
 		if uerr := c.UpgradeSupervisor(ctx, s); uerr != nil {
 			return fmt.Errorf("upgrading the session's supervisor: %w", uerr)
 		}
-		err = c.follow(ctx, s, topics, fn)
+		err = c.follow(ctx, s, topics, extra, fn)
 	}
 	return err
 }
 
-func (c *Client) follow(ctx context.Context, s Session, topics []string, fn func(string, json.RawMessage)) error {
+func (c *Client) follow(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage)) error {
 	conn, err := c.Conn(ctx, s)
 	if err != nil {
 		return err
@@ -81,9 +100,11 @@ func (c *Client) follow(ctx context.Context, s Session, topics []string, fn func
 	if json.Unmarshal(sc.Bytes(), &hello) != nil || hello.Ev != "hello" || hello.Data.Proto < streamProto {
 		return errNoStream
 	}
-	sub, _ := json.Marshal(map[string]any{"op": "subscribe", "topics": topics})
-	if _, err := stdin.Write(append(sub, '\n')); err != nil {
-		return err
+	for _, req := range append([]any{map[string]any{"op": "subscribe", "topics": topics}}, extra...) {
+		b, _ := json.Marshal(req)
+		if _, err := stdin.Write(append(b, '\n')); err != nil {
+			return err
+		}
 	}
 	conn.Busy()
 	for sc.Scan() {
