@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 
 	"github.com/usepier/pier/internal/config"
@@ -48,6 +49,8 @@ type Backend interface {
 	NewWindow(ctx context.Context, s pier.Session, name string) (pier.Window, error)
 	KillWindow(ctx context.Context, s pier.Session, window string) error
 	RenameWindow(ctx context.Context, s pier.Session, window, name string) error
+	Follow(ctx context.Context, s pier.Session, topics []string, fn func(ev string, data json.RawMessage)) error
+	ContainerAction(ctx context.Context, s pier.Session, container, action string) error
 }
 
 var _ Backend = (*pier.Client)(nil)

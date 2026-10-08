@@ -184,6 +184,16 @@ load (CPU, memory, disk, load average), which process holds each listening
 port, and when it stops on its own (`park_at` while quiet and detached,
 `cap_at` while it works unattended), so frontends can say "parks in 12m".
 
+The supervisor also serves `/run/pier/supervisor.sock` (agent-only), relayed
+over ssh by `pier-supervisor stream`: frontends follow a session live
+(status, and what runs in it — windows, containers, heaviest processes,
+ports) on one channel of the session's connection, which never counts as
+attached. Changes a frontend asks for (`pier-supervisor op`) run inside the
+supervisor rather than the ssh channel that asked, so a dropped connection
+can't leave one half done, and each carries an id that makes a retry a
+no-op. A session whose supervisor predates the stream gets this pier's on
+first contact, the same install a create or claim does.
+
 `pier park <match>` parks a session on demand: a cloud stop, like any other.
 A stop from outside reaches the supervisor as systemd's SIGTERM, and it takes
 one last tmux snapshot then — its unit stops before pier-restore.service,

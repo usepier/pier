@@ -326,3 +326,32 @@ type JobUpdate struct {
 	Job    Job     `json:"job"`
 	Events []Event `json:"events"`
 }
+
+// Env is what runs in a session: its tmux windows, docker containers,
+// heaviest processes and listening ports, live.
+type Env struct {
+	Windows    []Window    `json:"windows"`
+	Containers []Container `json:"containers"`
+	Processes  []Process   `json:"processes"`
+	Ports      []Port      `json:"ports"`
+	Resources  *Resources  `json:"resources,omitempty"`
+	At         time.Time   `json:"at"`
+}
+
+// Container is one docker container in a session.
+type Container struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Image  string `json:"image"`
+	State  string `json:"state"`  // running, exited, …
+	Status string `json:"status"` // docker's words: "Up 2 hours"
+	Ports  string `json:"ports"`
+}
+
+// Process is one of a session's heaviest processes.
+type Process struct {
+	PID     int     `json:"pid"`
+	Command string  `json:"command"`
+	CPU     float64 `json:"cpu"` // % of one CPU
+	RSS     uint64  `json:"rss"` // bytes
+}

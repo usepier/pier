@@ -164,23 +164,37 @@ func cmdline(pid int) string {
 	return s
 }
 
-// topProcesses samples every process twice, gap apart, and returns the n
-// heaviest by CPU plus any of the n heaviest by memory not already listed.
+// topProcesses samples every process twice, gap apart.
 func topProcesses(n int, gap time.Duration) []proc {
-	const clkTck = 100 // USER_HZ on every Linux pier runs on
-	pageSize := uint64(os.Getpagesize())
-	a := readProcTimes()
+	var s procSampler
+	s.top(n)
 	time.Sleep(gap)
-	b := readProcTimes()
+	return s.top(n)
+}
+
+// procSampler keeps the previous reading so each sample's CPU is the use
+// since the last one, without sleeping.
+type procSampler struct {
+	prev map[int][2]uint64
+	at   time.Time
+}
+
+// top returns the n heaviest processes by CPU since the last call, plus the
+// n heaviest by memory not already listed.
+func (s *procSampler) top(n int) []proc {
+	const clkTck = 100
+	pageSize := uint64(os.Getpagesize())
+	now, at := readProcTimes(), time.Now()
+	gap := at.Sub(s.at).Seconds()
 	var all []proc
-	for pid, now := range b {
-		before, ok := a[pid]
+	for pid, cur := range now {
 		cpu := 0.0
-		if ok && now[0] >= before[0] {
-			cpu = float64(now[0]-before[0]) / clkTck / gap.Seconds() * 100
+		if before, ok := s.prev[pid]; ok && gap > 0 && cur[0] >= before[0] {
+			cpu = float64(cur[0]-before[0]) / clkTck / gap * 100
 		}
-		all = append(all, proc{PID: pid, CPU: cpu, RSS: now[1] * pageSize})
+		all = append(all, proc{PID: pid, CPU: cpu, RSS: cur[1] * pageSize})
 	}
+	s.prev, s.at = now, at
 	pick := map[int]bool{}
 	var out []proc
 	sort.Slice(all, func(i, j int) bool { return all[i].CPU > all[j].CPU })

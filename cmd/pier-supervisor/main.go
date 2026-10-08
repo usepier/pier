@@ -103,6 +103,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "ps" {
 		os.Exit(psMain())
 	}
+	if len(os.Args) > 1 && os.Args[1] == "stream" {
+		os.Exit(streamMain())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "op" {
+		os.Exit(opMain(os.Args[2:]))
+	}
 
 	// A stop from outside (the cloud stopping the instance, a resize) shuts
 	// the machine down without asking: systemd's SIGTERM is the last chance
@@ -135,6 +141,13 @@ func main() {
 	last := status{}
 	lastSnap := time.Time{}
 	var cpu cpuSampler
+	var procs procSampler
+	h := newHub()
+	go func() {
+		if err := h.serve(); err != nil {
+			fmt.Println("pier-supervisor: stream socket:", err)
+		}
+	}()
 
 	for {
 		idleTimeout, cap_ := readConf()
@@ -181,9 +194,17 @@ func main() {
 			last.CapAt = &at
 		}
 		writeStatus(last)
+		h.publish("status", last)
+		if h.watching("env") {
+			var e envState
+			json.Unmarshal(envSnapshot(&procs), &e)
+			e.Ports, e.Res = ports, &res
+			h.publish("env", e)
+		}
 
 		if now.Sub(lastSnap) >= snapEvery && !restoring() {
 			snapshotNow()
+			reapTabs()
 			lastSnap = now
 		}
 

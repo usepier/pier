@@ -109,6 +109,22 @@ var paneFormat = strings.Join([]string{
 	"#{window_layout}", "#{pane_index}", "#{pane_active}", "#{pane_id}", "#{pane_pid}", "#{pane_current_path}",
 }, paneSep)
 
+// reapTabs ends tab sessions nobody is attached to. They end themselves
+// when their client detaches (destroy-unattached); this catches any a crash
+// left behind.
+func reapTabs() {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name} #{session_attached}").Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		name, attached, ok := strings.Cut(line, " ")
+		if ok && strings.HasPrefix(name, TabSessionPrefix) && attached == "0" {
+			exec.Command("tmux", "kill-session", "-t", name).Run()
+		}
+	}
+}
+
 // TabSessionPrefix names the grouped tmux sessions frontends attach their
 // terminal tabs through (pier-tab-<id>).
 const TabSessionPrefix = "pier-tab-"

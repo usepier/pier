@@ -191,6 +191,11 @@ grep -q 'BROWSER=/usr/local/bin/xdg-open' "$HOME/.bashrc" 2>/dev/null || echo 'e
 	return s
 }
 
+// InstallSupervisorScript is the step that installs /tmp/pier-supervisor
+// and its units and restarts it: what a frontend runs to bring an older
+// session's supervisor up to this pier's.
+func InstallSupervisorScript() string { return installSupervisor }
+
 // installSupervisor installs /tmp/pier-supervisor and its units and
 // (re)starts it. Bootstrap runs it on every new session, freshen on every
 // claim, so a session always runs the in-VM half of the pier that made or

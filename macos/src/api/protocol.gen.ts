@@ -61,6 +61,14 @@ export interface ClientActivity {
   visible?: string[];
 }
 
+/** ContainerParams acts on one of a session's containers. */
+export interface ContainerParams {
+  sessionId: string;
+  container: string;
+  /** start, stop, restart */
+  action: string;
+}
+
 /**
  * CreateParams starts a session from a linked checkout's HEAD, uncommitted
  * edits included.
@@ -86,6 +94,31 @@ export interface DrainResult {
 
 /** Empty is a method's absent params or result. */
 export type Empty = Record<string, never>;
+
+/**
+ * Env is what runs in a session: its tmux windows, docker containers,
+ * heaviest processes and listening ports, live.
+ */
+export interface Env {
+  windows: Window[];
+  containers: Container[];
+  processes: Process[];
+  ports: Port[];
+  resources?: Resources;
+  at: string;
+}
+
+/** Container is one docker container in a session. */
+export interface Container {
+  id: string;
+  name: string;
+  image: string;
+  /** running, exited, … */
+  state: string;
+  /** docker's words: "Up 2 hours" */
+  status: string;
+  ports: string;
+}
 
 /** InitializeParams opens a session with the server. */
 export interface InitializeParams {
@@ -240,6 +273,23 @@ export interface PoolSizeParams {
   size: number;
 }
 
+/** Port is a port a session listens on and who holds it. */
+export interface Port {
+  port: number;
+  process: string;
+  pid?: number;
+}
+
+/** Process is one of a session's heaviest processes. */
+export interface Process {
+  pid: number;
+  command: string;
+  /** % of one CPU */
+  cpu: number;
+  /** bytes */
+  rss: number;
+}
+
 /** ProgressParams is one progress event of a long request ($/progress). */
 export interface ProgressParams {
   id: number | string;
@@ -314,6 +364,18 @@ export interface ResizeParams {
   machineType: string;
 }
 
+/** Resources is a session's load. Sizes are bytes. */
+export interface Resources {
+  /** % of all CPUs */
+  cpu: number;
+  cpus: number;
+  memUsed: number;
+  memTotal: number;
+  diskUsed: number;
+  diskTotal: number;
+  load1: number;
+}
+
 /** Session is one session VM, or a pooled one waiting to be claimed. */
 export interface Session {
   id: string;
@@ -358,25 +420,6 @@ export interface Session {
   ports?: Port[];
   parkAt?: string;
   capAt?: string;
-}
-
-/** Port is a port a session listens on and who holds it. */
-export interface Port {
-  port: number;
-  process: string;
-  pid?: number;
-}
-
-/** Resources is a session's load. Sizes are bytes. */
-export interface Resources {
-  /** % of all CPUs */
-  cpu: number;
-  cpus: number;
-  memUsed: number;
-  memTotal: number;
-  diskUsed: number;
-  diskTotal: number;
-  load1: number;
 }
 
 /** SessionRef names a session by id. */
@@ -562,8 +605,12 @@ export interface Methods {
   "account.headroom": { params: Empty; result: Quota };
   /** Runs the cloud login that fixes the last expired-login error, narrating its output (browser prompts, device codes) as progress. */
   "auth.login": { params: Empty; result: null };
+  /** Starts, stops or restarts one of a session's containers. */
+  "containers.action": { params: ContainerParams; result: null };
   /** Checks the environment and the cloud account. */
   "doctor.run": { params: Empty; result: Check[] };
+  /** What runs in a session — windows, containers, processes, ports, load — pushed every few seconds while watched. */
+  "env.watch": { params: SessionRef; result: WatchResult<Env> };
   /** Bakes the checkout's repo into a session image in a background job. */
   "image.bake": { params: BakeParams; result: Job };
   /** Opens the session: the protocol version both sides speak, and whether pier is set up. */
@@ -634,6 +681,7 @@ export interface Methods {
 
 /** Every subscription topic: its watch params and the data its events carry. */
 export interface Watches {
+  "env": { params: SessionRef; data: Env };
   "job": { params: JobRef; data: JobUpdate };
   "overview": { params: Empty; data: Overview };
 }

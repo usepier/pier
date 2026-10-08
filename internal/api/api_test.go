@@ -137,7 +137,20 @@ func (f *fake) Windows(context.Context, pier.Session) ([]pier.Window, error) {
 func (f *fake) NewWindow(_ context.Context, _ pier.Session, name string) (pier.Window, error) {
 	return pier.Window{ID: "@3", Index: 2, Name: name}, nil
 }
-func (f *fake) KillWindow(context.Context, pier.Session, string) error           { return nil }
+func (f *fake) KillWindow(context.Context, pier.Session, string) error { return nil }
+func (f *fake) Follow(ctx context.Context, s pier.Session, topics []string, fn func(string, json.RawMessage)) error {
+	for i := range 2 {
+		fn("env", json.RawMessage(fmt.Sprintf(`{"windows":"@1|0|1|claude|agent|agent\n","containers":"{\"ID\":\"c1\",\"Names\":\"db\",\"State\":\"running\"}\n","processes":[{"pid":%d,"command":"node","cpu":12,"rss":1000}],"ports":[{"port":3000,"process":"node"}]}`, 100+i)))
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (f *fake) ContainerAction(_ context.Context, _ pier.Session, c, action string) error {
+	if action != "restart" {
+		return errors.New("no")
+	}
+	return nil
+}
 func (f *fake) RenameWindow(context.Context, pier.Session, string, string) error { return nil }
 func (f *fake) Resume(ctx context.Context, s pier.Session) error {
 	if f.block != nil {

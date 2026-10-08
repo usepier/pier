@@ -266,3 +266,10 @@ type RenameWindowParams struct {
 	Window    string `json:"window"`
 	Name      string `json:"name"`
 }
+
+// ContainerParams acts on one of a session's containers.
+type ContainerParams struct {
+	SessionID string `json:"sessionId"`
+	Container string `json:"container"`
+	Action    string `json:"action"` // start, stop, restart
+}
