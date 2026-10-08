@@ -607,6 +607,17 @@ in-flight work three seconds to see its cancellation.
   it runs, a session whose agent is at work is followed even without an
   open chat, so its requests reach the client. `notify` tells the client
   once about a finished turn, a needed answer, a failed setup or create.
+- **Review.** `git.changes` lists everything a session's branch changed
+  against its base (the merge base with the origin branch it came off,
+  else the commit recorded at create), committed or not, with line counts;
+  `git.diff` gives one file's unified diff. Both answer for a parked
+  session from what this machine last read. `files.read` returns a file
+  with the sha of what was read and `files.write` saves it only if the
+  session's copy still has that sha (kind `conflict` otherwise);
+  `files.search` greps the checkout. Saves, `git.commit` and `git.push`
+  run inside the session's supervisor — a save is written to a temporary
+  file, synced and renamed into place — and each carries an id that makes
+  a retry a no-op.
 - **Errors** carry `data.kind` (`auth_expired` with the login command that
   fixes it, `not_set_up`, `parked`, `no_key`, …) so clients never parse
   messages.

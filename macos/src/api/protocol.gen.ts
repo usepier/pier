@@ -16,6 +16,52 @@ export interface CancelParams {
   id: number | string;
 }
 
+/**
+ * Changes is a session's checkout against its base: everything the branch
+ * changed, committed or not.
+ */
+export interface Changes {
+  /** "" when detached */
+  branch: string;
+  head: string;
+  upstream?: string;
+  /** commits the upstream lacks */
+  ahead: number;
+  /** commits the upstream has that HEAD lacks */
+  behind: number;
+  /**
+   * BaseRef is what the branch is compared with (origin/main); BaseOid
+   * the commit it started from.
+   */
+  baseRef?: string;
+  baseOid?: string;
+  files: ChangedFile[];
+  uncommitted: number;
+  /**
+   * Live is false for a session that isn't running: what this machine
+   * last read, as of AsOf.
+   */
+  live: boolean;
+  asOf?: string;
+}
+
+/**
+ * ChangedFile is a file that differs from where the session's branch
+ * started.
+ */
+export interface ChangedFile {
+  path: string;
+  /** renames */
+  oldPath?: string;
+  /** Status: added | modified | deleted | renamed | untracked | conflicted */
+  status: string;
+  added: number;
+  removed: number;
+  binary?: boolean;
+  /** Uncommitted: the working tree or index differs from HEAD here. */
+  uncommitted?: boolean;
+}
+
 /** ChatChange is one update of a chat watch. */
 export interface ChatChange {
   op: ChatOp;
@@ -165,6 +211,18 @@ export interface ClientActivity {
   visible?: string[];
 }
 
+/** CommitParams commits everything in a session's checkout. */
+export interface CommitParams {
+  sessionId: string;
+  opId: string;
+  message: string;
+}
+
+/** CommitResult is the new HEAD. */
+export interface CommitResult {
+  head: string;
+}
+
 /** ContainerParams acts on one of a session's containers. */
 export interface ContainerParams {
   sessionId: string;
@@ -198,6 +256,16 @@ export interface DecideParams {
   /** allow | deny */
   behavior: string;
   message?: string;
+}
+
+/** DiffParams asks for one changed file's diff. */
+export interface DiffParams {
+  sessionId: string;
+  path: string;
+  oldPath?: string;
+  status?: string;
+  /** Context is the lines around each change; 0 for the default. */
+  context?: number;
 }
 
 /** DrainResult says how many pooled sessions a drain removed. */
@@ -234,6 +302,30 @@ export interface Container {
 }
 
 /**
+ * FileContent is a file of a session's checkout. Text is set for text
+ * files; binary ones only say so.
+ */
+export interface FileContent {
+  path: string;
+  text: string;
+  binary?: boolean;
+  size: number;
+  /** Sha identifies the content read, for files.write's conflict check. */
+  sha: string;
+  missing?: boolean;
+  tooLarge?: boolean;
+}
+
+/** FileDiff is a unified diff of one file against the base. */
+export interface FileDiff {
+  path: string;
+  patch: string;
+  truncated?: boolean;
+  live: boolean;
+  asOf?: string;
+}
+
+/**
  * FileList is the paths of a session's checkout (tracked and untracked,
  * ignored ones left out), relative to the repo root.
  */
@@ -245,6 +337,32 @@ export interface FileList {
 /** FileListParams lists a session's files. */
 export interface FileListParams {
   sessionId: string;
+}
+
+/** FilePathParams names a file of a session's checkout. */
+export interface FilePathParams {
+  sessionId: string;
+  /** relative to the repo root */
+  path: string;
+}
+
+/** FileWriteParams saves a file, unless it changed since it was read. */
+export interface FileWriteParams {
+  sessionId: string;
+  /** OpID makes the save happen once: retry with the same id. */
+  opId: string;
+  path: string;
+  text: string;
+  /**
+   * BaseSha is the sha files.read gave ("" for a new file); a file that
+   * changed since fails with kind "conflict".
+   */
+  baseSha: string;
+}
+
+/** FileWritten is the saved file's new sha. */
+export interface FileWritten {
+  sha: string;
 }
 
 /** HistoryPage is a page of older items, oldest first. */
@@ -476,6 +594,12 @@ export interface ProgressParams {
   event: Event;
 }
 
+/** PushParams pushes a session's branch. */
+export interface PushParams {
+  sessionId: string;
+  opId: string;
+}
+
 /** QueuedPrompt is a prompt the session holds until its agent can take it. */
 export interface QueuedPrompt {
   id: string;
@@ -561,6 +685,28 @@ export interface Resources {
   diskUsed: number;
   diskTotal: number;
   load1: number;
+}
+
+/** SearchParams searches a session's checkout. */
+export interface SearchParams {
+  sessionId: string;
+  query: string;
+  regex?: boolean;
+  caseSensitive?: boolean;
+}
+
+/** SearchResult is a search's matches, in file order. */
+export interface SearchResult {
+  matches: SearchMatch[];
+  truncated: boolean;
+}
+
+/** SearchMatch is one line that matched. */
+export interface SearchMatch {
+  path: string;
+  line: number;
+  col: number;
+  text: string;
 }
 
 /** Session is one session VM, or a pooled one waiting to be claimed. */
@@ -889,8 +1035,22 @@ export interface Methods {
   "env.watch": { params: SessionRef; result: WatchResult<Env> };
   /** The paths in a session's checkout, tracked and untracked (ignored ones left out). */
   "files.list": { params: FileListParams; result: FileList };
+  /** A file of a session's checkout, with the sha files.write checks against. */
+  "files.read": { params: FilePathParams; result: FileContent };
+  /** Finds text in a session's checkout: literal by default, or an extended regex. */
+  "files.search": { params: SearchParams; result: SearchResult };
   /** Puts a file (an image pasted into the chat) into a session; the result is its path there. */
   "files.upload": { params: UploadParams; result: Uploaded };
+  /** Saves a file of a session's checkout, once per opId, unless it changed there since it was read (kind conflict). */
+  "files.write": { params: FileWriteParams; result: FileWritten };
+  /** Everything a session's branch changed against its base, committed or not. A parked session answers with what this machine last read. */
+  "git.changes": { params: SessionRef; result: Changes };
+  /** Commits everything in a session's checkout, once per opId. */
+  "git.commit": { params: CommitParams; result: CommitResult };
+  /** One changed file's unified diff against the base. */
+  "git.diff": { params: DiffParams; result: FileDiff };
+  /** Pushes a session's branch to origin, once per opId. */
+  "git.push": { params: PushParams; result: null };
   /** Bakes the checkout's repo into a session image in a background job. */
   "image.bake": { params: BakeParams; result: Job };
   /** Opens the session: the protocol version both sides speak, and whether pier is set up. */

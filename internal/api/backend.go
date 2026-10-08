@@ -7,6 +7,7 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/pkg/pier"
+	"github.com/usepier/pier/pkg/pier/gitview"
 )
 
 // Backend is what the server needs from pier: *pier.Client satisfies it,
@@ -59,6 +60,13 @@ type Backend interface {
 	Upload(ctx context.Context, s pier.Session, name string, data []byte) (string, error)
 	ListFiles(ctx context.Context, s pier.Session) ([]string, bool, error)
 	PeekAgent(ctx context.Context, s pier.Session, lines int) (string, error)
+	Changes(ctx context.Context, s pier.Session) (gitview.Changes, error)
+	Diff(ctx context.Context, s pier.Session, f gitview.File, context int) (string, bool, error)
+	ReadFile(ctx context.Context, s pier.Session, path string) (pier.FileContent, error)
+	WriteFile(ctx context.Context, s pier.Session, id, path string, data []byte, baseSha string) (string, error)
+	Search(ctx context.Context, s pier.Session, query string, regex, caseSensitive bool) ([]pier.Match, bool, error)
+	Commit(ctx context.Context, s pier.Session, id, message string) (string, error)
+	Push(ctx context.Context, s pier.Session, id string) error
 }
 
 var _ Backend = (*pier.Client)(nil)

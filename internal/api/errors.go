@@ -43,6 +43,7 @@ var kinds = []struct {
 	{pier.ErrCreateFailed, wire.ErrCreateFailed},
 	{pier.ErrDeleting, wire.ErrDeleting},
 	{pier.ErrParked, wire.ErrParked},
+	{pier.ErrConflict, wire.ErrConflict},
 	{pier.ErrNoKey, wire.ErrNoKey},
 	{pier.ErrNotInRepo, wire.ErrNotInRepo},
 	{context.Canceled, wire.ErrCancelled},

@@ -149,10 +149,22 @@ func (c *Client) UpgradeSupervisor(ctx context.Context, s Session) error {
 // The change runs in the supervisor, so a dropped connection can't leave it
 // half done; the op id makes a retry of the same request a no-op.
 func (c *Client) Op(ctx context.Context, s Session, op string, args any) (json.RawMessage, error) {
+	return c.OpID(ctx, s, newJobID(), op, args)
+}
+
+// OpID is Op with the caller's id, so a retry from the caller (after its
+// own connection dropped) is the same request.
+func (c *Client) OpID(ctx context.Context, s Session, id, op string, args any) (json.RawMessage, error) {
 	if err := CheckReady(s); err != nil {
 		return nil, err
 	}
-	req, err := json.Marshal(map[string]any{"id": newJobID(), "op": op, "args": args})
+	if s.State == StateParked {
+		return nil, ErrParked
+	}
+	if id == "" {
+		id = newJobID()
+	}
+	req, err := json.Marshal(map[string]any{"id": id, "op": op, "args": args})
 	if err != nil {
 		return nil, err
 	}

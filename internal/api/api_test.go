@@ -16,6 +16,7 @@ import (
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/pkg/pier"
+	"github.com/usepier/pier/pkg/pier/gitview"
 	"github.com/usepier/pier/pkg/pier/wire"
 )
 
@@ -198,6 +199,30 @@ func (f *fake) Upload(_ context.Context, _ pier.Session, name string, data []byt
 func (f *fake) ListFiles(context.Context, pier.Session) ([]string, bool, error) {
 	return []string{"go.mod", "src/main.go"}, false, nil
 }
+func (f *fake) Changes(_ context.Context, s pier.Session) (gitview.Changes, error) {
+	return gitview.Changes{BaseRef: "origin/main", Branch: gitview.Branch{Head: "fix", Oid: "abc", Ahead: 1},
+		Files: []gitview.File{{Path: "a.go", Status: gitview.Modified, Added: 2, Uncommitted: true}}}, nil
+}
+func (f *fake) Diff(_ context.Context, _ pier.Session, file gitview.File, _ int) (string, bool, error) {
+	return "--- a/" + file.Path + "\n+++ b/" + file.Path + "\n", false, nil
+}
+func (f *fake) ReadFile(_ context.Context, _ pier.Session, path string) (pier.FileContent, error) {
+	if path == "logo.png" {
+		return pier.FileContent{Path: path, Data: []byte{0x89, 'P', 0, 1}, Sha: "s0"}, nil
+	}
+	return pier.FileContent{Path: path, Data: []byte("package a\n"), Size: 10, Sha: "s1"}, nil
+}
+func (f *fake) WriteFile(_ context.Context, _ pier.Session, _, _ string, _ []byte, base string) (string, error) {
+	if base != "s1" {
+		return "", pier.ErrConflict
+	}
+	return "s2", nil
+}
+func (f *fake) Search(context.Context, pier.Session, string, bool, bool) ([]pier.Match, bool, error) {
+	return []pier.Match{{Path: "a.go", Line: 3, Col: 5, Text: "hello"}}, false, nil
+}
+func (f *fake) Commit(context.Context, pier.Session, string, string) (string, error) { return "def", nil }
+func (f *fake) Push(context.Context, pier.Session, string) error                   { return nil }
 func (f *fake) PeekAgent(context.Context, pier.Session, int) (string, error) {
 	return "● Running tests…", nil
 }
