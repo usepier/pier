@@ -223,6 +223,18 @@ export interface CommitResult {
   head: string;
 }
 
+/** ComposeParams asks for a prompt for the agent. */
+export interface ComposeParams {
+  sessionId: string;
+  /** Kind: fixCI | addressComments | createPR */
+  kind: string;
+}
+
+/** Composed is a prompt to put in the composer (not sent). */
+export interface Composed {
+  text: string;
+}
+
 /** ContainerParams acts on one of a session's containers. */
 export interface ContainerParams {
   sessionId: string;
@@ -496,7 +508,7 @@ export interface NewWindowParams {
  */
 export interface Notice {
   id: string;
-  /** finished | needs_input | setup_failed | create_failed */
+  /** finished | needs_input | setup_failed | create_failed | ci_failed */
   kind: string;
   sessionId: string;
   title: string;
@@ -538,6 +550,98 @@ export interface ErrorData {
  * messages.
  */
 export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "head_moved" | "busy";
+
+/** PRDetail is a session's pull request in full. */
+export interface PRDetail extends PRSummary {
+  /** ID is GitHub's id for it, for pr.merge. */
+  id: string;
+  body: string;
+  runs: PRCheck[];
+  threads: PRThread[];
+  reviews: PRReview[];
+}
+
+/** PRCheck is one check on a pull request's head. */
+export interface PRCheck {
+  name: string;
+  /** State: pending | passing | failing | skipped */
+  state: string;
+  url: string;
+  /**
+   * JobID reads the log (pr.log); RunID re-runs it (pr.rerun). GitHub
+   * Actions only.
+   */
+  jobId?: number;
+  runId?: number;
+}
+
+/** PRLogParams reads a check's log. */
+export interface PRLogParams {
+  sessionId: string;
+  jobId: number;
+}
+
+/** PRMergeParams merges a session's pull request. */
+export interface PRMergeParams {
+  sessionId: string;
+  /** merge | squash | rebase */
+  method: string;
+  /**
+   * ExpectedHeadOid is the head that was reviewed: if the pull request
+   * moved past it, the merge fails with kind head_moved.
+   */
+  expectedHeadOid: string;
+}
+
+/** PRRerunParams re-runs a workflow run's failed jobs. */
+export interface PRRerunParams {
+  sessionId: string;
+  runId: number;
+}
+
+/** PRReview is a reviewer's verdict. */
+export interface PRReview {
+  author: string;
+  /** approved | changes_requested | commented */
+  state: string;
+  body: string;
+}
+
+/** PRSummary is a session's pull request, as a row shows it. */
+export interface PRSummary {
+  number: number;
+  title: string;
+  url: string;
+  /** State: open | draft | merged | closed */
+  state: string;
+  headOid: string;
+  baseRef: string;
+  additions: number;
+  deletions: number;
+  /** Checks: passing | failing | pending | "" (none) */
+  checks: string;
+  checksPassed: number;
+  checksTotal: number;
+  /** Review: approved | changes_requested | review_required | "" */
+  review: string;
+  /** Mergeable: clean | conflicts | blocked | behind | unstable | unknown */
+  mergeable: string;
+}
+
+/** PRThread is a review conversation on a line. */
+export interface PRThread {
+  path: string;
+  line: number;
+  resolved: boolean;
+  outdated: boolean;
+  comments: PRComment[];
+}
+
+/** PRComment is one comment of a thread. */
+export interface PRComment {
+  author: string;
+  body: string;
+}
 
 /** PathParams names a local path (a checkout or a directory inside one). */
 export interface PathParams {
@@ -755,9 +859,12 @@ export interface Session {
   capAt?: string;
   /** Agent is the agent pier launched in the session, as last reported. */
   agent?: AgentStatus;
+  /** PR is the branch's pull request, when it has one. */
+  pr?: PRSummary;
   /**
    * Attention says why the session needs the user, if it does:
-   * needs_input, setup_failed or create_failed.
+   * needs_input, create_failed, setup_failed, ci_failing,
+   * changes_requested, merged_cleanup or ready_to_merge.
    */
   attention?: string;
 }
@@ -1015,6 +1122,8 @@ export interface Methods {
   "account.headroom": { params: Empty; result: Quota };
   /** Runs the cloud login that fixes the last expired-login error, narrating its output (browser prompts, device codes) as progress. */
   "auth.login": { params: Empty; result: null };
+  /** A prompt for the agent from the pull request — fixCI (with the failing logs), addressComments, createPR — for the composer, not sent. */
+  "chat.compose": { params: ComposeParams; result: Composed };
   /** Answers the agent's permission request: allow or deny. */
   "chat.decide": { params: DecideParams; result: null };
   /** Older items of a session's chat, before the oldest one the client has. */
@@ -1075,6 +1184,14 @@ export interface Methods {
   "pool.fill": { params: PathParams; result: Job };
   /** Sets how many pooled sessions the checkout's repo keeps (0 turns the pool off and drains it). */
   "pool.setSize": { params: PoolSizeParams; result: null };
+  /** A session's pull request in full: checks, review threads, reviews. */
+  "pr.get": { params: SessionRef; result: PRDetail };
+  /** The end of a check's log (GitHub Actions). */
+  "pr.log": { params: PRLogParams; result: LogText };
+  /** Merges a session's pull request — only at the head that was reviewed (kind head_moved otherwise). */
+  "pr.merge": { params: PRMergeParams; result: null };
+  /** Re-runs a workflow run's failed jobs. */
+  "pr.rerun": { params: PRRerunParams; result: null };
   /** What a create from the checkout containing path would carry: branch, HEAD, uncommitted changes, base. */
   "repos.inspect": { params: PathParams; result: CheckoutInfo };
   /** Links the repository containing path as a local checkout to act from. */
@@ -1091,6 +1208,8 @@ export interface Methods {
   "sessions.park": { params: SessionRef; result: null };
   /** Destroys a session and its disk, or dismisses a failed create. */
   "sessions.remove": { params: SessionRef; result: null };
+  /** Removes a session whose pull request merged — only when nothing in it is left behind: all committed, and the merged head is its head. */
+  "sessions.removeMerged": { params: SessionRef; result: null };
   /** Changes a session's machine type in a background job: one park and resume, disk intact. */
   "sessions.resize": { params: ResizeParams; result: Job };
   /** Wakes a parked session and waits until it answers. */

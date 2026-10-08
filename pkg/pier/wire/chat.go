@@ -238,7 +238,7 @@ type FileList struct {
 // its agent finished or needs them, a setup or create failed.
 type Notice struct {
 	ID        string `json:"id"`
-	Kind      string `json:"kind"` // finished | needs_input | setup_failed | create_failed
+	Kind      string `json:"kind"` // finished | needs_input | setup_failed | create_failed | ci_failed
 	SessionID string `json:"sessionId"`
 	Title     string `json:"title"`
 	Body      string `json:"body"`

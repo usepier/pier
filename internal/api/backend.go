@@ -6,6 +6,7 @@ import (
 	"os/exec"
 
 	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/github"
 	"github.com/usepier/pier/pkg/pier"
 	"github.com/usepier/pier/pkg/pier/gitview"
 )
@@ -67,6 +68,12 @@ type Backend interface {
 	Search(ctx context.Context, s pier.Session, query string, regex, caseSensitive bool) ([]pier.Match, bool, error)
 	Commit(ctx context.Context, s pier.Session, id, message string) (string, error)
 	Push(ctx context.Context, s pier.Session, id string) error
+	PullRequests(ctx context.Context, sessions []pier.Session) (map[string]pier.PR, error)
+	PullRequest(ctx context.Context, s pier.Session, number int) (pier.PRDetail, error)
+	MergePR(ctx context.Context, s pier.Session, prID, method, expectedHead string) error
+	RerunChecks(ctx context.Context, s pier.Session, runID int64) error
+	CheckLog(ctx context.Context, s pier.Session, jobID int64, maxBytes int) (string, error)
+	GitHubLimit() github.RateLimit
 }
 
 var _ Backend = (*pier.Client)(nil)

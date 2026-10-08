@@ -15,6 +15,7 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/github"
 	"github.com/usepier/pier/pkg/pier"
 	"github.com/usepier/pier/pkg/pier/gitview"
 	"github.com/usepier/pier/pkg/pier/wire"
@@ -223,6 +224,30 @@ func (f *fake) Search(context.Context, pier.Session, string, bool, bool) ([]pier
 }
 func (f *fake) Commit(context.Context, pier.Session, string, string) (string, error) { return "def", nil }
 func (f *fake) Push(context.Context, pier.Session, string) error                   { return nil }
+func (f *fake) PullRequests(_ context.Context, ss []pier.Session) (map[string]pier.PR, error) {
+	out := map[string]pier.PR{}
+	for _, s := range ss {
+		if s.Branch == "fix" {
+			out[s.ID] = pier.PR{ID: "PR_1", Number: 7, State: "merged", HeadOid: "abc", Checks: []pier.PRCheck{{Name: "test", State: "failing", JobID: 5}}}
+		}
+	}
+	return out, nil
+}
+func (f *fake) PullRequest(_ context.Context, _ pier.Session, n int) (pier.PRDetail, error) {
+	return pier.PRDetail{PR: pier.PR{Number: n, Checks: []pier.PRCheck{{Name: "test", State: "failing", JobID: 5}}},
+		Threads: []github.Thread{{Path: "a.go", Line: 3, Comments: []github.ThreadComment{{Author: "rev", Body: "rename this"}}}}}, nil
+}
+func (f *fake) MergePR(_ context.Context, _ pier.Session, _, _, head string) error {
+	if head != "abc" {
+		return pier.ErrHeadMoved
+	}
+	return nil
+}
+func (f *fake) RerunChecks(context.Context, pier.Session, int64) error { return nil }
+func (f *fake) CheckLog(context.Context, pier.Session, int64, int) (string, error) {
+	return "--- FAIL: TestLogin", nil
+}
+func (f *fake) GitHubLimit() github.RateLimit { return github.RateLimit{} }
 func (f *fake) PeekAgent(context.Context, pier.Session, int) (string, error) {
 	return "● Running tests…", nil
 }

@@ -10,7 +10,22 @@ import (
 	"github.com/usepier/pier/pkg/pier/wire"
 )
 
-func wireSession(be Backend, s pier.Session) wire.Session {
+func wirePR(p pier.PR) *wire.PRSummary {
+	w := &wire.PRSummary{Number: p.Number, Title: p.Title, URL: p.URL, State: p.State, HeadOid: p.HeadOid, BaseRef: p.BaseRef,
+		Additions: p.Additions, Deletions: p.Deletions, Checks: p.ChecksState(), Review: p.Review, Mergeable: p.Mergeable}
+	for _, c := range p.Checks {
+		if c.State == "skipped" {
+			continue
+		}
+		w.ChecksTotal++
+		if c.State == "passing" {
+			w.ChecksPassed++
+		}
+	}
+	return w
+}
+
+func wireSession(be Backend, s pier.Session, pr *pier.PR) wire.Session {
 	w := wire.Session{
 		ID: s.ID, Name: s.Name, Repo: s.Repo, Origin: s.Origin, Base: s.Base, Branch: s.Branch,
 		State: wire.SessionState(s.State), Label: pier.Label(s), Activity: pier.Activity(s),
@@ -31,15 +46,36 @@ func wireSession(be Backend, s pier.Session) wire.Session {
 	if a := s.Agent; a != nil {
 		w.Agent = &wire.AgentStatus{Kind: a.Kind, State: wire.AgentState(a.State), Waiting: a.Waiting, Since: a.Since.UTC(), Last: a.Last, Queued: a.Queued}
 	}
+	if pr != nil {
+		w.PR = wirePR(*pr)
+	}
+	w.Attention = attention(s, w.PR)
+	return w
+}
+
+// attention is the most pressing reason a session needs the user.
+func attention(s pier.Session, pr *wire.PRSummary) string {
 	switch {
 	case s.State == pier.StateFailed:
-		w.Attention = "create_failed"
-	case s.Setup == "failed":
-		w.Attention = "setup_failed"
+		return "create_failed"
 	case s.Agent != nil && s.Agent.State == "waiting" && s.State != pier.StateParked:
-		w.Attention = "needs_input"
+		return "needs_input"
+	case s.Setup == "failed":
+		return "setup_failed"
+	case pr == nil:
+		return ""
+	case pr.State == "merged":
+		return "merged_cleanup"
+	case pr.State == "closed":
+		return ""
+	case pr.Checks == "failing":
+		return "ci_failing"
+	case pr.Review == "changes_requested":
+		return "changes_requested"
+	case pr.State == "open" && pr.Review == "approved" && pr.Checks != "pending" && pr.Mergeable == "clean":
+		return "ready_to_merge"
 	}
-	return w
+	return ""
 }
 
 func wireCheckout(co pier.Checkout) wire.Checkout {
@@ -79,7 +115,7 @@ func wireRepo(r pier.Repo, co *wire.Checkout, origin string) wire.Repo {
 }
 
 // buildOverview assembles the wire overview from one listing.
-func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched bool) wire.Overview {
+func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched bool, prs map[string]pier.PR) wire.Overview {
 	checkouts := be.Checkouts()
 	var roots []string
 	byName := map[string]*wire.Checkout{}
@@ -105,7 +141,11 @@ func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched b
 	disk := be.DiskMonthlyUSD()
 	hourly, parked := map[string]float64{}, map[string]int{}
 	for _, s := range all {
-		w := wireSession(be, s)
+		var pr *pier.PR
+		if p, ok := prs[s.ID]; ok {
+			pr = &p
+		}
+		w := wireSession(be, s, pr)
 		o.Sessions = append(o.Sessions, w)
 		if s.Origin != "" && origins[s.Repo] == "" {
 			origins[s.Repo] = s.Origin

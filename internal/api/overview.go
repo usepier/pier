@@ -198,6 +198,12 @@ func (p *overviewPoller) refresh(ctx context.Context) {
 	}
 	p.publish(be, enriched, true)
 	p.s.notices.poll(enriched)
+	p.s.mu.Lock()
+	focused := p.s.activity.Focused
+	p.s.mu.Unlock()
+	if p.s.prs.refreshIfDue(ctx, be, enriched, focused) {
+		p.publish(be, enriched, true)
+	}
 	if sweep {
 		ids := make([]string, len(enriched))
 		for i, s := range enriched {
@@ -229,7 +235,7 @@ func (p *overviewPoller) publish(be Backend, sessions []pier.Session, enriched b
 	p.mu.Lock()
 	quota := p.quota
 	p.mu.Unlock()
-	o := buildOverview(be, sessions, quota, enriched)
+	o := buildOverview(be, sessions, quota, enriched, p.s.prs.snapshot())
 	p.mu.Lock()
 	p.have, p.last, p.sessions, p.at, p.lastErr = true, o, sessions, time.Now(), nil
 	fns := make([]func(wire.Overview), 0, len(p.listeners))

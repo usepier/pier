@@ -62,8 +62,11 @@ type Session struct {
 	CapAt     *time.Time `json:"capAt,omitempty"`
 	// Agent is the agent pier launched in the session, as last reported.
 	Agent *AgentStatus `json:"agent,omitempty"`
+	// PR is the branch's pull request, when it has one.
+	PR *PRSummary `json:"pr,omitempty"`
 	// Attention says why the session needs the user, if it does:
-	// needs_input, setup_failed or create_failed.
+	// needs_input, create_failed, setup_failed, ci_failing,
+	// changes_requested, merged_cleanup or ready_to_merge.
 	Attention string `json:"attention,omitempty"`
 }
 

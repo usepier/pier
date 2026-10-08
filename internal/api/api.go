@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/usepier/pier/pkg/pier"
 	"github.com/usepier/pier/pkg/pier/wire"
 )
 
@@ -66,6 +67,7 @@ type Server struct {
 	overview *overviewPoller
 	termReg  *terminals
 	notices  *notices
+	prs      *prCache
 	client   wire.InitializeParams // what the client said it handles
 
 	chatMu sync.Mutex
@@ -85,6 +87,7 @@ func Serve(ctx context.Context, o Options) error {
 	}
 	s.overview = newOverviewPoller(s)
 	s.notices = newNotices(s)
+	s.prs = &prCache{s: s, prs: map[string]pier.PR{}}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.root = ctx

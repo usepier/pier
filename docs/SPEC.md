@@ -618,6 +618,21 @@ in-flight work three seconds to see its cancellation.
   run inside the session's supervisor — a save is written to a temporary
   file, synced and renamed into place — and each carries an id that makes
   a retry a no-op.
+- **Pull requests.** The overview carries each session's pull request —
+  found by its branch on the origin's GitHub host, one query per
+  repository, with this machine's own login (gh's, else git's) — with its
+  checks, review and mergeability, refreshed every 30 seconds while checks
+  run, every minute otherwise, every five while the app is out of sight,
+  and never into the last of the hour's rate limit. Sessions say why they
+  need you (`attention`): an agent waiting, a failed create or setup,
+  failing checks, requested changes, a merge to clean up, a pull request
+  ready to merge. `pr.get` reads one in full, `pr.log` a check's log,
+  `pr.rerun` re-runs failed jobs; `pr.merge` merges only at the head that
+  was reviewed (kind `head_moved` otherwise). `chat.compose` writes the
+  prompt for fixing CI (with the failing logs) or addressing review
+  comments, for the composer. `sessions.removeMerged` removes a merged
+  session only when everything in it is committed and its head is the
+  merged one.
 - **Errors** carry `data.kind` (`auth_expired` with the login command that
   fixes it, `not_set_up`, `parked`, `no_key`, …) so clients never parse
   messages.

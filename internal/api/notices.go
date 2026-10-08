@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +85,30 @@ func (n *notices) agent(sess pier.Session, a *wire.AgentDetail) {
 		}
 		n.send(sess, "finished", key, sess.Name+" finished", body)
 	}
+}
+
+// pr notes a session's pull request: checks that just failed are news.
+func (n *notices) pr(sess pier.Session, old, cur pier.PR) {
+	if cur.Number == 0 || (cur.State != "open" && cur.State != "draft") || cur.ChecksState() != "failing" {
+		return
+	}
+	if old.Number == cur.Number && old.HeadOid == cur.HeadOid && old.ChecksState() == "failing" {
+		return
+	}
+	n.mu.Lock()
+	primed := n.primed
+	n.mu.Unlock()
+	if !primed {
+		return
+	}
+	var failing []string
+	for _, c := range cur.Checks {
+		if c.State == "failing" {
+			failing = append(failing, c.Name)
+		}
+	}
+	body := fmt.Sprintf("PR #%d: %s", cur.Number, strings.Join(failing, ", "))
+	n.send(sess, "ci_failed", cur.HeadOid, sess.Name+"'s checks failed", body)
 }
 
 // poll notes what an enriched listing says and keeps the keepers in step.
