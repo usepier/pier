@@ -69,6 +69,11 @@ type Speed struct {
 	// ReminderAge is how old an image gets before pier suggests a rebake:
 	// "30d", "72h", or "never".
 	ReminderAge string `toml:"reminder_age"`
+	// AutoRefill: keep pools at their size on their own — whenever a repo's
+	// pool runs below it, a frontend that's running (the Mac app) fills it
+	// in the background. Off: pools refill after a claim, a bake, or `pier
+	// pool fill`.
+	AutoRefill bool `toml:"auto_refill"`
 }
 
 // ImageInfo is what one repo's image was baked from.
@@ -693,6 +698,15 @@ var Settings = []Field{
 		Detail: "toolchains + repo: the bake runs .pier/setup.sh on a checkout, scrubs every secret pier pushed, and images the result; sessions only fetch what changed and re-run setup warm.\ntoolchains only: images carry the harnesses and .pier/bake.sh tools; every session runs the full setup.\nApplies to the next `pier bake`.",
 	},
 	{
+		Key: "speed.auto_refill", Group: "speed", Label: "refill pools", Hint: "rebuild a pool that runs low on its own",
+		Kind: KindChoice, NoCustom: true, Default: "off",
+		Options: []Option{
+			{Value: "true", Label: "on", Desc: "keep every pool full in the background"},
+			{Value: "false", Label: "off", Desc: "refill after a claim, a bake, or `pier pool fill`"},
+		},
+		Detail: "On: whenever a repo's pool is below its size — one was taken, members aged out, or settings changed — pier builds pooled sessions in the background while the Mac app runs. Each costs its parked disk while it waits, and a few minutes of machine time to build.\nOnly repos linked to a clone on this Mac are filled; a pool is built from your clone.",
+	},
+	{
 		Key: "speed.reminder_age", Group: "speed", Label: "rebake after", Hint: "remind when an image gets this old",
 		Kind: KindChoice, Default: "30d",
 		Options: []Option{{Value: "14d"}, {Value: "30d"}, {Value: "60d"}, {Value: "never"}},
@@ -748,6 +762,8 @@ func Get(c Config, key string) string {
 		return strconv.FormatBool(c.Speed.BakeReminders)
 	case "speed.image_repo":
 		return strconv.FormatBool(c.Speed.ImageRepo)
+	case "speed.auto_refill":
+		return strconv.FormatBool(c.Speed.AutoRefill)
 	case "speed.reminder_age":
 		return c.Speed.ReminderAge
 	}
@@ -868,7 +884,7 @@ func Set(c *Config, key, val string) error {
 			return fmt.Errorf("speed.pool_size: want 0-8 (got %q)", val)
 		}
 		c.Speed.PoolSize = n
-	case "speed.bake_reminders", "speed.image_repo":
+	case "speed.bake_reminders", "speed.image_repo", "speed.auto_refill":
 		var b bool
 		switch strings.ToLower(strings.TrimSpace(val)) {
 		case "true", "yes", "on":
@@ -877,10 +893,13 @@ func Set(c *Config, key, val string) error {
 		default:
 			return fmt.Errorf("%s: want on or off (got %q)", key, val)
 		}
-		if key == "speed.bake_reminders" {
+		switch key {
+		case "speed.bake_reminders":
 			c.Speed.BakeReminders = b
-		} else {
+		case "speed.image_repo":
 			c.Speed.ImageRepo = b
+		default:
+			c.Speed.AutoRefill = b
 		}
 	case "speed.reminder_age":
 		val = strings.TrimSpace(val)

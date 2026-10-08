@@ -71,6 +71,7 @@ type Server struct {
 	notices  *notices
 	prs      *prCache
 	proxy    proxyRunner
+	pools    poolRefill
 	ports    forwards
 	client   wire.InitializeParams // what the client said it handles
 

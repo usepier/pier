@@ -198,6 +198,7 @@ func (p *overviewPoller) refresh(ctx context.Context) {
 	}
 	p.publish(be, enriched, true)
 	p.s.notices.poll(enriched)
+	p.s.refill(be, enriched)
 	p.s.mu.Lock()
 	focused := p.s.activity.Focused
 	p.s.mu.Unlock()
