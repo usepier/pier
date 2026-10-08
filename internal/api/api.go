@@ -64,6 +64,7 @@ type Server struct {
 	activity wire.ClientActivity
 
 	overview *overviewPoller
+	termReg  *terminals
 }
 
 // Serve runs a server until its input closes or ctx ends.
@@ -107,6 +108,7 @@ func Serve(ctx context.Context, o Options) error {
 	// gets a moment to see its context cancelled, never longer: a call
 	// that ignores cancellation must not keep the process alive.
 	cancel()
+	s.closeTerminals()
 	settled := make(chan struct{})
 	go func() {
 		s.overview.stop()
@@ -233,33 +235,12 @@ type afterReply struct {
 	then   func()
 }
 
-func (s *Server) notification(ctx context.Context, m inMessage) {
-	switch m.Method {
-	case "$/cancelRequest":
-		var p wire.CancelParams
-		if json.Unmarshal(m.Params, &p) == nil {
-			s.mu.Lock()
-			if cancel := s.calls[string(p.ID)]; cancel != nil {
-				cancel()
-			}
-			s.mu.Unlock()
-		}
-	case "sub.cancel":
-		var p wire.SubCancelParams
-		if json.Unmarshal(m.Params, &p) == nil {
-			s.cancelSub(p.Sub)
-		}
-	case "client.activity":
-		var p wire.ClientActivity
-		if json.Unmarshal(m.Params, &p) == nil {
-			s.mu.Lock()
-			s.activity = p
-			s.mu.Unlock()
-			s.overview.kick(0)
-		}
-	default:
-		s.logf("ignoring notification %s", m.Method)
+func (s *Server) notification(_ context.Context, m inMessage) {
+	if h := clientNotes[m.Method]; h != nil {
+		h(s, m.Params)
+		return
 	}
+	s.logf("ignoring notification %s", m.Method)
 }
 
 // Call is one in-flight request, for handlers that report progress.

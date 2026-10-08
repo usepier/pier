@@ -67,13 +67,52 @@ type NotificationInfo struct {
 	FromClient bool
 }
 
-// Notifications lists every notification either side sends.
-func Notifications() []NotificationInfo {
-	return []NotificationInfo{
-		{Name: "$/progress", Doc: "One progress event of a long request.", Params: reflect.TypeFor[wire.ProgressParams]()},
-		{Name: "sub.event", Doc: "One update of a subscription.", Params: reflect.TypeFor[wire.SubEvent]()},
-		{Name: "$/cancelRequest", Doc: "Cancel an in-flight request.", Params: reflect.TypeFor[wire.CancelParams](), FromClient: true},
-		{Name: "sub.cancel", Doc: "End a subscription.", Params: reflect.TypeFor[wire.SubCancelParams](), FromClient: true},
-		{Name: "client.activity", Doc: "Whether the client's window is focused, and what it shows.", Params: reflect.TypeFor[wire.ClientActivity](), FromClient: true},
+var notes = map[string]NotificationInfo{}
+
+// clientNotes handle client→server notifications by method.
+var clientNotes = map[string]func(s *Server, raw json.RawMessage){}
+
+// serverNote declares a notification the server sends.
+func serverNote[P any](name, doc string) {
+	notes[name] = NotificationInfo{Name: name, Doc: doc, Params: reflect.TypeFor[P]()}
+}
+
+// clientNote registers a notification the client sends and its handler.
+func clientNote[P any](name, doc string, fn func(s *Server, p P)) {
+	notes[name] = NotificationInfo{Name: name, Doc: doc, Params: reflect.TypeFor[P](), FromClient: true}
+	clientNotes[name] = func(s *Server, raw json.RawMessage) {
+		var p P
+		if json.Unmarshal(raw, &p) == nil {
+			fn(s, p)
+		}
 	}
+}
+
+// Notifications lists every notification either side sends, by name.
+func Notifications() []NotificationInfo {
+	var out []NotificationInfo
+	for _, n := range notes {
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func init() {
+	serverNote[wire.ProgressParams]("$/progress", "One progress event of a long request.")
+	serverNote[wire.SubEvent]("sub.event", "One update of a subscription.")
+	clientNote("$/cancelRequest", "Cancel an in-flight request.", func(s *Server, p wire.CancelParams) {
+		s.mu.Lock()
+		if cancel := s.calls[string(p.ID)]; cancel != nil {
+			cancel()
+		}
+		s.mu.Unlock()
+	})
+	clientNote("sub.cancel", "End a subscription.", func(s *Server, p wire.SubCancelParams) { s.cancelSub(p.Sub) })
+	clientNote("client.activity", "Whether the client's window is focused, and what it shows.", func(s *Server, p wire.ClientActivity) {
+		s.mu.Lock()
+		s.activity = p
+		s.mu.Unlock()
+		s.overview.kick(0)
+	})
 }

@@ -187,6 +187,12 @@ export interface MachinesParams {
   current?: string;
 }
 
+/** NewWindowParams adds a window; Name may be empty. */
+export interface NewWindowParams {
+  sessionId: string;
+  name?: string;
+}
+
 /**
  * Overview is everything the sidebar, Home and the cockpits show, refreshed
  * as a whole.
@@ -245,6 +251,13 @@ export interface Quota {
   used: number;
   limit: number;
   detail: string;
+}
+
+/** RenameWindowParams renames a window. */
+export interface RenameWindowParams {
+  sessionId: string;
+  window: string;
+  name: string;
 }
 
 /** Repo is one repository's row: its image, pool, sessions and idle cost. */
@@ -410,6 +423,71 @@ export interface SubEvent {
   data: unknown;
 }
 
+/**
+ * TermAck tells the server how much output the client has rendered
+ * (term.ack). Output past an unacknowledged window waits, so a terminal
+ * flooding output can't swamp the app; tmux absorbs the backlog.
+ */
+export interface TermAck {
+  termId: string;
+  bytes: number;
+}
+
+/**
+ * TermData carries terminal bytes, base64-encoded: output in term.output
+ * (Seq counts up per terminal), keystrokes in term.input.
+ */
+export interface TermData {
+  termId: string;
+  seq?: number;
+  data: string;
+}
+
+/** TermExit says a terminal's process ended (term.exit). */
+export interface TermExit {
+  termId: string;
+  code: number;
+}
+
+/** TermLocalParams opens a terminal on this machine. */
+export interface TermLocalParams {
+  purpose: LocalPurpose;
+  cols: number;
+  rows: number;
+}
+
+/**
+ * LocalPurpose names what a local terminal runs. The app never names a
+ * command itself: pier decides what each purpose runs.
+ */
+export type LocalPurpose = "login" | "setup";
+
+/** TermOpenParams opens a terminal tab into a session's tmux. */
+export interface TermOpenParams {
+  sessionId: string;
+  /** Window is the tmux window (@N) the tab shows; "" for main's current. */
+  window?: string;
+  cols: number;
+  rows: number;
+}
+
+/** TermOpened is an open terminal. */
+export interface TermOpened {
+  termId: string;
+}
+
+/** TermRef names a terminal. */
+export interface TermRef {
+  termId: string;
+}
+
+/** TermSize resizes a terminal (term.resize). */
+export interface TermSize {
+  termId: string;
+  cols: number;
+  rows: number;
+}
+
 /** Totals are the account-wide numbers the header shows. */
 export interface Totals {
   /** includes starting */
@@ -420,6 +498,25 @@ export interface Totals {
   hourlyUsd: number;
   /** parked disks, pools and images */
   idleMonthlyUsd: number;
+}
+
+/** Window is one tmux window of a session. */
+export interface Window {
+  /** @N, stable across renames */
+  id: string;
+  index: number;
+  name: string;
+  /** the active pane's foreground command */
+  command: string;
+  active: boolean;
+  /** Role is what pier made the window for: "agent", "setup", or "". */
+  role: string;
+}
+
+/** WindowParams names a session's window. */
+export interface WindowParams {
+  sessionId: string;
+  window: string;
 }
 
 export const PROTOCOL_VERSION = 1;
@@ -489,6 +586,20 @@ export interface Methods {
   "settings.set": { params: SettingParams; result: Settings };
   /** Ends the server once every earlier request has answered and this reply is out. */
   "shutdown": { params: Empty; result: unknown };
+  /** Hangs a terminal up. Its tmux windows keep running in the session. */
+  "term.close": { params: TermRef; result: null };
+  /** Opens a terminal tab into a session's tmux, on one of its windows. It counts as attached while open. */
+  "term.open": { params: TermOpenParams; result: TermOpened };
+  /** Opens a terminal on this machine for one of pier's interactive steps (a cloud login, setup). */
+  "term.openLocal": { params: TermLocalParams; result: TermOpened };
+  /** Closes a window and whatever runs in it. */
+  "tmux.killWindow": { params: WindowParams; result: null };
+  /** Adds a window in the session's checkout and returns it. */
+  "tmux.newWindow": { params: NewWindowParams; result: Window };
+  /** Renames a window. */
+  "tmux.renameWindow": { params: RenameWindowParams; result: null };
+  /** A session's tmux windows, in order. */
+  "tmux.windows": { params: SessionRef; result: Window[] };
 }
 
 /** Every subscription topic: its watch params and the data its events carry. */
@@ -502,13 +613,27 @@ export interface ServerNotifications {
   "$/progress": ProgressParams;
   /** One update of a subscription. */
   "sub.event": SubEvent;
+  /** A terminal's process ended. */
+  "term.exit": TermExit;
+  /** Terminal output, base64; acknowledge it with term.ack. */
+  "term.output": TermData;
 }
 
 export interface ClientNotifications {
   /** Cancel an in-flight request. */
   "$/cancelRequest": CancelParams;
-  /** End a subscription. */
-  "sub.cancel": SubCancelParams;
   /** Whether the client's window is focused, and what it shows. */
   "client.activity": ClientActivity;
+  /** End a subscription. */
+  "sub.cancel": SubCancelParams;
+  /** How much terminal output the client has rendered. */
+  "term.ack": TermAck;
+  /** Keystrokes for a terminal, base64. */
+  "term.input": TermData;
+  /** Stop sending a hidden terminal's output. */
+  "term.pause": TermRef;
+  /** A terminal's new size. */
+  "term.resize": TermSize;
+  /** Send a terminal's output again. */
+  "term.resume": TermRef;
 }

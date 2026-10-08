@@ -73,6 +73,7 @@ type Conn struct {
 	lastErr  error
 	lastUse  time.Time
 	starting chan struct{} // non-nil while a start is in flight
+	gen      int           // counts masters started: forwards die with theirs
 }
 
 // New returns a manager whose sockets live in dir.
@@ -268,6 +269,7 @@ func (c *Conn) start(ctx context.Context) error {
 			c.mu.Lock()
 			c.ctl, c.opts, c.dest = ctl, opts, dest
 			c.master, c.hold, c.exited = master, hold, exited
+			c.gen++
 			c.mu.Unlock()
 			return nil
 		}
@@ -429,6 +431,14 @@ func (m *Manager) reap() {
 			m.Drop(id)
 		}
 	}
+}
+
+// Generation identifies the current master: forwards added to it go when
+// it does, so anything that forwards re-adds them once this changes.
+func (c *Conn) Generation() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.gen
 }
 
 // Busy marks a connection used now, so long-lived channels (a terminal, a

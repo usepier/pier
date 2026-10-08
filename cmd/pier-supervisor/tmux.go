@@ -109,6 +109,10 @@ var paneFormat = strings.Join([]string{
 	"#{window_layout}", "#{pane_index}", "#{pane_active}", "#{pane_id}", "#{pane_pid}", "#{pane_current_path}",
 }, paneSep)
 
+// TabSessionPrefix names the grouped tmux sessions frontends attach their
+// terminal tabs through (pier-tab-<id>).
+const TabSessionPrefix = "pier-tab-"
+
 // parsePaneList folds list-panes output (in tmux's own session/window/pane
 // order) into the saved tree.
 func parsePaneList(out string) tmuxState {
@@ -122,6 +126,12 @@ func parsePaneList(out string) tmuxState {
 		pi, err2 := strconv.Atoi(f[6])
 		pid, _ := strconv.Atoi(f[9])
 		if err1 != nil || err2 != nil {
+			continue
+		}
+		// A frontend's terminal tab is a grouped view onto main's windows,
+		// not a layout of its own: restoring it would rebuild every window
+		// a second time.
+		if strings.HasPrefix(f[0], TabSessionPrefix) {
 			continue
 		}
 		if n := len(st.Sessions); n == 0 || st.Sessions[n-1].Name != f[0] {

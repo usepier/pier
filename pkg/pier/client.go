@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/usepier/pier/internal/config"
@@ -75,6 +76,9 @@ type Client struct {
 	drv  driver.Driver
 	opts Options
 	mux  *sshmux.Manager // nil unless Options.Mux
+
+	openMu  sync.Mutex
+	openers map[openerKey]func() // browser openers forwarded per connection
 }
 
 // Open loads the user's config and returns a client for its cloud.
@@ -109,6 +113,12 @@ func (c *Client) Close() {
 	if c.mux != nil {
 		c.mux.Close()
 	}
+	c.openMu.Lock()
+	for _, closeOpener := range c.openers {
+		closeOpener()
+	}
+	c.openers = nil
+	c.openMu.Unlock()
 }
 
 // Conn returns the session's multiplexed connection, opening it if needed:

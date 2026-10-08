@@ -475,3 +475,15 @@ func withMarker(t *testing.T, path string) {
 	containersRestarted = path
 	t.Cleanup(func() { containersRestarted = old })
 }
+
+// A frontend's terminal tabs are grouped views of main; the snapshot keeps
+// main alone, or restore would rebuild every window once per open tab.
+func TestSnapshotSkipsTabSessions(t *testing.T) {
+	row := func(f ...string) string { return strings.Join(f, paneSep) + "\n" }
+	out := row("main", "0", "bash", "1", "1", "aaaa,80x24,0,0,1", "0", "1", "%0", "101", "/home/agent") +
+		row(TabSessionPrefix+"t1", "0", "bash", "1", "1", "aaaa,80x24,0,0,1", "0", "1", "%0", "101", "/home/agent")
+	st := parsePaneList(out)
+	if len(st.Sessions) != 1 || st.Sessions[0].Name != "main" {
+		t.Errorf("sessions = %+v, want main only", st.Sessions)
+	}
+}

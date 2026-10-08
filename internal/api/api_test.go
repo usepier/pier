@@ -21,14 +21,15 @@ import (
 
 // fake is a Backend with canned data that records what the server asked.
 type fake struct {
-	mu       sync.Mutex
-	sessions []pier.Session
-	listErr  error
-	lists    int
-	sweeps   int
-	resumed  []string
-	created  []pier.CreateRequest
-	block    chan struct{} // Resume waits on it when set
+	mu         sync.Mutex
+	sessions   []pier.Session
+	listErr    error
+	lists      int
+	sweeps     int
+	resumed    []string
+	created    []pier.CreateRequest
+	termScript string
+	block      chan struct{} // Resume waits on it when set
 }
 
 func (f *fake) Cloud() string         { return "AWS test-1" }
@@ -122,6 +123,21 @@ func (f *fake) StartResize(s pier.Session, t string) (pier.Job, error) {
 }
 func (f *fake) DiskMonthlyUSD() float64 { return 3.8 }
 func (f *fake) Close()                  {}
+func (f *fake) OpenTerminal(_ context.Context, s pier.Session, tab, window string, cols, rows int) (*pier.Terminal, error) {
+	script := f.termScript
+	if script == "" {
+		script = "printf ready; read line; echo got:$line"
+	}
+	return pier.LocalTerminal([]string{"sh", "-c", script}, cols, rows)
+}
+func (f *fake) Windows(context.Context, pier.Session) ([]pier.Window, error) {
+	return []pier.Window{{ID: "@1", Index: 0, Name: "agent", Role: "agent", Active: true}, {ID: "@2", Index: 1, Name: "zsh"}}, nil
+}
+func (f *fake) NewWindow(_ context.Context, _ pier.Session, name string) (pier.Window, error) {
+	return pier.Window{ID: "@3", Index: 2, Name: name}, nil
+}
+func (f *fake) KillWindow(context.Context, pier.Session, string) error           { return nil }
+func (f *fake) RenameWindow(context.Context, pier.Session, string, string) error { return nil }
 func (f *fake) Resume(ctx context.Context, s pier.Session) error {
 	if f.block != nil {
 		select {

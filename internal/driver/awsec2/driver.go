@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 )
 
 const (
@@ -337,20 +338,7 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 	if err := d.needKey(id); err != nil {
 		return nil, err
 	}
-	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
-[ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
-# SSH forwards the client's TERM, but newer terminal emulators
-# may not exist in the VM image's terminfo database yet. Keep the richer entry
-# when it is installed and otherwise use the portable 256-colour baseline.
-if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
-# A woken session rebuilds its saved tmux layout at boot (pier-restore.service);
-# give that a moment so this attach lands in the restored windows instead of
-# racing it to an empty main. Sessions without the unit or a saved layout
-# never wait.
-if [ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]; then
-  for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
-fi
-exec tmux new-session -A -s main`
+	remote := payload.AttachScript(payload.MainAttach)
 	args := append(d.sshOpts(ctx, id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr

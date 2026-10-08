@@ -42,6 +42,11 @@ type Backend interface {
 	SetupLog(ctx context.Context, s pier.Session, lines int) (string, error)
 	// Close ends the backend's ssh connections.
 	Close()
+	OpenTerminal(ctx context.Context, s pier.Session, tab, window string, cols, rows int) (*pier.Terminal, error)
+	Windows(ctx context.Context, s pier.Session) ([]pier.Window, error)
+	NewWindow(ctx context.Context, s pier.Session, name string) (pier.Window, error)
+	KillWindow(ctx context.Context, s pier.Session, window string) error
+	RenameWindow(ctx context.Context, s pier.Session, window, name string) error
 }
 
 var _ Backend = (*pier.Client)(nil)

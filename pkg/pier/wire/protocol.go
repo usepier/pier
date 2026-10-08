@@ -170,3 +170,99 @@ type LogText struct {
 	Text      string `json:"text"`
 	Truncated bool   `json:"truncated"` // older lines were left out
 }
+
+// --- terminals ---------------------------------------------------------
+
+// TermOpenParams opens a terminal tab into a session's tmux.
+type TermOpenParams struct {
+	SessionID string `json:"sessionId"`
+	// Window is the tmux window (@N) the tab shows; "" for main's current.
+	Window string `json:"window,omitempty"`
+	Cols   int    `json:"cols"`
+	Rows   int    `json:"rows"`
+}
+
+// LocalPurpose names what a local terminal runs. The app never names a
+// command itself: pier decides what each purpose runs.
+type LocalPurpose string
+
+const (
+	LocalLogin LocalPurpose = "login" // the cloud login that fixes an expired session
+	LocalSetup LocalPurpose = "setup" // pier setup
+)
+
+// TermLocalParams opens a terminal on this machine.
+type TermLocalParams struct {
+	Purpose LocalPurpose `json:"purpose"`
+	Cols    int          `json:"cols"`
+	Rows    int          `json:"rows"`
+}
+
+// TermOpened is an open terminal.
+type TermOpened struct {
+	TermID string `json:"termId"`
+}
+
+// TermRef names a terminal.
+type TermRef struct {
+	TermID string `json:"termId"`
+}
+
+// TermData carries terminal bytes, base64-encoded: output in term.output
+// (Seq counts up per terminal), keystrokes in term.input.
+type TermData struct {
+	TermID string `json:"termId"`
+	Seq    int    `json:"seq,omitempty"`
+	Data   string `json:"data"`
+}
+
+// TermSize resizes a terminal (term.resize).
+type TermSize struct {
+	TermID string `json:"termId"`
+	Cols   int    `json:"cols"`
+	Rows   int    `json:"rows"`
+}
+
+// TermAck tells the server how much output the client has rendered
+// (term.ack). Output past an unacknowledged window waits, so a terminal
+// flooding output can't swamp the app; tmux absorbs the backlog.
+type TermAck struct {
+	TermID string `json:"termId"`
+	Bytes  int    `json:"bytes"`
+}
+
+// TermExit says a terminal's process ended (term.exit).
+type TermExit struct {
+	TermID string `json:"termId"`
+	Code   int    `json:"code"`
+}
+
+// Window is one tmux window of a session.
+type Window struct {
+	ID      string `json:"id"` // @N, stable across renames
+	Index   int    `json:"index"`
+	Name    string `json:"name"`
+	Command string `json:"command"` // the active pane's foreground command
+	Active  bool   `json:"active"`
+	// Role is what pier made the window for: "agent", "setup", or "".
+	Role string `json:"role"`
+}
+
+// WindowParams names a session's window.
+type WindowParams struct {
+	SessionID string `json:"sessionId"`
+	Window    string `json:"window"`
+}
+
+// NewWindowParams adds a window; Name may be empty.
+type NewWindowParams struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name,omitempty"`
+}
+
+// RenameWindowParams renames a window.
+type RenameWindowParams struct {
+	SessionID string `json:"sessionId"`
+	Window    string `json:"window"`
+	Name      string `json:"name"`
+}
