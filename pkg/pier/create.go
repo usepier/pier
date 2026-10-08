@@ -142,7 +142,8 @@ func (c *Client) SpawnCreate(repoRoot, branch string) (string, error) {
 		return "", ErrNotInRepo
 	}
 	logPath := CreateLogPath(branch)
-	return logPath, spawnDetached(repoRoot, logPath, false, branch, "--detach")
+	// `new` keeps a branch named like a subcommand (ls, logs, ...) a branch.
+	return logPath, spawnDetached(repoRoot, logPath, false, "new", branch, "--detach")
 }
 
 // bury records a failed create. Best-effort: the create already failed and

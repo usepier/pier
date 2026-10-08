@@ -73,6 +73,7 @@ var helpSections = []helpSection{
 		title: "Sessions",
 		items: []helpItem{
 			{"pier <branch> [base]", "new session off base (default HEAD), then attach"},
+			{"pier new <branch> [base]", "the same, for a branch named like a command (new, ls, ...)"},
 			{"  -d, --detach", "create without attaching"},
 			{"  --idle <dur|never>", "park after this much idle time (default from settings)"},
 			{"  --cap <dur|never>", "runaway cap for this session"},
@@ -126,6 +127,8 @@ func main() {
 		return
 	}
 	switch args[0] {
+	case "new":
+		cmdNew(args[1:])
 	case "ls":
 		cmdLS(args[1:])
 	case "attach":

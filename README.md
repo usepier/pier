@@ -218,6 +218,7 @@ pier <branch> [base]      new session off base (default HEAD), then attach
     --cap <dur|never>     unattended runaway cap (default 8h)
     --no-park             shorthand for --idle never
     --no-pool             launch fresh instead of claiming a pooled session
+pier new <branch> [base]  the same, for a branch named like a command (new, ls, ...)
 pier ls [--json]          plain list, or stable JSON for automation
 pier attach <session>     attach (a parked session resumes, ~20-60s, tmux restored)
 pier logs <session>       show the setup script log (-f follows)
