@@ -107,6 +107,20 @@ are a free state store.
 brew install usepier/tap/pier
 ```
 
+Or the Mac app, which bundles the same pier (and its `pier` command):
+
+```
+brew install --cask usepier/tap/pier
+```
+
+The app is the CLI's sessions with a window around them: each repository and
+its sessions in a sidebar; a chat with each session's agent, read from the
+agent's own transcript; its terminals; what changed, as diffs you can
+comment on; its files; its pull request with checks and logs; what runs in
+it; and each repository's pool, image and cost. It notifies you when an
+agent finishes or needs you, and keeps sessions parking on their own — a
+chat never keeps one awake. It updates itself.
+
 Or build from source with `make`, not `go build` (the in-VM supervisor must
 be embedded):
 
@@ -519,7 +533,7 @@ Attaching stays in the app until the session answers, then hands over to
 it.
 
 Every frontend runs on the same API (`pkg/pier`): the CLI, the app, and the
-coming Mac app.
+Mac app.
 
 ### Setup that can't fail silently
 

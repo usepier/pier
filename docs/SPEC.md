@@ -693,6 +693,22 @@ pier doctor             checks (--json: each with the command that fixes it)
 pier teardown           remove account groundwork
 ```
 
+### 11.2 The Mac app
+
+`macos/`: a React UI in a thin native shell (Tauri), with this pier inside
+it as `pier api`'s binary — one release, one version. Everything it shows
+comes from `pier api`; the shell only adds what a web view can't do:
+notifications whose clicks open the session, the Dock badge, `pier://`
+links (`pier://session/<id>`, `pier://repo/<name>`, `pier://new?repo=…`),
+and updates. It is a viewer: agents, the prompt queue and every change run
+in the session or in a detached pier job, so quitting or crashing mid-turn
+loses nothing — prompts not yet acknowledged by their session stay in an
+outbox and go out, once, when the app is back.
+
+Releases ship it per CPU arch, signed with a Developer ID and notarized, as
+a DMG on the tag's GitHub release and a cask in usepier/homebrew-tap; the
+app updates itself from the same release.
+
 ## 12. Config (`~/.config/pier/config.toml`)
 
 ```toml

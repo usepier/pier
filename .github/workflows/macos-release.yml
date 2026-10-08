@@ -1,0 +1,188 @@
+name: macos release
+
+# Builds, signs and notarizes the Mac app for a release tag, one DMG per
+# CPU arch, with the updater's signed archives and its latest.json, all on
+# the tag's GitHub release — then points the Homebrew cask at them. The app
+# bundles the pier built from the same tag, so app and CLI versions match.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: release tag (vX.Y or vX.Y.Z), already released
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            arch: x64
+    runs-on: macos-15
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - name: version from the tag
+        id: v
+        run: |
+          v="${TAG#v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+$ ]] && v="$v.0"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag $TAG is not vX.Y or vX.Y.Z"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: release settings are in place
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          [ -n "$PUBKEY" ] || { echo "::error::repository variable TAURI_UPDATER_PUBKEY is not set (CONTRIBUTING.md, Releasing the Mac app)"; exit 1; }
+          [ -n "$IDENTITY" ] || { echo "::error::secret APPLE_SIGNING_IDENTITY is not set (CONTRIBUTING.md, Releasing the Mac app)"; exit 1; }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: macos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: macos/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: macos/src-tauri
+      - name: the bundled pier
+        run: make mac-sidecar VERSION="$TAG"
+      - name: the notarization key
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          key="$RUNNER_TEMP/notary.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$key"
+          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+      - name: build, sign and notarize
+        working-directory: macos
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ steps.v.outputs.version }}
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          VITE_APP_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          pnpm install --frozen-lockfile
+          config=$(jq -nc --arg v "$VERSION" --arg k "$PUBKEY" \
+            '{version: $v, bundle: {createUpdaterArtifacts: true}, plugins: {updater: {pubkey: $k}}}')
+          pnpm tauri build --target "${{ matrix.target }}" --bundles app,dmg --config "$config"
+      - name: sign and notarize the disk image
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          out=macos/src-tauri/target/${{ matrix.target }}/release/bundle
+          mkdir -p dist
+          dmg="dist/Pier_${VERSION}_${{ matrix.arch }}.dmg"
+          cp "$out"/dmg/*.dmg "$dmg"
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$dmg"
+          cp "$out"/macos/Pier.app.tar.gz "dist/Pier_${VERSION}_${{ matrix.arch }}.app.tar.gz"
+          cp "$out"/macos/Pier.app.tar.gz.sig "dist/Pier_${VERSION}_${{ matrix.arch }}.app.tar.gz.sig"
+      - name: Gatekeeper accepts it, and the bundled pier is the tag's
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          app=$(ls -d macos/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose "$app"
+          xcrun stapler validate "dist/Pier_${VERSION}_${{ matrix.arch }}.dmg"
+          if [ "${{ matrix.arch }}" = aarch64 ]; then
+            test "$("$app/Contents/MacOS/pier" version)" = "pier $TAG"
+          fi
+      - name: upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: the updater's latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${TAG#v}"; [[ "$v" =~ ^[0-9]+\.[0-9]+$ ]] && v="$v.0"
+          base="https://github.com/usepier/pier/releases/download/$TAG"
+          jq -n --arg v "$v" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg notes "See https://github.com/usepier/pier/releases/tag/$TAG" \
+            --rawfile arm "dist/Pier_${v}_aarch64.app.tar.gz.sig" \
+            --rawfile intel "dist/Pier_${v}_x64.app.tar.gz.sig" \
+            --arg armurl "$base/Pier_${v}_aarch64.app.tar.gz" \
+            --arg intelurl "$base/Pier_${v}_x64.app.tar.gz" \
+            '{version: $v, notes: $notes, pub_date: $date, platforms: {
+               "darwin-aarch64": {signature: $arm, url: $armurl},
+               "darwin-x86_64": {signature: $intel, url: $intelurl}}}' > dist/latest.json
+          gh release upload "$TAG" dist/latest.json --clobber
+      - name: checkout homebrew tap
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: usepier/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: point the cask at this release
+        run: |
+          v="${TAG#v}"; [[ "$v" =~ ^[0-9]+\.[0-9]+$ ]] && v="$v.0"
+          arm=$(sha256sum "dist/Pier_${v}_aarch64.dmg" | cut -d' ' -f1)
+          intel=$(sha256sum "dist/Pier_${v}_x64.dmg" | cut -d' ' -f1)
+          mkdir -p homebrew-tap/Casks
+          sed -e "s|{{VERSION}}|$v|g" -e "s|{{TAG}}|$TAG|g" -e "s|{{SHA_ARM}}|$arm|g" -e "s|{{SHA_INTEL}}|$intel|g" \
+            macos/release/pier.rb > homebrew-tap/Casks/pier.rb
+          ! grep -q '{{' homebrew-tap/Casks/pier.rb
+      - name: push the cask
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/pier.rb
+          if git diff --cached --quiet; then
+            echo "cask already at ${TAG}, nothing to push"
+          else
+            git commit -m "chore: bump pier app ${TAG#v}"
+            git push
+          fi

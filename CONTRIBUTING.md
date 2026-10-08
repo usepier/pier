@@ -64,8 +64,8 @@ open decisions — TODOs in code point there. The short version:
   (or a stated reason it doesn't have the problem).
 - **One API, many frontends.** Capabilities live in `pkg/pier`, which never
   prints, exits or reads stdin; the CLI (`cmd/pier`), the app
-  (`internal/tui`) and the coming Mac app render what it returns. Drivers
-  don't write to the terminal either.
+  (`internal/tui`) and the Mac app (`macos/`) render what it returns.
+  Drivers don't write to the terminal either.
 - **Failures are loud.** Setup outcomes, bake failures, unreachable
   sessions — every failure names itself and says where to look next.
 
@@ -106,6 +106,26 @@ The tap push authenticates with the `HOMEBREW_TAP_TOKEN` repository secret,
 a fine-grained PAT with contents read/write on usepier/homebrew-tap (the
 default `GITHUB_TOKEN` cannot push across repositories). If it expires,
 mint a new one and update the secret.
+
+The same tag ships the Mac app (`.github/workflows/macos-release.yml`): for
+each CPU arch it builds the app around that tag's pier, signs it with the
+Developer ID, notarizes and staples it, and uploads the DMG and the
+updater's signed archive to the release; then it writes the updater's
+`latest.json` and points the cask in the tap at the new DMGs. It needs:
+
+| Secret | What |
+|---|---|
+| `APPLE_CERTIFICATE` | the Developer ID Application certificate and key, exported as .p12, base64 |
+| `APPLE_CERTIFICATE_PASSWORD` | the .p12's password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: <name> (<team id>)` |
+| `APPLE_API_ISSUER`, `APPLE_API_KEY_ID`, `APPLE_API_PRIVATE_KEY` | an App Store Connect API key (Developer role) for notarization: issuer id, key id, the .p8's contents |
+| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater's signing key and its password |
+
+and the repository variable `TAURI_UPDATER_PUBKEY`, the updater key's
+public half, which goes into every build. Make the updater key once with
+`cd macos && pnpm tauri signer generate -w ~/.tauri/pier.key`, and keep a
+copy of it offline: installed apps only accept updates signed with it, so
+losing it strands every install on its current version.
 
 Versioning is semver. While pier is 0.x, breaking changes bump the minor
 version.
