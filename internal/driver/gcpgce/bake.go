@@ -43,8 +43,16 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	if err != nil {
 		return driver.Baked{}, err
 	}
-	defer os.Remove(d.keyPath(id))
-	defer os.Remove(d.keyPath(id) + ".pub")
+	// The key stays while the instance does: it marks the instance as this
+	// machine's for the sweep, which collects a handed-off bake instance
+	// whose FinishBake never ran. Destroy removes it.
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			os.Remove(d.keyPath(id))
+			os.Remove(d.keyPath(id) + ".pub")
+		}
+	}()
 
 	work, err := os.MkdirTemp("", "pier-bake-*")
 	if err != nil {
@@ -64,7 +72,6 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	// A failed bake leaves nothing behind. A successful one hands the stopped
 	// instance to FinishBake: GCE won't delete a disk an image is still being
 	// created from.
-	handedOff := false
 	defer func() {
 		if !handedOff {
 			d.Destroy(context.WithoutCancel(ctx), id)

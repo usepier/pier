@@ -24,9 +24,13 @@ import (
 const bakeMaxLife = 4 * time.Hour
 
 // sweepable reports whether pier would never use s again: a pooled session
-// nothing will claim, or a bake instance whose bake is gone.
+// nothing will claim, or a bake instance whose bake is gone. Only what this
+// machine made is ever considered: a session's key lives only on the
+// machine that created it, so one without its key here was made by another
+// machine (yours or not) and is that machine's to judge — its pools and
+// bakes follow its config, not this one.
 func (c *Client) sweepable(s Session, maxAge time.Duration, now time.Time) bool {
-	if s.State == driver.StateDeleting || s.State == driver.StateFailed {
+	if s.State == driver.StateDeleting || s.State == driver.StateFailed || !c.HasKey(s) {
 		return false
 	}
 	lived := now.Sub(s.Created)

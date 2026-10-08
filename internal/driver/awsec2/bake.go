@@ -72,8 +72,15 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	}()
 	os.Rename(d.keyPath("bake"), d.keyPath(id))
 	os.Rename(d.keyPath("bake")+".pub", d.keyPath(id)+".pub")
-	defer os.Remove(d.keyPath(id))
-	defer os.Remove(d.keyPath(id) + ".pub")
+	// The key stays while the instance does: it marks the instance as this
+	// machine's for the sweep, which collects a handed-off bake instance
+	// whose FinishBake never ran.
+	defer func() {
+		if !handedOff {
+			os.Remove(d.keyPath(id))
+			os.Remove(d.keyPath(id) + ".pub")
+		}
+	}()
 	spec.Step("bake instance " + id + " launched — installing harnesses (a few minutes)")
 
 	if err := d.waitSSH(ctx, id, 240*time.Second); err != nil {
@@ -165,8 +172,13 @@ func (d *Driver) FinishBake(ctx context.Context, b driver.Baked, step func(strin
 		// its instance (the sweep collects stale bake instances).
 		return err
 	}
-	if _, terr := d.aws(context.WithoutCancel(ctx), "ec2", "terminate-instances", "--instance-ids", b.Instance); terr != nil && err == nil {
-		return terr
+	if _, terr := d.aws(context.WithoutCancel(ctx), "ec2", "terminate-instances", "--instance-ids", b.Instance); terr != nil {
+		if err == nil {
+			return terr
+		}
+	} else {
+		os.Remove(d.keyPath(b.Instance))
+		os.Remove(d.keyPath(b.Instance) + ".pub")
 	}
 	if err != nil {
 		_ = d.DeleteImage(context.WithoutCancel(ctx), b.Image) // it failed: nothing will ever use it
