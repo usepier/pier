@@ -37,12 +37,17 @@ export function buildMenu(): Promise<void> {
     const by = (s: MenuSection) => cmds.filter((c) => c.menu === s);
     const sep = () => PredefinedMenuItem.new({ item: "Separator" });
 
+    const quit = cmds.find((c) => c.id === "app.quit");
     const app = await Submenu.new({
       text: "Pier",
       items: [
         await PredefinedMenuItem.new({ item: { About: null } }),
         await sep(),
-        ...(await Promise.all(by("app").map(item))),
+        ...(await Promise.all(
+          by("app")
+            .filter((c) => c !== quit)
+            .map(item),
+        )),
         await sep(),
         await PredefinedMenuItem.new({ item: "Services" }),
         await sep(),
@@ -50,7 +55,7 @@ export function buildMenu(): Promise<void> {
         await PredefinedMenuItem.new({ item: "HideOthers" }),
         await PredefinedMenuItem.new({ item: "ShowAll" }),
         await sep(),
-        await PredefinedMenuItem.new({ item: "Quit" }),
+        quit ? await item(quit) : await PredefinedMenuItem.new({ item: "Quit" }),
       ],
     });
     const menus = [app];

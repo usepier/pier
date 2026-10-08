@@ -5,6 +5,9 @@
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 
+#[cfg(target_os = "macos")]
+mod notify;
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -18,6 +21,15 @@ pub fn run() {
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
                 .build(),
         )
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            notify::init(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            #[cfg(target_os = "macos")]
+            notify::notify
+        ])
         .on_window_event(|window, event| {
             // Closing the window hides it, like a Mac app: sessions keep being
             // watched (badge, notifications) until the app quits.

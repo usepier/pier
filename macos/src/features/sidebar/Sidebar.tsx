@@ -5,6 +5,7 @@ import { Button as AriaButton } from "react-aria-components";
 import type { Repo, Session } from "@/api/protocol.gen";
 import { linkCheckout } from "@/features/repos/link";
 import { hourly } from "@/lib/format";
+import { attentionOf, reasonText, useSeen } from "@/state/attention";
 import { sessionTone, useOverview } from "@/state/overview";
 import { useUI } from "@/state/ui";
 import { IconButton } from "@/ui/Button";
@@ -45,7 +46,9 @@ function Row({
   );
 }
 
-function sessionHint(s: Session): string {
+function sessionHint(s: Session, seen: Record<string, string>): string {
+  const reason = attentionOf(s, seen);
+  if (reason && reason !== "finished") return reasonText[reason];
   if (s.state === "failed") return "failed";
   if (s.state === "creating") return "starting";
   if (s.state === "parked") return "parked";
@@ -60,6 +63,7 @@ function RepoGroup({ repo, sessions, path }: { repo: Repo; sessions: Session[]; 
   const collapsed = useUI((s) => !!s.collapsed[repo.name]);
   const toggle = useUI((s) => s.toggleRepo);
   const openNew = useUI((s) => s.openNewSession);
+  const seen = useSeen((s) => s.seen);
   const repoPath = `/repo/${encodeURIComponent(repo.name)}`;
   const pool = repo.poolTarget > 0 || repo.poolReady > 0 || repo.poolFilling > 0;
   return (
@@ -99,7 +103,8 @@ function RepoGroup({ repo, sessions, path }: { repo: Repo; sessions: Session[]; 
         <div>
           {sessions.map((s) => {
             const p = `/session/${encodeURIComponent(s.id)}`;
-            const hint = sessionHint(s);
+            const hint = sessionHint(s, seen);
+            const unread = attentionOf(s, seen) === "finished";
             return (
               <Row
                 key={s.id}
@@ -109,15 +114,20 @@ function RepoGroup({ repo, sessions, path }: { repo: Repo; sessions: Session[]; 
                 onPress={() => navigate({ to: "/session/$id", params: { id: s.id } })}
               >
                 <StateDot tone={sessionTone(s)} />
-                <span className={`min-w-0 flex-1 truncate ${s.state === "parked" ? "text-secondary" : ""}`}>
+                <span
+                  className={`min-w-0 flex-1 truncate ${s.state === "parked" ? "text-secondary" : ""} ${unread ? "font-semibold" : ""}`}
+                >
                   {s.name}
                 </span>
                 {hint && (
                   <span
-                    className={`shrink-0 text-xs ${hint.includes("fail") ? "text-bad" : "text-tertiary"}`}
+                    className={`shrink-0 text-xs ${hint.includes("fail") ? "text-bad" : hint === "needs you" ? "font-medium text-warn" : "text-tertiary"}`}
                   >
                     {hint}
                   </span>
+                )}
+                {unread && !hint && (
+                  <span className="size-1.5 shrink-0 rounded-full bg-accent" title="Finished" />
                 )}
               </Row>
             );

@@ -9,6 +9,7 @@ import { useJobsBootstrap } from "@/state/jobs";
 import { useActivityReporting, useLoadRecorder } from "@/state/overview";
 import { Toasts } from "@/ui/Toasts";
 import { useAppCommands } from "./appCommands";
+import { useAttentionEffects } from "./attention";
 import { Shell } from "./Shell";
 
 export function Root() {
@@ -16,6 +17,7 @@ export function Root() {
   useActivityReporting();
   useLoadRecorder();
   useJobsBootstrap();
+  useAttentionEffects();
   const status = useStatus();
   useEffect(() => {
     if (status !== "ready") return;

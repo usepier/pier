@@ -1,8 +1,10 @@
+import { exit } from "@tauri-apps/plugin-process";
 import { useEffect } from "react";
 import { rpc } from "@/api/client";
 import { inTauri } from "@/api/transport";
 import { linkCheckout } from "@/features/repos/link";
 import { confirm } from "@/lib/confirm";
+import { needingAttention, useSeen } from "@/state/attention";
 import { trackJob } from "@/state/jobs";
 import { attempt, toast } from "@/state/toasts";
 import { useUI } from "@/state/ui";
@@ -21,6 +23,32 @@ export function current(): { session?: string; repo?: string } {
 
 async function overview() {
   return rpc.call("overview.get", {});
+}
+
+/** The next session needing you after the one in view, round the list. */
+async function nextNeedingAttention() {
+  const list = needingAttention((await overview()).sessions, useSeen.getState().seen);
+  if (!list.length) return toast("Nothing needs you", "info");
+  const at = list.findIndex((x) => x.session.id === current().session);
+  const next = list[(at + 1) % list.length]!.session;
+  router.navigate({ to: "/session/$id", params: { id: next.id } });
+}
+
+const quitNoted = "pier.quitNoted";
+
+/** Quits; the first time, says what quitting leaves running. */
+async function quit() {
+  if (!inTauri) return;
+  if (!localStorage.getItem(quitNoted)) {
+    const ok = await confirm(
+      "Quit pier?",
+      "Agents keep working on their sessions after you quit, and sessions park on their own once they're idle. Prompts still on their way go out when you open pier again.",
+      { ok: "Quit" },
+    );
+    localStorage.setItem(quitNoted, "1");
+    if (!ok) return;
+  }
+  await exit(0);
 }
 
 async function currentSession() {
@@ -42,6 +70,13 @@ export function useAppCommands() {
           run: () => router.navigate({ to: "/settings" }),
         },
         {
+          id: "app.quit",
+          title: "Quit pier",
+          shortcut: "CmdOrCtrl+Q",
+          menu: "app",
+          run: () => void quit(),
+        },
+        {
           id: "file.newSession",
           title: "New Session…",
           shortcut: "CmdOrCtrl+N",
@@ -61,6 +96,14 @@ export function useAppCommands() {
           shortcut: "CmdOrCtrl+Shift+H",
           menu: "go",
           run: () => router.navigate({ to: "/" }),
+        },
+        {
+          id: "go.attention",
+          title: "Next Needing Attention",
+          shortcut: "CmdOrCtrl+Alt+L",
+          menu: "go",
+          keywords: "inbox unread waiting",
+          run: () => void nextNeedingAttention(),
         },
         {
           id: "go.back",

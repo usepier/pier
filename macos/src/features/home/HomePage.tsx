@@ -1,7 +1,8 @@
 import { useNavigate } from "@tanstack/react-router";
 import { Anchor } from "lucide-react";
 import { JobProgress } from "@/features/jobs/JobProgress";
-import { hourly, monthly } from "@/lib/format";
+import { ago, hourly, monthly } from "@/lib/format";
+import { needingAttention, reasonText, useSeen } from "@/state/attention";
 import { useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview } from "@/state/overview";
 import { useUI } from "@/state/ui";
@@ -15,6 +16,7 @@ const jobVerb: Record<string, string> = {
   bake: "Baking",
   fill: "Filling the pool of",
   resize: "Resizing",
+  deliver: "Waking, with a prompt,",
 };
 
 /** Everything at once: what runs, what it costs, what's in flight. */
@@ -23,11 +25,13 @@ export function HomePage() {
   const navigate = useNavigate();
   const openNew = useUI((s) => s.openNewSession);
   const jobs = useRunningJobs();
+  const seen = useSeen((s) => s.seen);
   if (!o) return <Empty icon={<Anchor size={28} strokeWidth={1.5} />} title="Connecting to pier…" />;
   const live = o.sessions.filter(
     (s) => !s.pooled && ["creating", "running", "working", "idle"].includes(s.state),
   );
   const q = o.quota;
+  const inbox = needingAttention(o.sessions, seen);
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-5xl flex-col gap-4 p-6">
@@ -60,6 +64,35 @@ export function HomePage() {
             )}
           </div>
         </div>
+        {inbox.length > 0 && (
+          <Panel title={`Needs you · ${inbox.length}`}>
+            <ul className="flex flex-col">
+              {inbox.map(({ session: s, reason }) => (
+                <li key={s.id}>
+                  <button
+                    type="button"
+                    onClick={() => navigate({ to: "/session/$id", params: { id: s.id } })}
+                    className="flex w-full items-center gap-2 rounded-ctl px-2 py-1.5 text-left text-sm hover:bg-hover"
+                  >
+                    <StateDot tone={sessionTone(s)} />
+                    <span className="font-medium">{s.name}</span>
+                    <span
+                      className={`shrink-0 text-xs ${reason === "needs_input" ? "text-warn" : reason === "finished" ? "text-accent" : "text-bad"}`}
+                    >
+                      {reasonText[reason]}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-secondary">
+                      {reason === "finished" || reason === "needs_input" ? s.agent?.last : s.failReason}
+                    </span>
+                    <span className="shrink-0 text-xs text-tertiary">
+                      {s.agent ? ago(s.agent.since) : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
         {jobs.length > 0 && (
           <Panel title="In progress">
             <div className="flex flex-col gap-4">

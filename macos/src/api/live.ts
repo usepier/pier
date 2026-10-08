@@ -19,8 +19,13 @@ interface Live<T> {
   error: unknown;
 }
 
+type Snap<T extends keyof Watches> = Watches[T]["snapshot"];
+type Data<T extends keyof Watches> = Watches[T]["data"];
+/** Folds an update into the data so far. */
+type Reduce<T extends keyof Watches> = (prev: Snap<T> | undefined, next: Data<T>) => Snap<T>;
+
 class Shared<T extends keyof Watches> {
-  state: Live<Watches[T]["data"]> = { data: undefined, error: undefined };
+  state: Live<Snap<T>> = { data: undefined, error: undefined };
   private readonly listeners = new Set<() => void>();
   private watch: Watch<T> | null = null;
   private closeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -29,10 +34,7 @@ class Shared<T extends keyof Watches> {
     readonly topic: T,
     readonly params: Watches[T]["params"],
     private readonly graceMs: number,
-    private readonly reduce?: (
-      prev: Watches[T]["data"] | undefined,
-      next: Watches[T]["data"],
-    ) => Watches[T]["data"],
+    private readonly reduce?: Reduce<T>,
   ) {}
 
   subscribe = (fn: () => void) => {
@@ -46,7 +48,8 @@ class Shared<T extends keyof Watches> {
         this.topic,
         this.params,
         (d, snapshot) => {
-          const data = this.reduce && !snapshot ? this.reduce(this.state.data, d) : d;
+          // Without a reducer an update is the whole new data.
+          const data = this.reduce && !snapshot ? this.reduce(this.state.data, d as Data<T>) : (d as Snap<T>);
           this.state = { data, error: undefined };
           for (const l of this.listeners) l();
         },
@@ -84,7 +87,7 @@ export interface WatchOptions<T extends keyof Watches> {
   /** How long the subscription outlives its last viewer. */
   graceMs?: number;
   /** Folds each update into the previous data (append-style topics). */
-  reduce?: (prev: Watches[T]["data"] | undefined, next: Watches[T]["data"]) => Watches[T]["data"];
+  reduce?: Reduce<T>;
 }
 
 /** Live data for a topic; undefined until the first snapshot. */
@@ -95,7 +98,7 @@ export function useWatch<T extends keyof Watches>(
   topic: T,
   params: Watches[T]["params"],
   opts: WatchOptions<T> = {},
-): Live<Watches[T]["data"]> {
+): Live<Snap<T>> {
   const enabled = opts.enabled ?? true;
   const k = key(topic, params);
   let s = shared.get(k) as Shared<T> | undefined;

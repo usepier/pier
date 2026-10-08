@@ -46,3 +46,18 @@ export function useBackgroundExpired(): boolean {
   }, [limit]);
   return expired;
 }
+
+/** True while the window is frontmost and visible. */
+export function useFocused(): boolean {
+  const [focused, setFocused] = useState(() => since === null);
+  useEffect(() => {
+    const fn = () => setFocused(since === null);
+    listeners.add(fn);
+    update();
+    fn();
+    return () => {
+      listeners.delete(fn);
+    };
+  }, []);
+  return focused;
+}

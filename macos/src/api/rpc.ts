@@ -51,6 +51,9 @@ export interface CallOptions {
 type Params<M extends keyof Methods> = Methods[M]["params"];
 type Result<M extends keyof Methods> = Methods[M]["result"];
 
+/** What a watch delivers: its snapshot first (snapshot true), then its events. */
+export type WatchData<T extends keyof Watches> = Watches[T]["snapshot"] | Watches[T]["data"];
+
 /** One live subscription. It resubscribes by itself after a restart or a missed event. */
 export class Watch<T extends keyof Watches> {
   private sub = "";
@@ -61,7 +64,7 @@ export class Watch<T extends keyof Watches> {
     private readonly rpc: Rpc,
     readonly topic: T,
     private readonly params: Watches[T]["params"],
-    private readonly onData: (d: Watches[T]["data"], snapshot: boolean) => void,
+    private readonly onData: (d: WatchData<T>, snapshot: boolean) => void,
     private readonly onError: (e: unknown) => void,
   ) {}
 
@@ -69,7 +72,7 @@ export class Watch<T extends keyof Watches> {
     if (this.closed) return;
     try {
       const method = `${this.topic}.watch` as keyof Methods;
-      const r = (await this.rpc.call(method, this.params as never)) as WatchResult<Watches[T]["data"]>;
+      const r = (await this.rpc.call(method, this.params as never)) as WatchResult<Watches[T]["snapshot"]>;
       if (this.closed) {
         this.rpc.notify("sub.cancel", { sub: r.sub });
         return;
@@ -120,6 +123,8 @@ export class Rpc {
   constructor(
     private readonly makeTransport: () => Transport,
     private readonly client: { name: string; version: string },
+    /** The client answers agents' permission requests (chat.decide). */
+    private readonly approvals = false,
   ) {}
 
   /** Connects and initializes; on loss, reconnects with backoff. */
@@ -131,7 +136,11 @@ export class Rpc {
         (line) => this.receive(line),
         (reason) => this.lost(t, reason),
       );
-      this.info = await this.call("initialize", { protocol: PROTOCOL_VERSION, client: this.client });
+      this.info = await this.call("initialize", {
+        protocol: PROTOCOL_VERSION,
+        client: this.client,
+        approvals: this.approvals,
+      });
       if (this.info.protocol !== PROTOCOL_VERSION) {
         throw new Error(`pier speaks protocol ${this.info.protocol}, the app ${PROTOCOL_VERSION}`);
       }
@@ -247,7 +256,7 @@ export class Rpc {
   watch<T extends keyof Watches>(
     topic: T,
     params: Watches[T]["params"],
-    onData: (d: Watches[T]["data"], snapshot: boolean) => void,
+    onData: (d: WatchData<T>, snapshot: boolean) => void,
     onError: (e: unknown) => void = () => {},
   ): Watch<T> {
     const w = new Watch(this, topic, params, onData, onError);

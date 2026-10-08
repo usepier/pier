@@ -5,8 +5,10 @@ import { useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
+import { ChatView } from "@/features/chat/ChatView";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { age } from "@/lib/format";
+import { useChat } from "@/state/chat";
 import { useRunningJobs } from "@/state/jobs";
 import { useSession } from "@/state/overview";
 import { attempt } from "@/state/toasts";
@@ -50,7 +52,13 @@ export function SessionPage() {
       )}
       <Group orientation="horizontal" className="min-h-0 flex-1" {...layout}>
         <Panel id="center" minSize={360} className="min-w-0">
-          {live && s.hasKey ? <SessionCenter session={s} openWindow={openWindow} /> : <Idle session={s} />}
+          {live && s.hasKey ? (
+            <SessionCenter session={s} openWindow={openWindow} />
+          ) : s.state === "parked" ? (
+            <ParkedCenter session={s} />
+          ) : (
+            <Idle session={s} />
+          )}
         </Panel>
         <Separator className="w-px bg-separator outline-none data-[separator=active]:bg-accent" />
         <Panel id="inspector" defaultSize={340} minSize={260} maxSize={720} className="flex min-w-0 flex-col">
@@ -91,6 +99,13 @@ export function SessionPage() {
       </Group>
     </div>
   );
+}
+
+/** A parked session shows its chat as this Mac last saw it, when there is one. */
+function ParkedCenter({ session: s }: { session: Session }) {
+  const chat = useChat(s.id);
+  if (chat.loaded && (chat.items.length > 0 || chat.agent || s.agent)) return <ChatView session={s} />;
+  return <Idle session={s} />;
 }
 
 /** The center while there is no live terminal to show. */
