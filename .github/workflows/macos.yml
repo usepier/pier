@@ -1,0 +1,75 @@
+name: macos app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "macos/**"
+      - "internal/api/**"
+      - "pkg/**"
+      - "Makefile"
+      - ".github/workflows/macos.yml"
+
+jobs:
+  # The web UI: lint, types, unit tests, a production build — and the
+  # protocol types must match what the Go side generates.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: macos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: macos/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: protocol types are current
+        working-directory: .
+        run: |
+          make api-types
+          git diff --exit-code -- macos/src/api/protocol.gen.ts || {
+            echo "macos/src/api/protocol.gen.ts is stale: run make api-types and commit it"; exit 1; }
+      - run: pnpm exec biome check .
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm exec vitest run
+      - run: pnpm exec vite build
+
+  # The app itself, unsigned, as a debug bundle with its sidecar.
+  app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: macos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: macos/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: macos/src-tauri
+      - run: make mac-sidecar
+      - working-directory: macos
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm tauri build --debug --bundles app
+      - name: the bundled pier runs
+        run: |
+          app=$(ls -d macos/src-tauri/target/debug/bundle/macos/*.app)
+          "$app/Contents/MacOS/pier" version

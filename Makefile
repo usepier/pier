@@ -26,5 +26,21 @@ api-types:
 	@mkdir -p macos/src/api
 	go run ./internal/api/tsgen -o macos/src/api/protocol.gen.ts
 
+# The Mac app bundles this exact pier as its sidecar, one per CPU arch,
+# named by target triple the way the app's bundler expects.
+MAC_BIN := macos/src-tauri/binaries
+mac-sidecar: supervisors
+	@mkdir -p $(MAC_BIN)
+	GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=$(VERSION)" -o $(MAC_BIN)/pier-aarch64-apple-darwin ./cmd/pier
+	GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION)" -o $(MAC_BIN)/pier-x86_64-apple-darwin ./cmd/pier
+
+# Run the app against this checkout's pier (rebuilt on every reload).
+mac-dev: build mac-sidecar
+	cd macos && pnpm install && VITE_PIER_API=bridge pnpm tauri dev
+
+# A local, unsigned build of the app for this Mac's architecture.
+mac: mac-sidecar
+	cd macos && pnpm install --frozen-lockfile && pnpm tauri build --bundles app
+
 clean:
 	rm -f pier $(ASSETS)/pier-supervisor-linux-*

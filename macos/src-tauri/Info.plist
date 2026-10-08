@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- App Nap would throttle the timers that detach idle terminals and the
+       polling that drives notifications. -->
+  <key>NSAppSleepDisabled</key>
+  <true/>
+</dict>
+</plist>

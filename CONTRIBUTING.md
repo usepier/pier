@@ -18,6 +18,24 @@ Requires: Go, `git`, OpenSSH, and the CLI of the cloud you test against
 (`aws` v2 + `session-manager-plugin`, or `gcloud`). `pier doctor` checks the
 runtime dependencies.
 
+### The Mac app
+
+`macos/` is the Mac app: a React/TypeScript UI in a thin native shell, which
+bundles pier and talks to it through `pier api` (docs/SPEC.md §11.1). All
+behavior lives in Go; the app only renders.
+
+```
+make mac-dev    # the app against this checkout's pier (rebuilt on each reload)
+make mac        # a local, unsigned build for this Mac
+make api-types  # regenerate macos/src/api/protocol.gen.ts after changing pkg/pier/wire
+cd macos && pnpm check && pnpm test
+```
+
+Requires Node 24, pnpm and Rust (the toolchain is pinned in
+`macos/src-tauri/rust-toolchain.toml`). The UI also runs in a plain browser
+with `cd macos && pnpm dev`, against the same pier. It drives your real
+cloud account — point `HOME` at a scratch directory to try it without one.
+
 ## Design ground rules
 
 [docs/SPEC.md](docs/SPEC.md) is the source of truth for architecture and

@@ -1,0 +1,170 @@
+@import "tailwindcss";
+
+/* A Mac app, not a web page: system fonts and colors, a translucent sidebar
+   (the window's vibrancy shows through), quiet chrome. Colors come from
+   WebKit's Apple system color keywords, so light/dark, Increase Contrast and
+   the accent all follow the system; the fallbacks serve a plain browser in
+   development. */
+
+@theme {
+  --font-sans: system-ui, -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-xl: 22px;
+
+  --color-label: var(--label);
+  --color-secondary: var(--secondary-label);
+  --color-tertiary: var(--tertiary-label);
+  --color-quaternary: var(--quaternary-label);
+  --color-separator: var(--separator);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-control: var(--control);
+  --color-hover: var(--hover);
+  --color-selected: var(--selected);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-accent-soft: color-mix(in oklch, var(--accent) 16%, transparent);
+
+  --color-ok: #30b350;
+  --color-warn: #f0a020;
+  --color-bad: #f0443a;
+  --color-merged: #9a6af0;
+  --color-info: #3a8cf0;
+
+  --radius-ctl: 6px;
+  --radius-card: 10px;
+}
+
+:root {
+  --label: #1d1d1f;
+  --secondary-label: rgb(60 60 67 / 0.62);
+  --tertiary-label: rgb(60 60 67 / 0.32);
+  --quaternary-label: rgb(60 60 67 / 0.18);
+  --separator: rgb(60 60 67 / 0.14);
+  --surface: #ffffff;
+  --raised: #f5f5f7;
+  --control: #ffffff;
+  --hover: rgb(0 0 0 / 0.04);
+  --selected: rgb(0 0 0 / 0.08);
+  --accent: #13a596;
+  --on-accent: #ffffff;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --label: #f5f5f7;
+    --secondary-label: rgb(235 235 245 / 0.6);
+    --tertiary-label: rgb(235 235 245 / 0.3);
+    --quaternary-label: rgb(235 235 245 / 0.16);
+    --separator: rgb(255 255 255 / 0.1);
+    --surface: #1e1e1e;
+    --raised: #2a2a2c;
+    --control: #2c2c2e;
+    --hover: rgb(255 255 255 / 0.05);
+    --selected: rgb(255 255 255 / 0.1);
+  }
+}
+
+@supports (color: -apple-system-label) {
+  :root {
+    --label: -apple-system-label;
+    --secondary-label: -apple-system-secondary-label;
+    --tertiary-label: -apple-system-tertiary-label;
+    --quaternary-label: -apple-system-quaternary-label;
+    --separator: -apple-system-separator;
+    --surface: -apple-system-text-background;
+    --control: -apple-system-control-background;
+    --selected: -apple-system-unemphasized-selected-content-background;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.4;
+  color: var(--label);
+  /* The window is transparent so the sidebar's vibrancy shows; content
+     panes paint their own background. */
+  background: transparent;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* Text people read or copy is selectable; chrome is not. */
+.selectable,
+.selectable * {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+img,
+a {
+  -webkit-user-drag: none;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-ctl);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes pier-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes pier-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-pulse-soft {
+  animation: pier-pulse 1.6s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: pier-spin 1s linear infinite;
+}
+
+/* In a plain browser (development) there is no vibrancy behind the page. */
+.browser body {
+  background: var(--raised);
+}

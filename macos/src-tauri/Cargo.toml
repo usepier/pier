@@ -1,0 +1,28 @@
+[package]
+name = "pier-app"
+version = "0.0.0"
+description = "pier for macOS"
+edition = "2021"
+publish = false
+
+[lib]
+name = "pier_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = ["macos-private-api"] }
+tauri-plugin-shell = "2.4"
+tauri-plugin-dialog = "2.8"
+tauri-plugin-opener = "2.7"
+tauri-plugin-process = "2.4"
+tauri-plugin-window-state = "2.5"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

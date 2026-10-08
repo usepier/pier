@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/usepier/pier/internal/api"
@@ -18,8 +19,12 @@ import (
 // print anywhere — in pier or in a child process — lands in the log instead
 // of corrupting the stream.
 func cmdAPI(args []string) {
-	if len(args) > 0 {
-		fatal(fmt.Errorf("usage: pier api"))
+	// --client names the caller in the log; nothing else is accepted.
+	for _, a := range args {
+		if !strings.HasPrefix(a, "--client=") {
+			fatal(fmt.Errorf("usage: pier api [--client=<name/version>]"))
+		}
+		fmt.Fprintln(os.Stderr, "pier api: serving "+strings.TrimPrefix(a, "--client="))
 	}
 	proto, err := takeStdout()
 	if err != nil {

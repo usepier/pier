@@ -5,3 +5,8 @@
 .DS_Store
 cmd/pier/assets/pier-supervisor-*
 .idea/
+macos/node_modules/
+macos/dist/
+macos/src-tauri/target/
+macos/src-tauri/gen/
+macos/src-tauri/binaries/

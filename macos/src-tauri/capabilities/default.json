@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the main window's web view may do.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-badge-count",
+    "core:window:allow-is-fullscreen",
+    "core:menu:default",
+    "dialog:default",
+    "opener:default",
+    "process:default",
+    "window-state:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [{ "name": "binaries/pier", "sidecar": true, "args": ["api", { "validator": "^--client=.*$" }] }]
+    },
+    "shell:allow-stdin-write",
+    "shell:allow-kill"
+  ]
+}
