@@ -2,6 +2,7 @@ package awsec2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -155,6 +156,9 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 		c := driver.Check{Name: name, OK: err == nil}
 		if err != nil {
 			c.Detail = hint
+			if strings.HasPrefix(hint, "brew ") {
+				c.Fix = hint
+			}
 		}
 		checks = append(checks, c)
 	}
@@ -173,12 +177,18 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	default:
 		gh.OK = false
 		gh.Detail = "none found (optional) — private repos use the slow bundle path and sessions can't push; fix: `gh auth login`"
+		gh.Fix = "gh auth login"
 	}
 	checks = append(checks, gh)
 
 	me, err := d.user(ctx)
 	if err != nil {
-		checks = append(checks, driver.Check{Name: "AWS credentials", Detail: err.Error()})
+		c := driver.Check{Name: "AWS credentials", Detail: err.Error()}
+		var le *driver.LoginError
+		if errors.As(err, &le) {
+			c.Fix = strings.Join(le.Login, " ")
+		}
+		checks = append(checks, c)
 		return checks // everything below needs credentials
 	}
 	checks = append(checks, driver.Check{Name: "AWS credentials", OK: true, Detail: me})
@@ -196,6 +206,7 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	c := driver.Check{Name: "groundwork (role, profile, SG)", OK: ok}
 	if !ok {
 		c.Detail = "run `pier setup`"
+		c.Fix = "pier setup"
 	}
 	checks = append(checks, c)
 

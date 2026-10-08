@@ -235,7 +235,7 @@ pier pool                 this repo's pool (set <n> | fill | drain [repo])
 pier proxy                every running session as <session>.pier (macOS)
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
 pier setup [--skills]     first-time setup; --skills only refreshes the agent skill
-pier doctor               environment + account checks
+pier doctor [--json]      environment + account checks
 pier teardown             remove all pier groundwork from the account
 ```
 

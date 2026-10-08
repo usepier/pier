@@ -56,6 +56,7 @@ func cmdAPI(args []string) {
 		Version: version,
 		Log:     os.Stderr,
 		Exit:    exit,
+		Pier:    opts,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pier api:", err)

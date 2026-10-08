@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"sync"
 
@@ -144,6 +145,9 @@ func (s *Server) closeTerminals() {
 	}
 }
 
+// awsProfile is what an AWS profile name may be.
+var awsProfile = regexp.MustCompile(`^[A-Za-z0-9._@+=,-]{1,128}$`)
+
 var errNoTerminal = errors.New("no such terminal")
 
 func init() {
@@ -225,6 +229,17 @@ func init() {
 					return wire.TermOpened{}, err
 				}
 				argv = []string{exe, "setup"}
+			case wire.LocalAWSSSO:
+				if !awsProfile.MatchString(p.Profile) {
+					return wire.TermOpened{}, invalidParams("bad AWS profile")
+				}
+				argv = []string{"aws", "sso", "login", "--profile", p.Profile}
+			case wire.LocalGCloudLogin:
+				argv = []string{"gcloud", "auth", "login"}
+			case wire.LocalGHLogin:
+				argv = []string{"gh", "auth", "login"}
+			case wire.LocalClaudeToken:
+				argv = []string{"claude", "setup-token"}
 			default:
 				return wire.TermOpened{}, invalidParams("unknown purpose " + string(p.Purpose))
 			}

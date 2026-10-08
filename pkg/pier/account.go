@@ -38,12 +38,14 @@ func (c *Client) Doctor(ctx context.Context) []Check {
 		checks = append(checks, Check{
 			Name:   "pool " + repo,
 			Detail: fmt.Sprintf("%d pooled session(s) but no pool configured — `pier pool drain %s` removes them", n, repo),
+			Fix:    "pier pool drain " + repo,
 		})
 	}
 	for repo, n := range stuck {
 		checks = append(checks, Check{
 			Name:   "pool " + repo,
 			Detail: fmt.Sprintf("%d stuck filling for 2h+ — running at full price; `pier pool drain %s` removes them", n, repo),
+			Fix:    "pier pool drain " + repo,
 		})
 	}
 	return checks

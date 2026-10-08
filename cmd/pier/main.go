@@ -117,7 +117,7 @@ var helpSections = []helpSection{
 			{"pier setup", "first-time setup (re-run any time)"},
 			{"  --print-admin", "print the account setup for a cloud admin to run"},
 			{"  --skills", "only install or refresh the bundled agent skills"},
-			{"pier doctor", "check the environment and cloud account"},
+			{"pier doctor [--json]", "check the environment and cloud account"},
 			{"pier teardown", "remove all pier groundwork and images from the account"},
 			{"pier version", "print the pier version"},
 		},
@@ -165,7 +165,7 @@ func main() {
 	case "setup":
 		cmdSetup(args[1:])
 	case "doctor":
-		cmdDoctor()
+		cmdDoctor(len(os.Args) > 2 && os.Args[2] == "--json")
 	case "teardown":
 		cmdTeardown()
 	case "version", "-v", "--version":
@@ -1096,7 +1096,7 @@ func cmdSkills() {
 	if err != nil {
 		fatal(err)
 	}
-	agents := wizard.AgentDirs(home)
+	agents := pier.AgentDirs(home)
 	if len(agents) == 0 {
 		fmt.Println(ui.Dim.Render("  no agent config found (~/.claude or ~/.codex) — nothing to install into"))
 		return
@@ -1110,10 +1110,15 @@ func cmdSkills() {
 	}
 }
 
-func cmdDoctor() {
+func cmdDoctor(jsonOutput bool) {
 	cfg, cfgErr := config.Load()
 	if cfgErr != nil {
-		fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(" no config yet — checking with defaults (run `pier setup`)"))
+		note := ui.Warn.Render("!") + ui.Dim.Render(" no config yet — checking with defaults (run `pier setup`)")
+		if jsonOutput {
+			fmt.Fprintln(os.Stderr, note)
+		} else {
+			fmt.Println(note)
+		}
 		cfg = config.Default()
 	}
 	c, err := pier.New(cfg, options())
@@ -1125,6 +1130,26 @@ func cmdDoctor() {
 		checks = c.Doctor(context.Background())
 	} else {
 		checks = c.Driver().Doctor(context.Background())
+	}
+	if jsonOutput {
+		type check struct {
+			Name   string `json:"name"`
+			OK     bool   `json:"ok"`
+			Detail string `json:"detail,omitempty"`
+			Fix    string `json:"fix,omitempty"`
+		}
+		out := []check{}
+		allOK := true
+		for _, ch := range checks {
+			out = append(out, check{ch.Name, ch.OK, ch.Detail, ch.Fix})
+			allOK = allOK && ch.OK
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+		if !allOK {
+			os.Exit(1)
+		}
+		return
 	}
 	if !printChecks(checks) {
 		os.Exit(1)

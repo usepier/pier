@@ -258,6 +258,8 @@ type Check struct {
 	Name   string      `json:"name"`
 	Status CheckStatus `json:"status"`
 	Detail string      `json:"detail"`
+	// Fix is the command that fixes a failed check, when one does.
+	Fix string `json:"fix,omitempty"`
 }
 
 // EventKind is the kind of a progress event.
@@ -304,6 +306,10 @@ const (
 	ErrConflict       ErrorKind = "conflict"   // a file changed underneath the write
 	ErrHeadMoved      ErrorKind = "head_moved" // the pull request moved past what was reviewed
 	ErrBusy           ErrorKind = "busy"
+	// Setup's groundwork, failing for a reason the user acts on.
+	ErrNoDefaultVPC ErrorKind = "no_default_vpc" // name a subnet (awsSubnet)
+	ErrNoBilling    ErrorKind = "no_billing"     // the GCP project needs a billing account
+	ErrNoPermission ErrorKind = "no_permission"  // an admin creates the groundwork (setup.adminDoc)
 )
 
 // ErrorData rides in a JSON-RPC error's data field.

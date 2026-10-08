@@ -63,6 +63,14 @@ func toRPCError(err error) *rpcError {
 		e.Data.Kind, e.Data.Login = wire.ErrAuthExpired, le.Login
 		return e
 	}
+	var se *pier.SetupError
+	if errors.As(err, &se) {
+		e.Data.Kind = map[string]wire.ErrorKind{"no_vpc": wire.ErrNoDefaultVPC, "billing": wire.ErrNoBilling, "permission": wire.ErrNoPermission}[se.Kind]
+		if e.Data.Kind == "" {
+			e.Data.Kind = wire.ErrFailed
+		}
+		return e
+	}
 	for _, k := range kinds {
 		if errors.Is(err, k.err) {
 			e.Data.Kind = k.kind

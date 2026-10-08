@@ -222,8 +222,10 @@ func (f *fake) WriteFile(_ context.Context, _ pier.Session, _, _ string, _ []byt
 func (f *fake) Search(context.Context, pier.Session, string, bool, bool) ([]pier.Match, bool, error) {
 	return []pier.Match{{Path: "a.go", Line: 3, Col: 5, Text: "hello"}}, false, nil
 }
-func (f *fake) Commit(context.Context, pier.Session, string, string) (string, error) { return "def", nil }
-func (f *fake) Push(context.Context, pier.Session, string) error                   { return nil }
+func (f *fake) Commit(context.Context, pier.Session, string, string) (string, error) {
+	return "def", nil
+}
+func (f *fake) Push(context.Context, pier.Session, string) error { return nil }
 func (f *fake) PullRequests(_ context.Context, ss []pier.Session) (map[string]pier.PR, error) {
 	out := map[string]pier.PR{}
 	for _, s := range ss {

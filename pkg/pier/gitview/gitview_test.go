@@ -21,8 +21,8 @@ func TestParse(t *testing.T) {
 			"u UU N... 100644 100644 100644 100644 d1 d2 d3 go.sum",
 			"? notes/todo.txt",
 		),
-		NameStatus: z("M", "src/app.go", "A", "src/new.go", "D", "gone.txt", "R100", "docs/old.md", "docs/new name.md", "M", "logo.png", "U", "go.sum"),
-		Numstat:    z("3\t1\tsrc/app.go", "10\t0\tsrc/new.go", "0\t4\tgone.txt", "0\t0\t", "docs/old.md", "docs/new name.md", "-\t-\tlogo.png", "1\t1\tgo.sum"),
+		NameStatus:     z("M", "src/app.go", "A", "src/new.go", "D", "gone.txt", "R100", "docs/old.md", "docs/new name.md", "M", "logo.png", "U", "go.sum"),
+		Numstat:        z("3\t1\tsrc/app.go", "10\t0\tsrc/new.go", "0\t4\tgone.txt", "0\t0\t", "docs/old.md", "docs/new name.md", "-\t-\tlogo.png", "1\t1\tgo.sum"),
 		UntrackedLines: "  7 notes/todo.txt\n  7 total\n",
 	})
 	if c.Branch.Head != "fix-login" || c.Branch.Ahead != 2 || c.Branch.Behind != 1 || c.Branch.Upstream != "origin/fix-login" {

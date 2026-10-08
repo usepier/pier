@@ -158,7 +158,7 @@ func init() {
 				if !ch.OK {
 					st = wire.CheckFail
 				}
-				out = append(out, wire.Check{Name: ch.Name, Status: st, Detail: ch.Detail})
+				out = append(out, wire.Check{Name: ch.Name, Status: st, Detail: ch.Detail, Fix: ch.Fix})
 			}
 			return out, nil
 		})

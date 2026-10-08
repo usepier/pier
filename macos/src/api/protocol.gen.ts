@@ -171,6 +171,8 @@ export interface Check {
   name: string;
   status: CheckStatus;
   detail: string;
+  /** Fix is the command that fixes a failed check, when one does. */
+  fix?: string;
 }
 
 /** CheckStatus is a doctor check's outcome. */
@@ -209,6 +211,11 @@ export interface ClientActivity {
   focused: boolean;
   /** Visible are the sessions on screen (ids), refreshed first. */
   visible?: string[];
+}
+
+/** CloudRef names a cloud. */
+export interface CloudRef {
+  cloud: string;
 }
 
 /** CommitParams commits everything in a session's checkout. */
@@ -549,7 +556,7 @@ export interface ErrorData {
  * ErrorKind classifies a failed call so the app can react without parsing
  * messages.
  */
-export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "head_moved" | "busy";
+export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "head_moved" | "busy" | "no_default_vpc" | "no_billing" | "no_permission";
 
 /** PRDetail is a session's pull request in full. */
 export interface PRDetail extends PRSummary {
@@ -925,6 +932,115 @@ export interface SettingOption {
   desc?: string;
 }
 
+/** SetupApplyParams finishes setup. */
+export interface SetupApplyParams {
+  draft: SetupDraft;
+  /** Skills are the agent dirs to put the onboarding skill in. */
+  skills: string[];
+}
+
+/** SetupCheckParams checks a cloud login. */
+export interface SetupCheckParams {
+  cloud: string;
+  /** aws */
+  profile?: string;
+  /** gcp */
+  project?: string;
+}
+
+/**
+ * SetupDefaults is what a draft gives new sessions, and the machines to
+ * pick from.
+ */
+export interface SetupDefaults {
+  rows: DefaultRow[];
+  machines: Machine[];
+}
+
+/** DefaultRow is one default new sessions get. */
+export interface DefaultRow {
+  key: string;
+  label: string;
+  value: string;
+  note: string;
+}
+
+/**
+ * SetupDraft is setup's answers: the cloud, its account, and the defaults
+ * new sessions get.
+ */
+export interface SetupDraft {
+  /** aws-ec2 | gcp-gce */
+  cloud: string;
+  awsProfile?: string;
+  awsRegion?: string;
+  /** AWSSubnet is for accounts without a default VPC. */
+  awsSubnet?: string;
+  gcpProject?: string;
+  gcpZone?: string;
+  machine: string;
+  diskGib: number;
+  idleTimeout: string;
+  unattendedCap: string;
+  /** fast | lean | minimal | custom */
+  speed: string;
+  manifest: string[];
+  /** ClaudeToken is set only to change it; it is never read back. */
+  claudeToken?: string;
+}
+
+/** SetupIdentity is who the login is, and the region the AWS profile uses. */
+export interface SetupIdentity {
+  identity: string;
+  region?: string;
+}
+
+/** SetupResult is what setup did. */
+export interface SetupResult {
+  created: string[];
+  existed: string[];
+  checks: Check[];
+  skills: string[];
+  /** repo → session image found in the account */
+  adopted: Record<string, string>;
+}
+
+/** SetupState is what setup finds on this machine before asking anything. */
+export interface SetupState {
+  configured: boolean;
+  /** the saved answers, else the defaults */
+  draft: SetupDraft;
+  awsTools: SetupTool[];
+  gcpTools: SetupTool[];
+  /**
+   * AWSProfiles are the AWS CLI's profiles; GCPAccount and GCPProject
+   * gcloud's active login and project.
+   */
+  awsProfiles: string[];
+  gcpAccount?: string;
+  gcpProject?: string;
+  /**
+   * Agents are the agent config dirs here (".claude", ".codex"): the
+   * onboarding skill can go into each.
+   */
+  agents: string[];
+  /**
+   * ClaudeAuth says how claude authenticates without a token, if it can;
+   * NeedsClaudeToken that sessions need one (claude setup-token).
+   */
+  claudeAuth?: string;
+  needsClaudeToken: boolean;
+  hasClaudeToken: boolean;
+}
+
+/** SetupTool is a command-line tool setup needs. */
+export interface SetupTool {
+  name: string;
+  /** how to install it */
+  hint: string;
+  found: boolean;
+}
+
 /** SubCancelParams ends a subscription (sub.cancel). */
 export interface SubCancelParams {
   sub: string;
@@ -970,6 +1086,8 @@ export interface TermExit {
 /** TermLocalParams opens a terminal on this machine. */
 export interface TermLocalParams {
   purpose: LocalPurpose;
+  /** Profile is the AWS profile an aws-sso login is for. */
+  profile?: string;
   cols: number;
   rows: number;
 }
@@ -978,7 +1096,7 @@ export interface TermLocalParams {
  * LocalPurpose names what a local terminal runs. The app never names a
  * command itself: pier decides what each purpose runs.
  */
-export type LocalPurpose = "login" | "setup";
+export type LocalPurpose = "login" | "setup" | "aws-sso" | "gcloud-login" | "gh-login" | "claude-token";
 
 /** TermOpenParams opens a terminal tab into a session's tmux. */
 export interface TermOpenParams {
@@ -1220,6 +1338,16 @@ export interface Methods {
   "settings.machines": { params: MachinesParams; result: Machine[] };
   /** Validates and saves one setting, returning the page as it now reads. */
   "settings.set": { params: SettingParams; result: Settings };
+  /** The commands an admin runs when the person setting pier up can't create its groundwork. */
+  "setup.adminDoc": { params: CloudRef; result: LogText };
+  /** Finishes setup: the account's groundwork, the config, the checks, the onboarding skill, the account's existing images. */
+  "setup.apply": { params: SetupApplyParams; result: SetupResult };
+  /** Checks a cloud login: who it is (and the AWS profile's region). An expired one fails with kind auth_expired and the login that fixes it. */
+  "setup.check": { params: SetupCheckParams; result: SetupIdentity };
+  /** What a draft gives new sessions, row by row with costs, and the machines to choose from. */
+  "setup.defaults": { params: SetupDraft; result: SetupDefaults };
+  /** What setup finds on this machine: tools, cloud logins, agent config, and the saved answers (else the defaults). */
+  "setup.detect": { params: Empty; result: SetupState };
   /** Ends the server once every earlier request has answered and this reply is out. */
   "shutdown": { params: Empty; result: unknown };
   /** Hangs a terminal up. Its tmux windows keep running in the session. */

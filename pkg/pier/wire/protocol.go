@@ -192,13 +192,20 @@ type LocalPurpose string
 const (
 	LocalLogin LocalPurpose = "login" // the cloud login that fixes an expired session
 	LocalSetup LocalPurpose = "setup" // pier setup
+	// Logins setup asks for.
+	LocalAWSSSO      LocalPurpose = "aws-sso"      // aws sso login --profile <profile>
+	LocalGCloudLogin LocalPurpose = "gcloud-login" // gcloud auth login
+	LocalGHLogin     LocalPurpose = "gh-login"     // gh auth login
+	LocalClaudeToken LocalPurpose = "claude-token" // claude setup-token
 )
 
 // TermLocalParams opens a terminal on this machine.
 type TermLocalParams struct {
 	Purpose LocalPurpose `json:"purpose"`
-	Cols    int          `json:"cols"`
-	Rows    int          `json:"rows"`
+	// Profile is the AWS profile an aws-sso login is for.
+	Profile string `json:"profile,omitempty"`
+	Cols    int    `json:"cols"`
+	Rows    int    `json:"rows"`
 }
 
 // TermOpened is an open terminal.

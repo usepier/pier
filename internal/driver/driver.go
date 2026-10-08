@@ -235,6 +235,8 @@ type Check struct {
 	Name   string
 	OK     bool
 	Detail string
+	// Fix is the command that fixes a failed check, when one does.
+	Fix string
 }
 
 type SetupReport struct {

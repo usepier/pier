@@ -45,6 +45,8 @@ type Options struct {
 	Exit func()
 	// Log receives diagnostics (stderr in `pier api`). nil discards them.
 	Log io.Writer
+	// Pier is what setup builds drivers with before any config exists.
+	Pier pier.Options
 }
 
 // Server is one `pier api` session with one client.

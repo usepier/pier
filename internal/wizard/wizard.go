@@ -8,7 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,58 +27,6 @@ import (
 	"github.com/usepier/pier/pkg/pier"
 )
 
-// adminDoc is for devs without IAM rights: the exact groundwork their admin
-// must create (equivalent to what SetupOnce does).
-const adminDoc = `# pier groundwork on AWS — run with an account that can manage IAM + EC2.
-# Everything pier creates is tagged pier:managed=1. Removal: pier teardown.
-
-aws iam create-role --role-name pier-session \
-  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
-  --description "pier session instances: SSM access only" --tags Key=pier:managed,Value=1
-aws iam attach-role-policy --role-name pier-session \
-  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-aws iam create-instance-profile --instance-profile-name pier-session --tags Key=pier:managed,Value=1
-aws iam add-role-to-instance-profile --instance-profile-name pier-session --role-name pier-session
-aws ec2 create-security-group --group-name pier-egress-only \
-  --description "pier sessions: egress only, zero inbound" --vpc-id <default-vpc-id> \
-  --tag-specifications 'ResourceType=security-group,Tags=[{Key=pier:managed,Value=1}]'
-
-# Devs then need permissions for: ec2 run/start/stop/terminate/describe*,
-# ec2 create-tags (create's last act marks the session ready via tag —
-# without it every create fails and self-terminates),
-# ssm start-session + get-parameter, sts get-caller-identity,
-# iam:PassRole on pier-session (plus iam get-role + get-instance-profile,
-# read by pier doctor), and for direct connect (the default)
-# ec2 describe-security-group-rules + authorize/revoke-security-group-ingress
-# (pier keeps one TCP-22 rule per caller, scoped to their current public
-# IP /32; aws.direct = false forces the SSM tunnel and needs none of it).
-# pier resize adds ec2 modify-instance-attribute. pier bake adds
-# ec2 create-image + deregister-image + delete-snapshot. The vCPU headroom
-# display reads servicequotas get-service-quota (optional, degrades politely).
-`
-
-const gcpAdminDoc = `# pier groundwork on GCP — run with a project owner or editor.
-# Removal: pier teardown.
-
-gcloud services enable compute.googleapis.com iap.googleapis.com --project <project>
-gcloud compute firewall-rules create pier-allow-iap-ssh \
-  --project <project> --network default \
-  --direction INGRESS --action ALLOW --rules tcp:22 \
-  --source-ranges 35.235.240.0/20 --priority 999 --target-tags pier-session
-# The deny outranks permissive shared-network rules (default-allow-ssh is
-# open to the world) for pier VMs only.
-gcloud compute firewall-rules create pier-deny-ingress \
-  --project <project> --network default \
-  --direction INGRESS --action DENY --rules all \
-  --source-ranges 0.0.0.0/0 --priority 1000 --target-tags pier-session
-
-# Devs then need roles/compute.instanceAdmin.v1 (instances, disks, images,
-# metadata, labels) and roles/iap.tunnelResourceAccessor (the SSH tunnel).
-# Sessions run with no service account, so no serviceAccountUser grant is
-# needed. The CPU headroom display reads compute regions describe (covered
-# by instanceAdmin).
-`
-
 // Run is `pier setup`: cloud and account, then every default shown in one
 // block for the user to confirm or edit (nothing is applied silently), the
 // account groundwork, checks, and — inside a repo — the offer to bake its
@@ -87,11 +35,8 @@ gcloud compute firewall-rules create pier-deny-ingress \
 func Run(opts pier.Options, printAdminOnly bool) error {
 	if printAdminOnly {
 		// The doc matches the configured cloud; without a config, AWS.
-		if cfg, err := config.Load(); err == nil && cfg.Driver == "gcp-gce" {
-			fmt.Print(gcpAdminDoc)
-		} else {
-			fmt.Print(adminDoc)
-		}
+		cfg, _ := config.Load()
+		fmt.Print(pier.AdminDoc(cfg.Driver))
 		return nil
 	}
 	in := bufio.NewReader(os.Stdin)
@@ -100,12 +45,9 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 	fmt.Println("\n " + ui.Title.Render("⚓ pier setup") +
 		ui.Dim.Render("  sessions run on your own cloud account; nothing leaves it"))
 	fmt.Println()
-	for bin, hint := range map[string]string{
-		"ssh-keygen": "install OpenSSH",
-		"git":        "install git",
-	} {
-		if _, err := exec.LookPath(bin); err != nil {
-			return fmt.Errorf("%s not found — %s, then re-run `pier setup`", bin, hint)
+	for _, t := range pier.Tools("") {
+		if !t.Found {
+			return fmt.Errorf("%s not found — %s, then re-run `pier setup`", t.Name, t.Hint)
 		}
 	}
 
@@ -121,21 +63,21 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 		cloudDef = "gcp"
 	}
 	var groundwork string
-	switch strings.ToLower(ask(in, "cloud (aws / gcp)", cloudDef)) {
-	case "aws", "aws-ec2":
-		cfg.Driver = "aws-ec2"
+	cloud, err := pier.CloudDriver(ask(in, "cloud (aws / gcp)", cloudDef))
+	if err != nil {
+		return fmt.Errorf("unknown cloud — aws or gcp")
+	}
+	cfg.Driver = cloud
+	if cloud == "aws-ec2" {
 		if err := askAWS(in, &cfg); err != nil {
 			return err
 		}
 		groundwork = "IAM role + instance profile + egress-only security group"
-	case "gcp", "gcp-gce", "gce", "google":
-		cfg.Driver = "gcp-gce"
+	} else {
 		if err := askGCP(in, &cfg); err != nil {
 			return err
 		}
 		groundwork = "compute + IAP APIs, IAP-only firewall rules"
-	default:
-		return fmt.Errorf("unknown cloud — aws or gcp")
 	}
 	drv, err := pier.NewDriver(cfg, opts)
 	if err != nil {
@@ -144,10 +86,10 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 
 	// 2. defaults — shown together, confirmed or edited, never assumed.
 	if len(cfg.Secrets.Manifest) == 0 {
-		cfg.Secrets.Manifest = detectManifest()
+		cfg.Secrets.Manifest = pier.DetectManifest()
 	}
 	home, _ := os.UserHomeDir()
-	agents := AgentDirs(home)
+	agents := pier.AgentDirs(home)
 	skills := len(agents) > 0
 	fmt.Println("\n " + ui.Accent.Render("2 · defaults") + ui.Dim.Render("  for new sessions — all of it changes later in settings"))
 	printDefaults(cfg, drv, agents, skills)
@@ -157,7 +99,7 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 		skills = false // edited: the per-agent prompts below decide instead
 	}
 	if cfg.Secrets.ClaudeOAuthToken == "" {
-		if p := claudeSelfContained(); p != "" && slices.Contains(cfg.Secrets.Manifest, ".claude/settings.json") {
+		if p := pier.ClaudeSelfContained(); p != "" && slices.Contains(cfg.Secrets.Manifest, ".claude/settings.json") {
 			fmt.Printf("  %s claude auth: %s in ~/.claude/settings.json %s\n",
 				ui.Mark(true), p, ui.Dim.Render("— travels with the copied config, no token needed"))
 		} else if slices.ContainsFunc(cfg.Secrets.Manifest, func(m string) bool { return strings.HasPrefix(m, ".claude") }) {
@@ -171,8 +113,9 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 
 	// 3. groundwork
 	fmt.Println("\n " + ui.Accent.Render("3 · account") + ui.Dim.Render("  "+groundwork))
-	rep, err := drv.SetupOnce(ctx)
-	if err != nil && strings.Contains(err.Error(), "no default VPC") {
+	rep, err := pier.Groundwork(ctx, cfg, opts)
+	var se *pier.SetupError
+	if errors.As(err, &se) && se.Kind == "no_vpc" {
 		// Enterprise accounts routinely delete the default VPC. Without this
 		// prompt setup would abort before writing config, and the only other
 		// place to set aws.subnet is a config file that does not exist yet.
@@ -182,19 +125,19 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 			if drv, err = pier.NewDriver(cfg, opts); err != nil {
 				return err
 			}
-			rep, err = drv.SetupOnce(ctx)
+			rep, err = pier.Groundwork(ctx, cfg, opts)
 		}
 	}
 	if err != nil {
-		low := strings.ToLower(err.Error())
-		// Fresh GCP projects routinely have no billing account; enabling
-		// compute fails on it with a mouthful.
-		if strings.Contains(low, "billing") {
-			return fmt.Errorf("%w\n\nthe project has no billing account — link one (console.cloud.google.com/billing), then re-run `pier setup`", err)
-		}
-		// Only blame admin rights when it actually is a permissions error.
-		if strings.Contains(low, "accessdenied") || strings.Contains(low, "not authorized") || strings.Contains(low, "permission") {
-			return fmt.Errorf("%w\n\nno admin rights? `pier setup --print-admin` prints the commands for your admin", err)
+		if errors.As(err, &se) {
+			switch se.Kind {
+			case "billing":
+				// Fresh GCP projects routinely have no billing account;
+				// enabling compute fails on it with a mouthful.
+				return fmt.Errorf("%w\n\nthe project has no billing account — link one (console.cloud.google.com/billing), then re-run `pier setup`", err)
+			case "permission":
+				return fmt.Errorf("%w\n\nno admin rights? `pier setup --print-admin` prints the commands for your admin", err)
+			}
 		}
 		return err
 	}
@@ -210,17 +153,7 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 	// revert anything written meanwhile, including a `pier bake` finishing in
 	// another terminal. Untouched settings (connection mode, the image maps)
 	// come from disk, not from this stale copy.
-	if _, err := config.Update(func(c *config.Config) error {
-		c.Driver = cfg.Driver
-		c.IdleTimeout, c.UnattendedCap = cfg.IdleTimeout, cfg.UnattendedCap
-		c.Secrets = cfg.Secrets
-		c.Speed = cfg.Speed
-		c.AWS.Profile, c.AWS.Region = cfg.AWS.Profile, cfg.AWS.Region
-		c.AWS.InstanceType, c.AWS.DiskGiB, c.AWS.Subnet = cfg.AWS.InstanceType, cfg.AWS.DiskGiB, cfg.AWS.Subnet
-		c.GCP.Project, c.GCP.Zone = cfg.GCP.Project, cfg.GCP.Zone
-		c.GCP.MachineType, c.GCP.DiskGiB = cfg.GCP.MachineType, cfg.GCP.DiskGiB
-		return nil
-	}); err != nil {
+	if err := pier.SaveSetup(cfg); err != nil {
 		return err
 	}
 	fmt.Println(ui.Dim.Render("  wrote " + config.Path()))
@@ -265,29 +198,8 @@ func Run(opts pier.Options, printAdminOnly bool) error {
 // printDefaults shows every default a new session will use, with what it
 // costs, so the confirm that follows is informed.
 func printDefaults(cfg config.Config, drv driver.Driver, agents []string, skills bool) {
-	row := func(label, value, note string) {
-		fmt.Printf("    %-14s %s %s\n", label, value, ui.Dim.Render(note))
-	}
-	machine, disk := cfg.AWS.InstanceType, cfg.AWS.DiskGiB
-	if cfg.Driver == "gcp-gce" {
-		machine, disk = cfg.GCP.MachineType, cfg.GCP.DiskGiB
-	}
-	row("machine", machine, machineNote(drv, machine))
-	row("disk", fmt.Sprintf("%d GiB", disk), fmt.Sprintf("the part that survives parking, ~$%.0f/mo while parked", diskMonthly(cfg, disk)))
-	row("park after", cfg.IdleTimeout+" idle", "detached and quiet this long → the VM stops, the disk stays")
-	row("runaway cap", cfg.UnattendedCap, "parks even a busy agent once you've been away this long")
-	row("speed", profileLabel(cfg.Profile()), profileNote(cfg, cfg.Profile(), disk))
-	row("copied in", manifestSummary(cfg.Secrets.Manifest), "agent config each session starts with")
-	if len(agents) > 0 {
-		names := make([]string, len(agents))
-		for i, a := range agents {
-			names[i] = strings.TrimPrefix(a, ".")
-		}
-		state := "install for " + strings.Join(names, ", ")
-		if !skills {
-			state = "skip"
-		}
-		row("agent skill", state, "pier-onboard teaches your agent to set a repo up for pier")
+	for _, r := range pier.DefaultRows(cfg, drv, agents, skills) {
+		fmt.Printf("    %-14s %s %s\n", r.Label, r.Value, ui.Dim.Render(r.Note))
 	}
 	fmt.Println()
 }
@@ -309,16 +221,16 @@ func editDefaults(in *bufio.Reader, cfg *config.Config, drv driver.Driver) {
 		if n, err := strconv.Atoi(pick); err == nil && n >= 1 && n <= len(ms) {
 			pick = ms[n-1].Type
 		}
-		setOr(cfg, keyFor(cfg, "machine"), pick)
+		setOr(cfg, pier.MachineKey(*cfg), pick)
 	} else {
-		setOr(cfg, keyFor(cfg, "machine"), ask(in, "machine", *machine))
+		setOr(cfg, pier.MachineKey(*cfg), ask(in, "machine", *machine))
 	}
-	setOr(cfg, keyFor(cfg, "disk"), ask(in, "disk GiB (20 / 40 / 80 / 160)", strconv.Itoa(*disk)))
+	setOr(cfg, pier.DiskKey(*cfg), ask(in, "disk GiB (20 / 40 / 80 / 160)", strconv.Itoa(*disk)))
 	setOr(cfg, "idle_timeout", ask(in, "park after idle (15m / 30m / 1h / 2h / never)", cfg.IdleTimeout))
 	setOr(cfg, "unattended_cap", ask(in, "runaway cap (4h / 8h / 24h / never)", cfg.UnattendedCap))
 	fmt.Println(ui.Dim.Render("    speed profiles:"))
 	for _, p := range []string{"fast", "lean", "minimal"} {
-		fmt.Printf("      %-8s %s\n", profileLabel(p), ui.Dim.Render(profileNote(*cfg, p, *disk)))
+		fmt.Printf("      %-8s %s\n", pier.ProfileLabel(p), ui.Dim.Render(pier.ProfileNote(*cfg, p, *disk)))
 	}
 	def := cfg.Profile()
 	if def == "custom" {
@@ -358,95 +270,6 @@ func setOr(cfg *config.Config, key, val string) {
 	if err := config.Set(cfg, key, val); err != nil {
 		fmt.Println("  " + ui.Warn.Render("!") + " " + err.Error() + ui.Dim.Render(" — kept "+config.Get(*cfg, key)))
 	}
-}
-
-func keyFor(cfg *config.Config, what string) string {
-	prefix := "aws."
-	if cfg.Driver == "gcp-gce" {
-		prefix = "gcp."
-	}
-	switch what {
-	case "machine":
-		if prefix == "gcp." {
-			return "gcp.machine_type"
-		}
-		return "aws.instance_type"
-	default:
-		return prefix + "disk_gib"
-	}
-}
-
-func machineNote(drv driver.Driver, machine string) string {
-	for _, m := range drv.Machines(machine) {
-		if m.Type == machine {
-			return fmt.Sprintf("%s vCPU · %s GB · %s — resize any session later", m.CPU, m.Mem, m.Cost)
-		}
-	}
-	return "resize any session later"
-}
-
-func diskMonthly(cfg config.Config, gib int) float64 {
-	if cfg.Driver == "gcp-gce" {
-		return float64(gib) * 0.10
-	}
-	return float64(gib) * 0.095
-}
-
-func profileLabel(p string) string {
-	switch p {
-	case "fast":
-		return "Fast"
-	case "lean":
-		return "Lean"
-	case "minimal":
-		return "Minimal"
-	}
-	return "Custom"
-}
-
-// profileNote says what a speed profile does and costs while idle.
-func profileNote(cfg config.Config, p string, disk int) string {
-	switch p {
-	case "fast":
-		return fmt.Sprintf("image + a pool of 1 per repo · new sessions in ~25s · ~$%.0f/mo per repo idle", diskMonthly(cfg, disk)+2)
-	case "lean":
-		return "image per repo · new sessions in ~1-2 min · ~$2/mo per repo idle"
-	case "minimal":
-		return "nothing stored · every session runs the full setup · $0 idle"
-	}
-	return fmt.Sprintf("a pool of %d per repo, bake reminders %s", cfg.Speed.PoolSize, onOff(cfg.Speed.BakeReminders))
-}
-
-func onOff(b bool) string {
-	if b {
-		return "on"
-	}
-	return "off"
-}
-
-// manifestSummary names what's copied in, briefly: "Claude, Codex, tmux".
-func manifestSummary(m []string) string {
-	if len(m) == 0 {
-		return "nothing"
-	}
-	var parts []string
-	seen := map[string]bool{}
-	for _, e := range m {
-		name := e
-		switch {
-		case strings.HasPrefix(e, ".claude"):
-			name = "Claude"
-		case strings.HasPrefix(e, ".codex"):
-			name = "Codex"
-		case e == ".tmux.conf":
-			name = "tmux"
-		}
-		if !seen[name] {
-			seen[name] = true
-			parts = append(parts, name)
-		}
-	}
-	return strings.Join(parts, ", ") + " config"
 }
 
 // adoptImages records the account's existing session images and deletes
@@ -522,12 +345,9 @@ func printFill(log string, err error) {
 // askAWS: tool check, then profile (identity-checked immediately), region,
 // instance type. Everything detected becomes the prefilled default.
 func askAWS(in *bufio.Reader, cfg *config.Config) error {
-	for bin, hint := range map[string]string{
-		"aws":                    "brew install awscli",
-		"session-manager-plugin": "brew install --cask session-manager-plugin",
-	} {
-		if _, err := exec.LookPath(bin); err != nil {
-			return fmt.Errorf("%s not found — %s, then re-run `pier setup`", bin, hint)
+	for _, t := range pier.Tools("aws-ec2") {
+		if !t.Found && (t.Name == "aws" || t.Name == "session-manager-plugin") {
+			return fmt.Errorf("%s not found — %s, then re-run `pier setup`", t.Name, t.Hint)
 		}
 	}
 	if profiles, err := exec.Command("aws", "configure", "list-profiles").Output(); err == nil {
@@ -555,7 +375,7 @@ func askGCP(in *bufio.Reader, cfg *config.Config) error {
 	if _, err := exec.LookPath("gcloud"); err != nil {
 		return fmt.Errorf("gcloud not found — install the Google Cloud CLI (cloud.google.com/sdk/docs/install), then re-run `pier setup`")
 	}
-	acct, err := gcloudAccount()
+	acct, err := pier.GCloudAccount()
 	if err != nil {
 		fmt.Println("  "+ui.Mark(false), "no active gcloud account")
 		if !yes(in, "run `gcloud auth login` now?", true) {
@@ -563,7 +383,7 @@ func askGCP(in *bufio.Reader, cfg *config.Config) error {
 		}
 		login := exec.Command("gcloud", "auth", "login")
 		login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
-		if login.Run() != nil || func() error { acct, err = gcloudAccount(); return err }() != nil {
+		if login.Run() != nil || func() error { acct, err = pier.GCloudAccount(); return err }() != nil {
 			return fmt.Errorf("login did not stick — run `gcloud auth login`, then re-run `pier setup`")
 		}
 	}
@@ -582,23 +402,11 @@ func askGCP(in *bufio.Reader, cfg *config.Config) error {
 	if cfg.GCP.Project == "" {
 		return fmt.Errorf("pier needs a project — create one at console.cloud.google.com, then re-run `pier setup`")
 	}
-	if out, err := exec.Command("gcloud", "projects", "describe", cfg.GCP.Project,
-		"--format", "value(projectId)").CombinedOutput(); err != nil {
-		return fmt.Errorf("cannot access project %q: %s", cfg.GCP.Project, strings.TrimSpace(string(out)))
+	if err := pier.CheckGCPProject(cfg.GCP.Project); err != nil {
+		return err
 	}
 	cfg.GCP.Zone = ask(in, "zone", cfg.GCP.Zone)
 	return nil
-}
-
-// gcloudAccount is the active gcloud login, erroring when there is none.
-func gcloudAccount() (string, error) {
-	out, err := exec.Command("gcloud", "auth", "list",
-		"--filter=status:ACTIVE", "--format=value(account)").Output()
-	acct, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	if err != nil || acct == "" {
-		return "", fmt.Errorf("no active gcloud account")
-	}
-	return acct, nil
 }
 
 // checkIdentity fails fast on dead credentials — right after the profile
@@ -640,7 +448,7 @@ func checkIdentity(in *bufio.Reader, profile string) (string, error) {
 	if err == nil {
 		return arn, nil
 	}
-	if low := strings.ToLower(err.Error()); strings.Contains(low, "sso") && (strings.Contains(low, "expired") || strings.Contains(low, "refresh")) {
+	if pier.SSOExpired(err.Error()) {
 		fmt.Printf("  %s the SSO session for profile %q has expired\n", ui.Mark(false), profile)
 		if yes(in, "run `aws sso login --profile "+profile+"` now?", true) {
 			login := exec.Command("aws", "sso", "login", "--profile", profile)
@@ -652,64 +460,6 @@ func checkIdentity(in *bufio.Reader, profile string) (string, error) {
 		return "", fmt.Errorf("profile %q needs `aws sso login --profile %s`, then re-run `pier setup`", profile, profile)
 	}
 	return "", fmt.Errorf("credentials for profile %q aren't working: %w", profile, err)
-}
-
-// claudeSelfContained reports whether ~/.claude/settings.json's env block
-// alone authenticates claude on a fresh VM (Foundry/API-key setups — the
-// file travels with the manifest). Bedrock/Vertex/Entra need cloud creds
-// that deliberately never enter sessions, so those still get the token
-// prompt.
-func claudeSelfContained() string {
-	home, _ := os.UserHomeDir()
-	b, err := os.ReadFile(filepath.Join(home, ".claude/settings.json"))
-	if err != nil {
-		return ""
-	}
-	var s struct {
-		Env map[string]string `json:"env"`
-	}
-	if json.Unmarshal(b, &s) != nil {
-		return ""
-	}
-	switch {
-	case s.Env["CLAUDE_CODE_USE_FOUNDRY"] == "1" && s.Env["ANTHROPIC_FOUNDRY_API_KEY"] != "":
-		return "foundry deployment + api key"
-	case s.Env["ANTHROPIC_API_KEY"] != "":
-		return "anthropic api key"
-	case s.Env["ANTHROPIC_AUTH_TOKEN"] != "":
-		return "auth token"
-	}
-	return ""
-}
-
-// detectManifest proposes $HOME-relative agent config worth carrying into
-// sessions (only entries that exist).
-func detectManifest() []string {
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		".claude/CLAUDE.md",
-		".claude/settings.json",
-		".claude/agents",
-		".claude/commands",
-		".claude/skills",
-		".claude/plugins",
-		".claude/.credentials.json", // Linux; macOS uses the token flow
-		".codex/config.toml",
-		".codex/auth.json",
-		".codex/AGENTS.md",
-		".codex/prompts",
-		".codex/skills",
-		// NOT .codex/plugins: a machine-specific runtime cache (hundreds of
-		// MB); config.toml declares the plugins and codex re-materializes.
-		".tmux.conf", // absent → bootstrap seeds mouse mode + deep history
-	}
-	var found []string
-	for _, c := range candidates {
-		if _, err := os.Stat(filepath.Join(home, c)); err == nil {
-			found = append(found, c)
-		}
-	}
-	return found
 }
 
 func ask(in *bufio.Reader, prompt, def string) string {

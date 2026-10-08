@@ -633,6 +633,15 @@ in-flight work three seconds to see its cancellation.
   comments, for the composer. `sessions.removeMerged` removes a merged
   session only when everything in it is committed and its head is the
   merged one.
+- **Setup.** `pier setup`'s steps, for a form: `setup.detect` (tools,
+  cloud logins, agent config, the saved answers), `setup.check` (who a
+  login is; an expired one is kind `auth_expired` with the login that
+  fixes it), `setup.defaults` (what a draft gives new sessions, with
+  costs), `setup.apply` (groundwork, config, checks, the onboarding skill;
+  kinds `no_default_vpc`, `no_billing` and `no_permission` say what to do)
+  and `setup.adminDoc`. Logins run in local terminals (`term.openLocal`).
+  `doctor.run` and `pier doctor --json` give each check the command that
+  fixes it.
 - **Errors** carry `data.kind` (`auth_expired` with the login command that
   fixes it, `not_set_up`, `parked`, `no_key`, …) so clients never parse
   messages.
@@ -670,7 +679,7 @@ pier pool [set <n> | fill | drain [repo]]  the cwd repo's warm pool
 pier setup              wizard (--print-admin for the no-IAM-rights path,
                         --skills to refresh the bundled agent skill only)
 pier bake               build/refresh the repo's session image (--toolchain-only)
-pier doctor             checks
+pier doctor             checks (--json: each with the command that fixes it)
 pier teardown           remove account groundwork
 ```
 
