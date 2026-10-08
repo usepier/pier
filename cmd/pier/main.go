@@ -121,7 +121,8 @@ var helpSections = []helpSection{
 }
 
 func main() {
-	args := os.Args[1:]
+	args := takeEventsFlag(os.Args[1:])
+	defer jobEvents.Finish(nil, "")
 	if len(args) == 0 {
 		cmdTUI()
 		return
@@ -186,7 +187,30 @@ func printUsage() {
 
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, ui.Bad.Render("pier:"), err)
+	jobEvents.Finish(err, "")
 	os.Exit(1)
+}
+
+// jobEvents is set when this process runs as a background job (the hidden
+// --events flag a frontend's Start* adds): progress also lands there as
+// JSON lines, ending in a done or failed event.
+var jobEvents *pier.EventLog
+
+// takeEventsFlag removes `--events <path>` from args, opening the event
+// file it names.
+func takeEventsFlag(args []string) []string {
+	out := args[:0:0]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--events" && i+1 < len(args) {
+			if l, err := pier.OpenEventLog(args[i+1]); err == nil {
+				jobEvents = l
+			}
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
 }
 
 func open() *pier.Client {
@@ -209,6 +233,7 @@ func repoRoot() string {
 // progress renders API events as the CLI's step lines, each with the time
 // since the operation began.
 func progress(e pier.Event) {
+	jobEvents.Write(e)
 	elapsed := ui.Dim.Render(fmt.Sprintf("  +%s", e.Elapsed.Round(time.Second)))
 	switch e.Kind {
 	case pier.EventWarn:
@@ -220,7 +245,10 @@ func progress(e pier.Event) {
 	}
 }
 
-func stepLine(msg string) { fmt.Println(ui.Step(msg)) }
+func stepLine(msg string) {
+	jobEvents.Write(pier.Event{Kind: pier.EventStep, Message: msg})
+	fmt.Println(ui.Step(msg))
+}
 
 // --- new session ---------------------------------------------------------------
 

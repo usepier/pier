@@ -552,6 +552,13 @@ in-flight work three seconds to see its cancellation.
 - **Errors** carry `data.kind` (`auth_expired` with the login command that
   fixes it, `not_set_up`, `parked`, `no_key`, …) so clients never parse
   messages.
+- **Jobs.** Creates, bakes, pool fills and resizes run as detached pier
+  processes, so they finish whatever happens to the app. Each writes its
+  human log plus a JSON-lines event file ending in a `done` or `failed`
+  event, and a registry entry under `~/.config/pier/jobs/`. `job.watch`
+  streams one; `jobs.list` finds them again after the app restarts;
+  `jobs.cancel` stops one the way ctrl-c would, cleanup included. A job
+  whose process died without a final event reads `lost`.
 - **Shapes** live in `pkg/pier/wire`. `make api-types` regenerates the Mac
   app's TypeScript from them (`internal/api/tsgen`), and CI fails when the
   generated file is stale.

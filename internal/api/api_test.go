@@ -27,6 +27,7 @@ type fake struct {
 	lists    int
 	sweeps   int
 	resumed  []string
+	created  []pier.CreateRequest
 	block    chan struct{} // Resume waits on it when set
 }
 
@@ -96,7 +97,22 @@ func (f *fake) Doctor(context.Context) []pier.Check {
 	return []pier.Check{{Name: "aws cli", OK: true}, {Name: "ssm plugin", Detail: "missing"}}
 }
 func (f *fake) ReauthCommand(error) *exec.Cmd { return nil }
-func (f *fake) DiskMonthlyUSD() float64       { return 3.8 }
+func (f *fake) StartCreate(req pier.CreateRequest) (pier.Job, error) {
+	f.mu.Lock()
+	f.created = append(f.created, req)
+	f.mu.Unlock()
+	return pier.Job{ID: "j1", Kind: pier.JobCreate, Session: req.Branch, State: pier.JobRunning}, nil
+}
+func (f *fake) StartBake(string, *bool) (pier.Job, error) {
+	return pier.Job{ID: "j2", Kind: pier.JobBake}, nil
+}
+func (f *fake) StartFill(string) (pier.Job, error) {
+	return pier.Job{ID: "j3", Kind: pier.JobFill}, nil
+}
+func (f *fake) StartResize(s pier.Session, t string) (pier.Job, error) {
+	return pier.Job{ID: "j4", Kind: pier.JobResize, Session: s.Name}, nil
+}
+func (f *fake) DiskMonthlyUSD() float64 { return 3.8 }
 func (f *fake) Resume(ctx context.Context, s pier.Session) error {
 	if f.block != nil {
 		select {

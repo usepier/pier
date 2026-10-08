@@ -134,16 +134,13 @@ func CreateLogPath(branch string) string {
 }
 
 // SpawnCreate runs a create for branch in the background (a detached
-// `pier <branch> --detach` working in repoRoot) and returns its log path.
+// `pier new <branch> --detach` working in repoRoot; `new` keeps a branch
+// named like a subcommand a branch) and returns its log path.
 // It survives the frontend closing; the session lists as creating until
 // it's ready.
 func (c *Client) SpawnCreate(repoRoot, branch string) (string, error) {
-	if repoRoot == "" {
-		return "", ErrNotInRepo
-	}
-	logPath := CreateLogPath(branch)
-	// `new` keeps a branch named like a subcommand (ls, logs, ...) a branch.
-	return logPath, spawnDetached(repoRoot, logPath, false, "new", branch, "--detach")
+	j, err := c.StartCreate(CreateRequest{RepoRoot: repoRoot, Branch: branch})
+	return j.Log, err
 }
 
 // bury records a failed create. Best-effort: the create already failed and

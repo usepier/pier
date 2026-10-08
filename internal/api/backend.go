@@ -35,6 +35,10 @@ type Backend interface {
 	Doctor(ctx context.Context) []pier.Check
 	ReauthCommand(err error) *exec.Cmd
 	DiskMonthlyUSD() float64
+	StartCreate(req pier.CreateRequest) (pier.Job, error)
+	StartBake(repoRoot string, include *bool) (pier.Job, error)
+	StartFill(repoRoot string) (pier.Job, error)
+	StartResize(s pier.Session, machineType string) (pier.Job, error)
 }
 
 var _ Backend = (*pier.Client)(nil)

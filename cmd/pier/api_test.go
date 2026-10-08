@@ -37,3 +37,22 @@ func TestTakeStdoutGuardsTheProtocol(t *testing.T) {
 		t.Errorf("stray output must reach stderr, got %q", errb.String())
 	}
 }
+
+// A background job's hidden --events flag is consumed before dispatch and
+// opens the job's event file, wherever it sits on the command line.
+func TestTakeEventsFlag(t *testing.T) {
+	path := t.TempDir() + "/j.events"
+	defer func() { jobEvents = nil }()
+	got := takeEventsFlag([]string{"new", "feat", "--events", path, "--detach"})
+	if len(got) != 3 || got[0] != "new" || got[1] != "feat" || got[2] != "--detach" {
+		t.Errorf("args = %v", got)
+	}
+	if jobEvents == nil {
+		t.Fatal("the event file must open")
+	}
+	jobEvents.Finish(nil, "done")
+	b, _ := os.ReadFile(path)
+	if !bytes.Contains(b, []byte(`"kind":"done"`)) {
+		t.Errorf("event file = %q", b)
+	}
+}

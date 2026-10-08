@@ -206,9 +206,11 @@ type Check struct {
 type EventKind string
 
 const (
-	EventStep EventKind = "step" // a milestone
-	EventNote EventKind = "note" // detail worth showing
-	EventWarn EventKind = "warn" // something went sideways but work continues
+	EventStep   EventKind = "step"   // a milestone
+	EventNote   EventKind = "note"   // detail worth showing
+	EventWarn   EventKind = "warn"   // something went sideways but work continues
+	EventDone   EventKind = "done"   // a job's last event: it finished
+	EventFailed EventKind = "failed" // a job's last event: it failed, Message says why
 )
 
 // Event is one progress line of a long operation.
@@ -252,4 +254,46 @@ type ErrorData struct {
 	Message string    `json:"message"`
 	// Login is the interactive login that fixes an auth_expired error.
 	Login []string `json:"login,omitempty"`
+}
+
+// JobKind names what a background job does.
+type JobKind string
+
+const (
+	JobCreate JobKind = "create"
+	JobBake   JobKind = "bake"
+	JobFill   JobKind = "fill"
+	JobResize JobKind = "resize"
+)
+
+// JobState is where a background job is.
+type JobState string
+
+const (
+	JobRunning JobState = "running"
+	JobDone    JobState = "done"
+	JobFailed  JobState = "failed"
+	JobLost    JobState = "lost" // its process ended without reporting how
+)
+
+// Job is long work running as its own process, so it finishes even if the
+// app quits: a create, a bake, a pool fill, a resize.
+type Job struct {
+	ID        string     `json:"id"`
+	Kind      JobKind    `json:"kind"`
+	Repo      string     `json:"repo,omitempty"`
+	Session   string     `json:"session,omitempty"`
+	State     JobState   `json:"state"`
+	StartedAt time.Time  `json:"startedAt"`
+	EndedAt   *time.Time `json:"endedAt,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	Summary   string     `json:"summary,omitempty"`
+	Log       string     `json:"log"` // the human log file
+}
+
+// JobUpdate is a job's state with its progress events: all of them in a
+// watch's snapshot, the new ones in each update.
+type JobUpdate struct {
+	Job    Job     `json:"job"`
+	Events []Event `json:"events"`
 }

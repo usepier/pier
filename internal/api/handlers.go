@@ -41,11 +41,14 @@ func init() {
 		func(ctx context.Context, s *Server, _ *Call, p wire.SessionRef) (*wire.Empty, error) {
 			return nil, s.withSession(ctx, p.ID, func(be Backend, sess pier.Session) error { return be.Remove(ctx, sess) })
 		})
-	handle("sessions.resize", "Changes a session's machine type: one park and resume, disk intact.",
-		func(ctx context.Context, s *Server, _ *Call, p wire.ResizeParams) (*wire.Empty, error) {
-			return nil, s.withSession(ctx, p.ID, func(be Backend, sess pier.Session) error {
-				return be.Resize(ctx, sess, p.MachineType)
+	handle("sessions.resize", "Changes a session's machine type in a background job: one park and resume, disk intact.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.ResizeParams) (wire.Job, error) {
+			var job pier.Job
+			err := s.withSession(ctx, p.ID, func(be Backend, sess pier.Session) (err error) {
+				job, err = be.StartResize(sess, p.MachineType)
+				return err
 			})
+			return wireJob(job), err
 		})
 	handle("sessions.machines", "The machine types a session can resize to: same CPU architecture, with shape and cost.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.SessionRef) ([]wire.Machine, error) {

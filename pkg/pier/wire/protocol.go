@@ -132,3 +132,41 @@ func TimeOrNil(t time.Time) *time.Time {
 	u := t.UTC()
 	return &u
 }
+
+// CreateParams starts a session from a linked checkout's HEAD, uncommitted
+// edits included.
+type CreateParams struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	Base   string `json:"base,omitempty"` // default HEAD
+	// IdleMs and CapMs override the idle timeout and runaway cap for this
+	// session; 0 means never, absent means the setting.
+	IdleMs *int64 `json:"idleMs,omitempty"`
+	CapMs  *int64 `json:"capMs,omitempty"`
+	NoPool bool   `json:"noPool,omitempty"`
+}
+
+// BakeParams starts a bake of a linked checkout's repo.
+type BakeParams struct {
+	Path string `json:"path"`
+	// IncludeRepo overrides the image setting for this bake: true prebuilds
+	// the checkout, false keeps it to toolchains. Absent keeps the setting.
+	IncludeRepo *bool `json:"includeRepo,omitempty"`
+}
+
+// JobRef names a background job.
+type JobRef struct {
+	ID string `json:"id"`
+}
+
+// LogParams reads the tail of a log.
+type LogParams struct {
+	ID    string `json:"id"`
+	Lines int    `json:"lines,omitempty"` // default 500
+}
+
+// LogText is a log's tail.
+type LogText struct {
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"` // older lines were left out
+}

@@ -507,11 +507,8 @@ func PoolLogPath(repo string) string {
 // SpawnRefill re-execs the binary's hidden refill command as a detached
 // child working in repoRoot, so a refill survives the frontend exiting.
 func (c *Client) SpawnFill(repoRoot string) (string, error) {
-	logPath := PoolLogPath(filepath.Base(repoRoot))
-	// Append, never truncate: a claim can spawn a refill while the previous
-	// one is still writing here, and clobbering a live writer's log turns
-	// both runs into confetti. Refills are rare enough that growth is noise.
-	return logPath, spawnDetached(repoRoot, logPath, true, "pool", "fill")
+	j, err := c.StartFill(repoRoot)
+	return j.Log, err
 }
 
 // BakeLogPath is where a background bake of repo writes.
@@ -522,17 +519,11 @@ func BakeLogPath(repo string) string {
 // SpawnBake runs `pier bake` for the repo at repoRoot in the background and
 // returns its log path. BakeRunning reports on it while it runs.
 func (c *Client) SpawnBake(repoRoot string) (string, error) {
-	repo := filepath.Base(repoRoot)
-	if BakeRunning(repo) {
-		return BakeLogPath(repo), fmt.Errorf("a bake of %s is already running", repo)
-	}
-	logPath := BakeLogPath(repo)
-	pid, err := spawnDetachedPID(repoRoot, logPath, false, "bake")
+	j, err := c.StartBake(repoRoot, nil)
 	if err != nil {
-		return "", err
+		return BakeLogPath(filepath.Base(repoRoot)), err
 	}
-	_ = os.WriteFile(bakePIDPath(repo), []byte(strconv.Itoa(pid)), 0o600)
-	return logPath, nil
+	return j.Log, nil
 }
 
 // BakeRunning reports whether a bake of repo started from this machine is
@@ -561,12 +552,8 @@ func bakePIDPath(repo string) string {
 	return filepath.Join(config.Dir(), "logs", "bake-"+repo+".pid")
 }
 
-// spawnDetached starts the pier binary with args in its own session,
-// output to logPath, working in dir.
-func spawnDetached(dir, logPath string, appendLog bool, args ...string) error {
-	_, err := spawnDetachedPID(dir, logPath, appendLog, args...)
-	return err
-}
+// spawnDetachedPID starts the pier binary with args in its own session,
+// output to logPath, working in dir, and returns its pid.
 
 func spawnDetachedPID(dir, logPath string, appendLog bool, args ...string) (int, error) {
 	exe, err := os.Executable()
