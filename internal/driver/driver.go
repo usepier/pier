@@ -62,6 +62,32 @@ type Session struct {
 	// LogPath points a tombstone at its create log. Empty when the create ran
 	// in the foreground and its output went to the terminal instead.
 	LogPath string
+
+	// From the supervisor's beacon, for running sessions (zero otherwise):
+	// its load, who listens on which port, and when it parks — ParkAt while
+	// quiet and detached, CapAt while it works with nobody attached.
+	Res    *Resources
+	Ports  []Port
+	ParkAt time.Time
+	CapAt  time.Time
+}
+
+// Resources is a session's load. Sizes are bytes; CPU is % of all CPUs.
+type Resources struct {
+	CPU       float64
+	CPUs      int
+	MemUsed   uint64
+	MemTotal  uint64
+	DiskUsed  uint64
+	DiskTotal uint64
+	Load1     float64
+}
+
+// Port is a port a session listens on and the process holding it.
+type Port struct {
+	Port    int
+	Process string
+	PID     int
 }
 
 // Machine is one row in the TUI's resize picker: a curated instance type

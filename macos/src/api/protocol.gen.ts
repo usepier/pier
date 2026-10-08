@@ -349,6 +349,34 @@ export interface Session {
   failReason?: string;
   /** failed creates: their create log */
   logPath?: string;
+  /**
+   * From the supervisor, while running: load, listening ports, and when it
+   * stops on its own (parkAt while quiet and detached, capAt while it
+   * works unattended).
+   */
+  resources?: Resources;
+  ports?: Port[];
+  parkAt?: string;
+  capAt?: string;
+}
+
+/** Port is a port a session listens on and who holds it. */
+export interface Port {
+  port: number;
+  process: string;
+  pid?: number;
+}
+
+/** Resources is a session's load. Sizes are bytes. */
+export interface Resources {
+  /** % of all CPUs */
+  cpu: number;
+  cpus: number;
+  memUsed: number;
+  memTotal: number;
+  diskUsed: number;
+  diskTotal: number;
+  load1: number;
 }
 
 /** SessionRef names a session by id. */
@@ -572,6 +600,8 @@ export interface Methods {
   "sessions.keep": { params: SessionRef; result: null };
   /** The machine types a session can resize to: same CPU architecture, with shape and cost. */
   "sessions.machines": { params: SessionRef; result: Machine[] };
+  /** Parks a running session now; its tmux layout is saved on the way down. */
+  "sessions.park": { params: SessionRef; result: null };
   /** Destroys a session and its disk, or dismisses a failed create. */
   "sessions.remove": { params: SessionRef; result: null };
   /** Changes a session's machine type in a background job: one park and resume, disk intact. */

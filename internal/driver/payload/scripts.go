@@ -199,7 +199,10 @@ const installSupervisor = `sudo install -m 0755 /tmp/pier-supervisor /usr/local/
 sudo tee /etc/systemd/system/pier-supervisor.service >/dev/null <<'UNIT'
 [Unit]
 Description=pier session supervisor (self-park watchdog)
-After=multi-user.target
+# Stops before pier-restore.service at shutdown (the reverse of start
+# order), so its last snapshot of the layout runs while the tmux server
+# that unit holds is still up.
+After=multi-user.target pier-restore.service
 
 [Service]
 User=agent

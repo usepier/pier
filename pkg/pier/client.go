@@ -31,11 +31,13 @@ import (
 
 // Re-exported so frontends name pier's types without importing internals.
 type (
-	Session = driver.Session
-	State   = driver.State
-	Machine = driver.Machine
-	Check   = driver.Check
-	Quota   = driver.Quota
+	Session   = driver.Session
+	State     = driver.State
+	Machine   = driver.Machine
+	Resources = driver.Resources
+	Port      = driver.Port
+	Check     = driver.Check
+	Quota     = driver.Quota
 )
 
 const (

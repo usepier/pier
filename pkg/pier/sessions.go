@@ -110,12 +110,7 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 				// plain "running".
 				return
 			}
-			var st struct {
-				State         string `json:"state"`
-				Bootstrapping bool   `json:"bootstrapping"`
-				Strained      bool   `json:"strained"`
-				Setup         string `json:"setup"`
-			}
+			var st beacon
 			if json.Unmarshal([]byte(out), &st) != nil {
 				return
 			}
@@ -135,9 +130,54 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 			}
 			s.Strained = st.Strained
 			s.Setup = st.Setup
+			st.apply(s)
 		}(&sessions[i])
 	}
 	wg.Wait()
+}
+
+// beacon is /run/pier/status.json as the supervisor writes it. Fields newer
+// supervisors added are absent from older ones' beacons and stay zero.
+type beacon struct {
+	State         string `json:"state"`
+	Bootstrapping bool   `json:"bootstrapping"`
+	Strained      bool   `json:"strained"`
+	Setup         string `json:"setup"`
+	Ports         []struct {
+		Port    int    `json:"port"`
+		Process string `json:"process"`
+		PID     int    `json:"pid"`
+	} `json:"ports"`
+	Res *struct {
+		CPU       float64 `json:"cpu"`
+		CPUs      int     `json:"cpus"`
+		MemUsed   uint64  `json:"mem_used"`
+		MemTotal  uint64  `json:"mem_total"`
+		DiskUsed  uint64  `json:"disk_used"`
+		DiskTotal uint64  `json:"disk_total"`
+		Load1     float64 `json:"load1"`
+	} `json:"res"`
+	ParkAt *time.Time `json:"park_at"`
+	CapAt  *time.Time `json:"cap_at"`
+}
+
+// apply copies the beacon's load, ports and countdowns onto s.
+func (b beacon) apply(s *Session) {
+	if b.Res != nil {
+		r := Resources(*b.Res)
+		s.Res = &r
+	}
+	s.Ports = nil
+	for _, p := range b.Ports {
+		s.Ports = append(s.Ports, Port{Port: p.Port, Process: p.Process, PID: p.PID})
+	}
+	s.ParkAt, s.CapAt = time.Time{}, time.Time{}
+	if b.ParkAt != nil {
+		s.ParkAt = *b.ParkAt
+	}
+	if b.CapAt != nil {
+		s.CapAt = *b.CapAt
+	}
 }
 
 // mergeTombstones appends a failed row per tombstone and reports the ones the
@@ -258,6 +298,20 @@ func (c *Client) Resize(ctx context.Context, s Session, machineType string) erro
 		return err // resizing mid-create would stop the instance under its bootstrap
 	}
 	return c.drv.Resize(ctx, s.ID, machineType)
+}
+
+// Park stops a running session now, as its own idle park would: the
+// instance stops, the disk stays, and the supervisor saves the tmux layout
+// on its way down.
+func (c *Client) Park(ctx context.Context, s Session) error {
+	if err := CheckReady(s); err != nil {
+		return err
+	}
+	if s.State == driver.StateParked {
+		return nil
+	}
+	c.forget(s.ID)
+	return c.drv.Park(ctx, s.ID)
 }
 
 // Machines is the resize catalog for a session: same-arch types with shape
@@ -448,7 +502,45 @@ func CarryStatus(prev, next []Session) []Session {
 		case driver.StateRunning, driver.StateWorking, driver.StateIdle:
 			next[i].State, next[i].Attached = p.State, p.Attached
 			next[i].Strained, next[i].Setup = p.Strained, p.Setup
+			next[i].Res, next[i].Ports = p.Res, p.Ports
+			next[i].ParkAt, next[i].CapAt = p.ParkAt, p.CapAt
 		}
 	}
 	return next
+}
+
+// Countdown says when a running session stops on its own: "parks in 12m"
+// while it is quiet and detached, "runaway cap in 3h" while it works with
+// nobody attached; "" otherwise.
+func Countdown(s Session, now time.Time) string {
+	switch {
+	case !s.ParkAt.IsZero():
+		return "parks in " + shortDur(s.ParkAt.Sub(now))
+	case !s.CapAt.IsZero():
+		return "runaway cap in " + shortDur(s.CapAt.Sub(now))
+	}
+	return ""
+}
+
+func shortDur(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "under a minute"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
+// Load is a running session's load in one line: "cpu 34% · mem 1.2/4.0 GiB
+// · disk 12/40 GiB"; "" before the supervisor has reported it.
+func Load(s Session) string {
+	r := s.Res
+	if r == nil {
+		return ""
+	}
+	gib := func(b uint64) float64 { return float64(b) / (1 << 30) }
+	return fmt.Sprintf("cpu %.0f%% · mem %.1f/%.1f GiB · disk %.0f/%.0f GiB",
+		r.CPU, gib(r.MemUsed), gib(r.MemTotal), gib(r.DiskUsed), gib(r.DiskTotal))
 }

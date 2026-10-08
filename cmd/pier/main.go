@@ -83,6 +83,7 @@ var helpSections = []helpSection{
 			{"pier attach <session>", "attach; a parked session resumes with its tmux restored"},
 			{"pier logs <session> [-f]", "show or follow the setup log"},
 			{"pier keep <session>", "never park this session when idle"},
+			{"pier park <session>", "park a session now (attach wakes it)"},
 			{"pier resize <session> <type>", "change the VM size (same CPU architecture)"},
 			{"pier rm <session> [-f]", "destroy a session and its disk"},
 		},
@@ -146,6 +147,8 @@ func main() {
 		cmdRM(args[1:])
 	case "keep":
 		cmdKeep(args[1:])
+	case "park":
+		cmdPark(args[1:])
 	case "resize":
 		cmdResize(args[1:])
 	case "repos":
@@ -702,6 +705,22 @@ func cmdKeep(args []string) {
 		fatal(err)
 	}
 	fmt.Println(ui.OK.Render(s.Name+" pinned") + ui.Dim.Render(" — never parks when idle (the runaway cap still applies)"))
+}
+
+func cmdPark(args []string) {
+	if len(args) != 1 {
+		fatal(fmt.Errorf("usage: pier park <session>"))
+	}
+	c := open()
+	s := match(c, args[0])
+	if s.State == pier.StateParked {
+		fmt.Println(ui.Dim.Render(s.Name + " is already parked"))
+		return
+	}
+	if err := c.Park(context.Background(), s); err != nil {
+		fatal(err)
+	}
+	fmt.Println(ui.OK.Render(s.Name+" parking") + ui.Dim.Render(" — disk only from here; attach wakes it with its tmux windows back"))
 }
 
 func cmdResize(args []string) {

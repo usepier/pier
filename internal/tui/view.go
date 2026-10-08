@@ -224,6 +224,12 @@ func (m model) sessionDetail(w, h int) string {
 		lines = append(lines, field("machine", machine))
 	}
 	lines = append(lines, field("created", ago(s.Created)))
+	if l := pier.Load(s); l != "" {
+		lines = append(lines, field("load", l))
+	}
+	if c := pier.Countdown(s, time.Now()); c != "" {
+		lines = append(lines, field("idle", c))
+	}
 	switch s.Setup {
 	case "running":
 		lines = append(lines, field("setup", sAccent.Render("running")+sDim.Render(" — l follows it")))

@@ -53,6 +53,31 @@ type Session struct {
 	HasKey      bool       `json:"hasKey"`               // this machine can reach it
 	FailReason  string     `json:"failReason,omitempty"` // failed creates only
 	LogPath     string     `json:"logPath,omitempty"`    // failed creates: their create log
+	// From the supervisor, while running: load, listening ports, and when it
+	// stops on its own (parkAt while quiet and detached, capAt while it
+	// works unattended).
+	Resources *Resources `json:"resources,omitempty"`
+	Ports     []Port     `json:"ports,omitempty"`
+	ParkAt    *time.Time `json:"parkAt,omitempty"`
+	CapAt     *time.Time `json:"capAt,omitempty"`
+}
+
+// Resources is a session's load. Sizes are bytes.
+type Resources struct {
+	CPU       float64 `json:"cpu"` // % of all CPUs
+	CPUs      int     `json:"cpus"`
+	MemUsed   uint64  `json:"memUsed"`
+	MemTotal  uint64  `json:"memTotal"`
+	DiskUsed  uint64  `json:"diskUsed"`
+	DiskTotal uint64  `json:"diskTotal"`
+	Load1     float64 `json:"load1"`
+}
+
+// Port is a port a session listens on and who holds it.
+type Port struct {
+	Port    int    `json:"port"`
+	Process string `json:"process"`
+	PID     int    `json:"pid,omitempty"`
 }
 
 // Checkout is a linked local clone the app creates, bakes and fills from.

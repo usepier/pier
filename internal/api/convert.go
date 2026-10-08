@@ -11,7 +11,7 @@ import (
 )
 
 func wireSession(be Backend, s pier.Session) wire.Session {
-	return wire.Session{
+	w := wire.Session{
 		ID: s.ID, Name: s.Name, Repo: s.Repo, Origin: s.Origin, Base: s.Base, Branch: s.Branch,
 		State: wire.SessionState(s.State), Label: pier.Label(s), Activity: pier.Activity(s),
 		Attached: s.Attached, Strained: s.Strained, Setup: s.Setup,
@@ -19,7 +19,16 @@ func wireSession(be Backend, s pier.Session) wire.Session {
 		CreatedAt: wire.TimeOrNil(s.Created), Pooled: s.PoolGen != "",
 		HasKey:     s.State == pier.StateFailed || be.HasKey(s),
 		FailReason: s.FailReason, LogPath: s.LogPath,
+		ParkAt: wire.TimeOrNil(s.ParkAt), CapAt: wire.TimeOrNil(s.CapAt),
 	}
+	if r := s.Res; r != nil {
+		w.Resources = &wire.Resources{CPU: r.CPU, CPUs: r.CPUs, MemUsed: r.MemUsed, MemTotal: r.MemTotal,
+			DiskUsed: r.DiskUsed, DiskTotal: r.DiskTotal, Load1: r.Load1}
+	}
+	for _, p := range s.Ports {
+		w.Ports = append(w.Ports, wire.Port{Port: p.Port, Process: p.Process, PID: p.PID})
+	}
+	return w
 }
 
 func wireCheckout(co pier.Checkout) wire.Checkout {

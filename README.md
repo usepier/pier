@@ -224,6 +224,7 @@ pier attach <session>     attach (a parked session resumes, ~20-60s, tmux restor
 pier logs <session>       show the setup script log (-f follows)
 pier rm <session> [-f]    destroy the session and its disk
 pier keep <session>       pin: never park when idle
+pier park <session>       park now instead of waiting for the idle timer
 pier resize <session> <type>   grow/shrink the VM (~1-2 min, same CPU arch)
 pier repos [--json]       every repo: session image, pool, idle cost, tips
 pier bake                 build this repo's session image (repo prebuilt by default)

@@ -179,7 +179,16 @@ derives:
 Rules: attached or busy resets the idle clock; detached+quiet past
 `idle_timeout` → park; detached+busy past `unattended_cap` → park (runaway
 brake, so a looping agent can't burn compute for days). Reason lands in
-`/run/pier/status.json` for the TUI.
+`/run/pier/status.json` for the TUI. The beacon also carries the session's
+load (CPU, memory, disk, load average), which process holds each listening
+port, and when it stops on its own (`park_at` while quiet and detached,
+`cap_at` while it works unattended), so frontends can say "parks in 12m".
+
+`pier park <match>` parks a session on demand: a cloud stop, like any other.
+A stop from outside reaches the supervisor as systemd's SIGTERM, and it takes
+one last tmux snapshot then — its unit stops before pier-restore.service,
+which holds the tmux server — so a park from the laptop or a resize keeps
+the freshest layout too.
 
 Configurable at wizard time and in config: `idle_timeout` (default 30m,
 `"never"` allowed), `unattended_cap` (default 8h, disable-able). Per-session:

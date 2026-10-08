@@ -25,6 +25,7 @@ type Backend interface {
 	Resume(ctx context.Context, s pier.Session) error
 	Remove(ctx context.Context, s pier.Session) error
 	Keep(ctx context.Context, s pier.Session) error
+	Park(ctx context.Context, s pier.Session) error
 	Resize(ctx context.Context, s pier.Session, machineType string) error
 	Machines(s pier.Session) []pier.Machine
 	SetPoolSize(ctx context.Context, repoRoot string, n int, progress pier.Progress) (string, error)

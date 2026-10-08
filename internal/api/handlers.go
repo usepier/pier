@@ -33,6 +33,10 @@ func init() {
 		func(ctx context.Context, s *Server, _ *Call, p wire.SessionRef) (*wire.Empty, error) {
 			return nil, s.withSession(ctx, p.ID, func(be Backend, sess pier.Session) error { return be.Resume(ctx, sess) })
 		})
+	handle("sessions.park", "Parks a running session now; its tmux layout is saved on the way down.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.SessionRef) (*wire.Empty, error) {
+			return nil, s.withSession(ctx, p.ID, func(be Backend, sess pier.Session) error { return be.Park(ctx, sess) })
+		})
 	handle("sessions.keep", "Never parks this session when idle (it still stops on the runaway cap).",
 		func(ctx context.Context, s *Server, _ *Call, p wire.SessionRef) (*wire.Empty, error) {
 			return nil, s.withSession(ctx, p.ID, func(be Backend, sess pier.Session) error { return be.Keep(ctx, sess) })

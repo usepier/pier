@@ -67,6 +67,7 @@ func (f *fake) Headroom(context.Context) (pier.Quota, error) {
 	return pier.Quota{Used: 2, Limit: 32, Detail: "2/32 vCPUs"}, nil
 }
 func (f *fake) HasKey(pier.Session) bool                           { return true }
+func (f *fake) Park(context.Context, pier.Session) error           { return nil }
 func (f *fake) Remove(context.Context, pier.Session) error         { return nil }
 func (f *fake) Keep(context.Context, pier.Session) error           { return pier.ErrParked }
 func (f *fake) Resize(context.Context, pier.Session, string) error { return nil }

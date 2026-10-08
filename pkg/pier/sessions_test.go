@@ -1,6 +1,7 @@
 package pier
 
 import (
+	"encoding/json"
 	"errors"
 	"os/exec"
 	"strings"
@@ -110,5 +111,36 @@ func TestConnectingScreenKeepsTheExitStatus(t *testing.T) {
 	out, err := ConnectingScreen(exec.Command("echo", "hi"), "demo", true).Output()
 	if err != nil || !strings.Contains(string(out), "connecting to demo") || !strings.Contains(string(out), "hi") {
 		t.Errorf("want the connecting line then the command's output, got %q %v", out, err)
+	}
+}
+
+// A beacon from a current supervisor carries load, port owners and the
+// park countdown; one from an older supervisor carries none of it and
+// leaves them zero.
+func TestBeaconCarriesLoadAndCountdown(t *testing.T) {
+	var b beacon
+	in := `{"state":"idle","res":{"cpu":34.5,"cpus":2,"mem_used":1288490188,"mem_total":4294967296,"disk_used":12884901888,"disk_total":42949672960,"load1":0.5},
+		"ports":[{"port":3000,"process":"node","pid":12}],"park_at":"2026-10-08T12:12:00Z"}`
+	if err := json.Unmarshal([]byte(in), &b); err != nil {
+		t.Fatal(err)
+	}
+	var s Session
+	b.apply(&s)
+	if s.Res == nil || s.Res.CPU != 34.5 || len(s.Ports) != 1 || s.Ports[0].Process != "node" {
+		t.Fatalf("session = %+v", s)
+	}
+	now, _ := time.Parse(time.RFC3339, "2026-10-08T12:00:00Z")
+	if got := Countdown(s, now); got != "parks in 12m" {
+		t.Errorf("Countdown = %q", got)
+	}
+	if got := Load(s); got != "cpu 34% · mem 1.2/4.0 GiB · disk 12/40 GiB" && got != "cpu 35% · mem 1.2/4.0 GiB · disk 12/40 GiB" {
+		t.Errorf("Load = %q", got)
+	}
+	var old beacon
+	json.Unmarshal([]byte(`{"state":"idle"}`), &old)
+	var s2 Session
+	old.apply(&s2)
+	if s2.Res != nil || Countdown(s2, now) != "" || Load(s2) != "" {
+		t.Error("an older beacon carries no load or countdown")
 	}
 }
