@@ -378,6 +378,8 @@ type sessionJSON struct {
 	Name        string     `json:"name"`
 	Repository  string     `json:"repository"`
 	Branch      string     `json:"branch"`
+	Origin      string     `json:"origin"`
+	Base        string     `json:"base"`
 	Owner       string     `json:"owner"`
 	Provider    string     `json:"provider"`
 	State       pier.State `json:"state"`
@@ -411,7 +413,7 @@ func writeSessionsJSON(w io.Writer, sessions []pier.Session) error {
 		}
 		items = append(items, sessionJSON{
 			ID: s.ID, Name: s.Name, Repository: s.Repo, Branch: s.Branch,
-			Owner: s.User, Provider: s.Driver, State: s.State,
+			Origin: s.Origin, Base: s.Base, Owner: s.User, Provider: s.Driver, State: s.State,
 			SetupState: s.Setup, Strained: s.Strained, CreatedAt: createdAt,
 			MachineType: s.InstanceType, CostNote: s.CostNote,
 		})

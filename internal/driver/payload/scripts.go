@@ -285,6 +285,7 @@ case '{{MODE}}' in
 esac
 if [ -n "$prebuilt" ]; then git checkout -qf -B '{{BRANCH}}' {{SHA}}; fi
 git reset -q --hard {{SHA}}
+` + recordBase + `
 if [ -n "$prebuilt" ] && [ '{{BRANCH}}' != '` + PrebuildBranch + `' ]; then git branch -qD '` + PrebuildBranch + `' 2>/dev/null || true; fi
 # Uncommitted edits to tracked files, exactly as the laptop had them (a
 # failed apply fails the create — better than silently missing work).
@@ -329,6 +330,7 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin, gitcfg string) s
 	return strings.NewReplacer(
 		"{{REPO}}", filepath.Base(spec.Repo),
 		"{{BRANCH}}", spec.Branch,
+		"{{BASE}}", BaseBranch(spec.Repo, spec.BaseRef),
 		"{{GITCONFIG}}", gitcfg,
 		"{{MODE}}", mode,
 		"{{SHA}}", sha,
@@ -336,6 +338,13 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin, gitcfg string) s
 		"{{EXPORTREF}}", exportRef(spec.Name),
 	).Replace(bootstrapTmpl)
 }
+
+// recordBase marks what the session started from, inside the checkout, so
+// in-VM tooling compares its changes against the right point without asking
+// the laptop: refs/pier/base is the commit, pier.base the origin branch it
+// came off ({{BASE}}, validated branch charset; empty when origin had none).
+const recordBase = `git update-ref refs/pier/base {{SHA}}
+if [ -n '{{BASE}}' ]; then git config pier.base '{{BASE}}'; else git config --unset pier.base 2>/dev/null || true; fi`
 
 // gitPortable are the laptop git settings a session carries: behavior with
 // no path or program in it. Credential helpers, includes, editors and

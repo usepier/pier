@@ -50,6 +50,7 @@ func (d *Driver) Claim(ctx context.Context, id string, spec driver.ClaimSpec) er
 	if _, err := d.gcloud(ctx, "compute", "instances", "add-metadata", id,
 		"--zone", d.Zone, "--metadata",
 		MetaSession+"="+spec.Name+","+MetaBranch+"="+spec.Branch+","+
+			MetaOrigin+"="+spec.Origin+","+MetaBase+"="+spec.Base+","+
 			MetaCreated+"="+time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return err
 	}

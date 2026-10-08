@@ -28,7 +28,24 @@ type Config struct {
 	// and from which .pier scripts — so pier can remind (never decide) when a
 	// rebake would help. Keyed by repo basename, like the image ids.
 	Images map[string]ImageInfo `toml:"images,omitempty"`
+	// Checkouts are local clones frontends without a working directory (the
+	// Mac app) act from: creates, bakes and pool fills need one. Keyed by the
+	// repo root's absolute path; the value is its canonical origin ("" for
+	// repos without one).
+	Checkouts map[string]string `toml:"checkouts,omitempty"`
 }
+
+// LinkCheckout records root, a repository root, as a local checkout of
+// origin.
+func (c *Config) LinkCheckout(root, origin string) {
+	if c.Checkouts == nil {
+		c.Checkouts = map[string]string{}
+	}
+	c.Checkouts[root] = origin
+}
+
+// UnlinkCheckout forgets a linked checkout.
+func (c *Config) UnlinkCheckout(root string) { delete(c.Checkouts, root) }
 
 // Speed holds the two settings a speed profile presets (pool size and bake
 // reminders), plus how images

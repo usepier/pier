@@ -37,10 +37,15 @@ const (
 
 // Session is one instance + its persistent disk.
 type Session struct {
-	ID           string // provider instance ID
-	Name         string // branch-derived session name
-	Repo         string
-	Branch       string
+	ID     string // provider instance ID
+	Name   string // branch-derived session name
+	Repo   string
+	Branch string
+	// Origin is the repo's origin remote, canonical host/path (no
+	// credentials); "" for sessions made before pier recorded it, or from
+	// repos without one. Base is the origin branch the session came off.
+	Origin       string
+	Base         string
 	User         string // derived from cloud caller identity, never configured
 	Driver       string
 	State        State
@@ -112,6 +117,8 @@ func (e *LoginError) Unwrap() error { return e.Err }
 type ClaimSpec struct {
 	Name   string
 	Branch string
+	Origin string // canonical origin of the claiming repo (payload.RepoOrigin)
+	Base   string // origin branch the session comes off (payload.BaseBranch)
 	// Nonce is this claimer's unique token. Tags and labels have no
 	// compare-and-swap, so Claim writes the nonce, waits a settle beat, and
 	// reads it back: of two concurrent claimers the later write wins and the

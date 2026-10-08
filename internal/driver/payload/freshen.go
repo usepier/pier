@@ -57,6 +57,7 @@ esac
 # branch dies once the real one exists (-qD fails harmlessly if checked out).
 git checkout -qf -B '{{BRANCH}}' {{SHA}}
 git reset -q --hard {{SHA}}
+` + recordBase + `
 git branch -qD '{{OLDBRANCH}}' 2>/dev/null || true
 # Uncommitted edits to tracked files, exactly as the laptop had them (a
 # failed apply fails the claim — better than silently missing work).
@@ -91,6 +92,7 @@ func BuildFreshen(ctx context.Context, dir string, spec driver.CreateSpec, oldBr
 	script := strings.NewReplacer(
 		"{{REPO}}", filepath.Base(spec.Repo),
 		"{{BRANCH}}", spec.Branch,
+		"{{BASE}}", BaseBranch(spec.Repo, spec.BaseRef),
 		"{{OLDBRANCH}}", oldBranch,
 		"{{GITCONFIG}}", gitcfg,
 		"{{MODE}}", mode,

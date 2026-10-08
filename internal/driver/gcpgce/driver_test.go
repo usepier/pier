@@ -316,7 +316,7 @@ func TestList(t *testing.T) {
 	// A mix of states
 	listJSON := `[
 		{"name": "pier-s1-111111", "status": "PROVISIONING", "labels": {"pier-user": "testuser-example-com"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s1"}]}},
-		{"name": "pier-s2-222222", "status": "RUNNING", "labels": {"pier-user": "testuser-example-com", "pier-ready": "1"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s2"}]}},
+		{"name": "pier-s2-222222", "status": "RUNNING", "labels": {"pier-user": "testuser-example-com", "pier-ready": "1"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s2"}, {"key": "pier-origin", "value": "github.com/o/r"}, {"key": "pier-base", "value": "main"}]}},
 		{"name": "pier-s3-333333", "status": "RUNNING", "labels": {"pier-user": "testuser-example-com", "pier-deleting": "1"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s3"}]}},
 		{"name": "pier-s4-444444", "status": "TERMINATED", "labels": {"pier-user": "testuser-example-com"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s4"}]}}
 	]`
@@ -365,6 +365,9 @@ func TestList(t *testing.T) {
 	}
 	if states[3] != driver.StateParked {
 		t.Errorf("s4 should be parked, got %s", states[3])
+	}
+	if sessions[1].Origin != "github.com/o/r" || sessions[1].Base != "main" {
+		t.Errorf("s2 origin/base = %q/%q", sessions[1].Origin, sessions[1].Base)
 	}
 }
 

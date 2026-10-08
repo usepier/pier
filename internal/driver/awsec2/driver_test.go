@@ -78,3 +78,27 @@ func TestUserPreservesAssumedRoleSessionIdentity(t *testing.T) {
 		t.Fatalf("user() = %q, want complete role-session ARN %q", got, arn)
 	}
 }
+
+// The list reads a session's origin and base back from its tags.
+func TestListReadsOriginAndBase(t *testing.T) {
+	bin := t.TempDir()
+	list := `[{"id":"i-1","state":"running","itype":"t4g.medium","tags":[` +
+		`{"Key":"pier:session","Value":"s"},{"Key":"pier:ready","Value":"1"},` +
+		`{"Key":"pier:origin","Value":"github.com/o/r"},{"Key":"pier:base","Value":"main"}]}]`
+	script := "#!/bin/sh\ncase \"$2\" in\n" +
+		"get-caller-identity) echo arn:aws:iam::1:user/me ;;\n" +
+		"describe-instances) echo '" + list + "' ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "aws"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	d := &Driver{StateDir: t.TempDir()}
+	got, err := d.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Origin != "github.com/o/r" || got[0].Base != "main" {
+		t.Fatalf("List = %+v", got)
+	}
+}

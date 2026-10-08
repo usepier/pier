@@ -84,7 +84,11 @@ in provider APIs + tags/labels — **no server, no database, no laptop daemon**.
 - Instance profile `pier-session`: `AmazonSSMManagedInstanceCore` only.
 - `InstanceInitiatedShutdownBehavior=stop` → in-VM `shutdown -h now` parks.
 - Tags: `pier:managed`, `pier:user` (STS ARN), `pier:session`, `pier:repo`,
-  `pier:branch`.
+  `pier:branch`, `pier:origin` (the origin remote as `host/owner/repo`,
+  credentials stripped) and `pier:base` (the origin branch the session came
+  off). GCE carries the last two as `pier-origin`/`pier-base` metadata. In
+  the checkout, `refs/pier/base` and `git config pier.base` record the same
+  starting point for in-VM tooling.
 - No AWS SDK: the driver shells out to `aws --output json` (the CLI is already
   required for the SSM plugin, and SSO/profiles/MFA come for free).
 

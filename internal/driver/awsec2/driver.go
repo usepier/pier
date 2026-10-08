@@ -38,6 +38,8 @@ const (
 	TagCreated    = "pier:created" // RFC3339 create time; launch time resets on every resume
 	TagPool       = "pier:pool"    // warm-pool generation fingerprint; present = unclaimed member
 	TagClaim      = "pier:claim"   // claim nonce (tags have no CAS: written, then read back)
+	TagOrigin     = "pier:origin"  // canonical origin remote (host/path), for grouping and PR lookups
+	TagBase       = "pier:base"    // origin branch the session came off
 	amiParamBase  = "/aws/service/canonical/ubuntu/server/24.04/stable/current/%s/hvm/ebs-gp3/ami-id"
 )
 
@@ -154,6 +156,10 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Repo = t.Value
 			case TagBranch:
 				s.Branch = t.Value
+			case TagOrigin:
+				s.Origin = t.Value
+			case TagBase:
+				s.Base = t.Value
 			case TagReady:
 				ready = true
 			case TagCreated:

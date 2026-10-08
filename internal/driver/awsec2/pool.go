@@ -45,18 +45,29 @@ func (d *Driver) Claim(ctx context.Context, id string, spec driver.ClaimSpec) er
 	}
 	// The created tag resets to now: the user's session begins at claim, and
 	// AGE reads the created tag (fill time would show a days-old "new" session).
-	if _, err := d.aws(ctx, "ec2", "create-tags", "--resources", id, "--tags",
-		"Key=Name,Value=pier-"+spec.Name,
-		"Key="+TagSession+",Value="+spec.Name,
-		"Key="+TagBranch+",Value="+spec.Branch,
-		"Key="+TagCreated+",Value="+time.Now().UTC().Format(time.RFC3339)); err != nil {
+	tags := []string{
+		"Key=Name,Value=pier-" + spec.Name,
+		"Key=" + TagSession + ",Value=" + spec.Name,
+		"Key=" + TagBranch + ",Value=" + spec.Branch,
+		"Key=" + TagCreated + ",Value=" + time.Now().UTC().Format(time.RFC3339),
+	}
+	// The fill's base is not the session's: a claim with no base of its own
+	// drops it rather than inherit it.
+	gone := []string{"Key=" + TagPool, "Key=" + TagClaim, "Key=" + TagReady}
+	for _, kv := range [][2]string{{TagOrigin, spec.Origin}, {TagBase, spec.Base}} {
+		if kv[1] != "" {
+			tags = append(tags, "Key="+kv[0]+",Value="+kv[1])
+		} else {
+			gone = append(gone, "Key="+kv[0])
+		}
+	}
+	if _, err := d.aws(ctx, append([]string{"ec2", "create-tags", "--resources", id, "--tags"}, tags...)...); err != nil {
 		return err
 	}
 	// Deleting the pool tag is the commit point: the member now lists as a
 	// regular session — starting, since the ready tag goes with it until the
 	// claim's MarkReady.
-	_, err = d.aws(ctx, "ec2", "delete-tags", "--resources", id,
-		"--tags", "Key="+TagPool, "Key="+TagClaim, "Key="+TagReady)
+	_, err = d.aws(ctx, append([]string{"ec2", "delete-tags", "--resources", id, "--tags"}, gone...)...)
 	return err
 }
 

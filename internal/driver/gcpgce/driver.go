@@ -57,6 +57,8 @@ const (
 	MetaBranch    = "pier-branch"
 	MetaUser      = "pier-user"    // full principal; the label form is lossy
 	MetaCreated   = "pier-created" // RFC3339; set at claim so AGE starts then, not at fill
+	MetaOrigin    = "pier-origin"  // canonical origin remote (host/path), for grouping and PR lookups
+	MetaBase      = "pier-base"    // origin branch the session came off
 
 	stockImageProject = "ubuntu-os-cloud"
 	stockImageFamily  = "ubuntu-2404-lts-%s" // amd64 | arm64
@@ -187,6 +189,10 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Repo = m.Value
 			case MetaBranch:
 				s.Branch = m.Value
+			case MetaOrigin:
+				s.Origin = m.Value
+			case MetaBase:
+				s.Base = m.Value
 			case MetaUser:
 				owner = m.Value
 			case MetaCreated:

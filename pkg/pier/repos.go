@@ -1,6 +1,7 @@
 package pier
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -588,4 +590,83 @@ func HourlyUSD(s Session) float64 {
 	}
 	f, _ := strconv.ParseFloat(m[1], 64)
 	return f
+}
+
+// Checkout is a linked local clone: what a frontend without a working
+// directory creates sessions, bakes and fills pools from.
+type Checkout struct {
+	Path    string // repository root
+	Name    string // its basename: the repo name sessions and images use
+	Origin  string // canonical origin; "" for repos without one
+	Missing bool   // the path no longer holds a git repository
+}
+
+// LinkCheckout records the repository containing dir as a linked checkout
+// and returns it. Linking a path again refreshes its origin.
+func (c *Client) LinkCheckout(dir string) (Checkout, error) {
+	root, err := RepoRoot(dir)
+	if err != nil {
+		return Checkout{}, err
+	}
+	origin := payload.RepoOrigin(root)
+	cfg, err := config.Update(func(cfg *config.Config) error {
+		cfg.LinkCheckout(root, origin)
+		return nil
+	})
+	if err != nil {
+		return Checkout{}, err
+	}
+	c.cfg = cfg
+	return Checkout{Path: root, Name: filepath.Base(root), Origin: origin}, nil
+}
+
+// UnlinkCheckout forgets a linked checkout. The clone itself is untouched.
+func (c *Client) UnlinkCheckout(root string) error {
+	cfg, err := config.Update(func(cfg *config.Config) error {
+		cfg.UnlinkCheckout(root)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	c.cfg = cfg
+	return nil
+}
+
+// Checkouts lists the linked checkouts by name, each with its current
+// origin (a remote can change after linking).
+func (c *Client) Checkouts() []Checkout {
+	out := make([]Checkout, 0, len(c.cfg.Checkouts))
+	for root, origin := range c.cfg.Checkouts {
+		co := Checkout{Path: root, Name: filepath.Base(root), Origin: origin}
+		if got, err := RepoRoot(root); err != nil || got != root {
+			co.Missing = true
+		} else {
+			co.Origin = payload.RepoOrigin(root)
+		}
+		out = append(out, co)
+	}
+	slices.SortFunc(out, func(a, b Checkout) int {
+		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.Path, b.Path))
+	})
+	return out
+}
+
+// RepoKey identifies the repository a session belongs to: its origin when
+// recorded, so two clones of one repo group together and same-named folders
+// of different repos don't; "name:<repo>" for sessions from before origins
+// were recorded, or from repos without one.
+func RepoKey(s Session) string {
+	if s.Origin != "" {
+		return s.Origin
+	}
+	return "name:" + s.Repo
+}
+
+// CheckoutKey is RepoKey for a linked checkout.
+func CheckoutKey(co Checkout) string {
+	if co.Origin != "" {
+		return co.Origin
+	}
+	return "name:" + co.Name
 }

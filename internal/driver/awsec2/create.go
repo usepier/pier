@@ -134,6 +134,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 
 	return &driver.Session{
 		ID: id, Name: spec.Name, Repo: filepath.Base(spec.Repo), Branch: spec.Branch,
+		Origin: payload.RepoOrigin(spec.Repo), Base: payload.BaseBranch(spec.Repo, spec.BaseRef),
 		User: me, Driver: d.Name(), State: driver.StateRunning, Created: time.Now(),
 		InstanceType: d.InstanceType,
 		CostNote:     costNote(driver.StateRunning, d.InstanceType),
@@ -302,6 +303,12 @@ func tagList(spec driver.CreateSpec, me, name string) []map[string]string {
 		{"Key": TagRepo, "Value": filepath.Base(spec.Repo)},
 		{"Key": TagBranch, "Value": spec.Branch},
 		{"Key": TagCreated, "Value": time.Now().UTC().Format(time.RFC3339)},
+	}
+	if o := payload.RepoOrigin(spec.Repo); o != "" {
+		tags = append(tags, map[string]string{"Key": TagOrigin, "Value": o})
+	}
+	if b := payload.BaseBranch(spec.Repo, spec.BaseRef); b != "" {
+		tags = append(tags, map[string]string{"Key": TagBase, "Value": b})
 	}
 	if spec.PoolGen != "" {
 		tags = append(tags, map[string]string{"Key": TagPool, "Value": spec.PoolGen})

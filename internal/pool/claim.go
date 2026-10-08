@@ -40,10 +40,11 @@ func Claim(ctx context.Context, p Params, sessions []driver.Session, name, branc
 	if err != nil {
 		return nil, err
 	}
+	origin, base := payload.RepoOrigin(p.RepoRoot), payload.BaseBranch(p.RepoRoot, baseRef)
 	var member *driver.Session
 	for _, i := range pickOrder(len(plan.Ready), nonce) {
 		m := plan.Ready[i]
-		switch err := p.Driver.Claim(ctx, m.ID, driver.ClaimSpec{Name: name, Branch: branch, Nonce: nonce}); {
+		switch err := p.Driver.Claim(ctx, m.ID, driver.ClaimSpec{Name: name, Branch: branch, Origin: origin, Base: base, Nonce: nonce}); {
 		case errors.Is(err, driver.ErrClaimLost):
 			continue
 		case err != nil:
@@ -74,7 +75,7 @@ func Claim(ctx context.Context, p Params, sessions []driver.Session, name, branc
 	}
 	return &driver.Session{
 		ID: member.ID, Name: name, Repo: filepath.Base(p.RepoRoot), Branch: branch,
-		User: member.User, Driver: p.Driver.Name(), State: driver.StateRunning,
+		Origin: origin, Base: base, User: member.User, Driver: p.Driver.Name(), State: driver.StateRunning,
 		Created: time.Now(), InstanceType: member.InstanceType,
 	}, nil
 }

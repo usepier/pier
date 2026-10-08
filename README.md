@@ -236,10 +236,13 @@ pier teardown             remove all pier groundwork from the account
 ```
 
 For automation, `pier ls --json` writes a JSON array with stable fields:
-`id`, `name`, `repository`, `branch`, `owner`, `provider`, `state`,
-`setup_state`, `strained`, `created_at`, `machine_type`, and `cost_note`.
-`created_at` is an RFC 3339 UTC timestamp, or `null` when unavailable;
-`setup_state` is empty when no running or failed setup is reported. The JSON
+`id`, `name`, `repository`, `branch`, `origin`, `base`, `owner`, `provider`,
+`state`, `setup_state`, `strained`, `created_at`, `machine_type`, and
+`cost_note`. `origin` is the repo's origin remote as `host/owner/repo` and
+`base` the origin branch the session came off; both are empty for sessions
+created before pier recorded them. `created_at` is an RFC 3339 UTC
+timestamp, or `null` when unavailable; `setup_state` is empty when no
+running or failed setup is reported. The JSON
 mode writes no ANSI styling or explanatory prose to stdout.
 
 A day with pier:
