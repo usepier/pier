@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Cpu, Pin, Power, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button as AriaButton, Dialog, DialogTrigger, Popover } from "react-aria-components";
 import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
 import { confirm } from "@/lib/confirm";
+import { until } from "@/lib/format";
 import { trackJob } from "@/state/jobs";
 import { sessionTone } from "@/state/overview";
 import { attempt, toast } from "@/state/toasts";
@@ -57,6 +58,7 @@ export function SessionHeader({
           <span className="text-tertiary">
             {" "}
             · {s.machineType} · {s.costNote}
+            <Countdown session={s} />
           </span>
         </div>
       </div>
@@ -91,6 +93,20 @@ export function SessionHeader({
       </div>
     </header>
   );
+}
+
+/** When the session stops on its own, ticking down. */
+function Countdown({ session: s }: { session: Session }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const park = until(s.parkAt);
+  const cap = until(s.capAt);
+  if (park) return <span className="text-tertiary"> · parks in {park}</span>;
+  if (cap) return <span className="text-tertiary"> · runaway cap in {cap}</span>;
+  return null;
 }
 
 function ResizeButton({ session: s, onResize }: { session: Session; onResize: (jobId: string) => void }) {

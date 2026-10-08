@@ -16,6 +16,7 @@ import {
 import { rpc } from "@/api/client";
 import type { Setting, Settings } from "@/api/protocol.gen";
 import { accentColor, applyAccent } from "@/lib/theme";
+import { usePrefs } from "@/state/prefs";
 import { attempt, toast } from "@/state/toasts";
 import { Empty } from "@/ui/Empty";
 import { Spinner } from "@/ui/Spinner";
@@ -38,6 +39,7 @@ export function SettingsPage() {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
         <h1 className="text-xl font-semibold">Settings</h1>
+        <AppSection />
         {data.groups.map((g) => {
           const rows = data.settings.filter((s) => s.group === g.key);
           if (!rows.length) return null;
@@ -207,5 +209,95 @@ function TextControl({
         className="selectable h-7 w-full rounded-ctl border border-separator bg-control px-2 text-base outline-none placeholder:text-tertiary focus:border-accent focus:ring-2 focus:ring-accent/25"
       />
     </TextField>
+  );
+}
+
+const minutes = [
+  { ms: 0, label: "Right away" },
+  { ms: 60_000, label: "After 1 minute" },
+  { ms: 300_000, label: "After 5 minutes" },
+  { ms: 600_000, label: "After 10 minutes" },
+  { ms: 1_800_000, label: "After 30 minutes" },
+];
+
+function MsSelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (ms: number) => void;
+}) {
+  return (
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="h-7 w-full rounded-ctl border border-separator bg-control px-2 text-base outline-none"
+    >
+      {minutes.map((m) => (
+        <option key={m.ms} value={m.ms}>
+          {m.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** Settings of the app itself, kept on this Mac. */
+function AppSection() {
+  const p = usePrefs();
+  return (
+    <section>
+      <h2 className="mb-2 px-1 text-xs font-semibold text-secondary">This app</h2>
+      <div className="divide-y divide-separator rounded-card border border-separator bg-raised/60">
+        <div className="flex items-center gap-4 px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-base">Detach a hidden terminal</div>
+            <div className="text-xs text-secondary">An attached terminal keeps its session awake.</div>
+          </div>
+          <div className="w-56 shrink-0">
+            <MsSelect
+              label="Detach a hidden terminal"
+              value={p.hiddenDetachMs}
+              onChange={(ms) => p.set({ hiddenDetachMs: ms })}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-4 px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-base">Detach every terminal in the background</div>
+            <div className="text-xs text-secondary">
+              Once the app has been out of sight this long, sessions can park.
+            </div>
+          </div>
+          <div className="w-56 shrink-0">
+            <MsSelect
+              label="Detach every terminal in the background"
+              value={p.backgroundDetachMs}
+              onChange={(ms) => p.set({ backgroundDetachMs: ms })}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-4 px-3 py-2">
+          <div className="min-w-0 flex-1 text-base">Terminal font size</div>
+          <div className="w-56 shrink-0">
+            <select
+              aria-label="Terminal font size"
+              value={p.terminalFontSize}
+              onChange={(e) => p.set({ terminalFontSize: Number(e.target.value) })}
+              className="h-7 w-full rounded-ctl border border-separator bg-control px-2 text-base outline-none"
+            >
+              {[11, 12, 12.5, 13, 14, 15, 16].map((n) => (
+                <option key={n} value={n}>
+                  {n} pt
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }

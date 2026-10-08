@@ -62,3 +62,20 @@ export function branchProblem(b: string): string | null {
   if (b.includes("..") || b.includes("//")) return "can't contain .. or //";
   return null;
 }
+
+/** Bytes as GiB/MiB, one decimal. */
+export function bytes(n: number): string {
+  if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(1)} GiB`;
+  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(0)} MiB`;
+  return `${Math.max(0, Math.round(n / 1024))} KiB`;
+}
+
+/** "12m", "1h05m": time left until iso; "" when past or unknown. */
+export function until(iso?: string | null, now = Date.now()): string {
+  if (!iso) return "";
+  const s = (Date.parse(iso) - now) / 1000;
+  if (s <= 0) return "";
+  if (s < 60) return "<1m";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+}

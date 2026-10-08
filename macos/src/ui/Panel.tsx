@@ -63,12 +63,7 @@ export function Meter({
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   const color = tone === "bad" ? "bg-bad" : tone === "warn" ? "bg-warn" : "bg-accent";
   return (
-    <div
-      className="h-1.5 w-full overflow-hidden rounded-full bg-selected"
-      role="meter"
-      aria-valuenow={value}
-      aria-valuemax={max}
-    >
+    <div className="h-1.5 w-full overflow-hidden rounded-full bg-selected" aria-hidden="true">
       <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
     </div>
   );

@@ -5,7 +5,8 @@ import type { Repo, Session } from "@/api/protocol.gen";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { linkCheckout } from "@/features/repos/link";
 import { confirm } from "@/lib/confirm";
-import { age, hourly, monthly, plural } from "@/lib/format";
+import { age, bytes, hourly, monthly, plural, until } from "@/lib/format";
+import { useLoadHistory } from "@/state/history";
 import { trackJob, useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview, useRepo, useRepoSessions } from "@/state/overview";
 import { attempt, toast } from "@/state/toasts";
@@ -14,6 +15,7 @@ import { Badge } from "@/ui/Badge";
 import { Button, IconButton } from "@/ui/Button";
 import { Empty } from "@/ui/Empty";
 import { Facts, Meter, Panel, Stat } from "@/ui/Panel";
+import { Sparkline } from "@/ui/Sparkline";
 import { StateDot } from "@/ui/StateDot";
 
 export function CockpitPage() {
@@ -58,6 +60,8 @@ export function CockpitPage() {
         </div>
 
         <SessionsPanel sessions={sessions} />
+
+        <ResourcesPanel sessions={sessions.filter((s) => ["running", "working", "idle"].includes(s.state))} />
 
         <div className="grid gap-4 lg:grid-cols-3">
           <PoolPanel repo={repo} />
@@ -115,6 +119,74 @@ function SessionsPanel({ sessions }: { sessions: Session[] }) {
           </tbody>
         </table>
       )}
+    </Panel>
+  );
+}
+
+function ResourceRow({ session: s }: { session: Session }) {
+  const navigate = useNavigate();
+  const h = useLoadHistory(s.id);
+  const r = s.resources;
+  const park = until(s.parkAt);
+  return (
+    <tr
+      onClick={() => navigate({ to: "/session/$id", params: { id: s.id } })}
+      className="cursor-default border-t border-separator hover:bg-hover"
+    >
+      <td className="py-1.5 pr-3">
+        <span className="flex items-center gap-2">
+          <StateDot tone={sessionTone(s)} />
+          <span className="truncate font-medium">{s.name}</span>
+        </span>
+      </td>
+      <td className="py-1.5 pr-3">
+        <span className="flex items-center gap-2">
+          <Sparkline values={h.cpu} max={100} width={90} height={18} />
+          <span className="w-9 text-right text-xs tabular-nums">{r ? `${r.cpu.toFixed(0)}%` : "—"}</span>
+        </span>
+      </td>
+      <td className="py-1.5 pr-3">
+        <span className="flex items-center gap-2">
+          <Sparkline values={h.mem} max={100} width={90} height={18} className="text-info" />
+          <span className="w-24 text-right text-xs tabular-nums text-secondary">
+            {r ? `${bytes(r.memUsed)} / ${bytes(r.memTotal)}` : "—"}
+          </span>
+        </span>
+      </td>
+      <td className="py-1.5 text-xs text-secondary">
+        {s.strained ? (
+          <Badge tone="warn">strained</Badge>
+        ) : park ? (
+          `parks in ${park}`
+        ) : s.activity ? (
+          "busy"
+        ) : (
+          ""
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function ResourcesPanel({ sessions }: { sessions: Session[] }) {
+  if (sessions.length === 0) return null;
+  return (
+    <Panel title="Load">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs text-secondary">
+            <th className="py-1 pr-3 font-medium">Session</th>
+            <th className="py-1 pr-3 font-medium">CPU</th>
+            <th className="py-1 pr-3 font-medium">Memory</th>
+            <th className="py-1 font-medium" />
+          </tr>
+        </thead>
+        <tbody>
+          {sessions.map((s) => (
+            <ResourceRow key={s.id} session={s} />
+          ))}
+        </tbody>
+      </table>
     </Panel>
   );
 }

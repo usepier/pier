@@ -5,9 +5,18 @@ import { useEffect } from "react";
 import { rpc } from "@/api/client";
 import { useStatus, useWatch } from "@/api/live";
 import type { Overview, Repo, Session } from "@/api/protocol.gen";
+import { recordLoad } from "./history";
 
 export function useOverview(): Overview | undefined {
   return useWatch("overview", {}, { graceMs: 120_000 }).data;
+}
+
+/** Feeds every refresh's load readings into the sparkline history. */
+export function useLoadRecorder() {
+  const o = useOverview();
+  useEffect(() => {
+    for (const s of o?.sessions ?? []) recordLoad(s.id, s.resources);
+  }, [o]);
 }
 
 export function useRepo(name: string): Repo | undefined {

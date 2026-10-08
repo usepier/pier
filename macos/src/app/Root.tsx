@@ -6,7 +6,7 @@ import { NewSessionSheet } from "@/features/newSession/NewSessionSheet";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { applyAccent } from "@/lib/theme";
 import { useJobsBootstrap } from "@/state/jobs";
-import { useActivityReporting } from "@/state/overview";
+import { useActivityReporting, useLoadRecorder } from "@/state/overview";
 import { Toasts } from "@/ui/Toasts";
 import { useAppCommands } from "./appCommands";
 import { Shell } from "./Shell";
@@ -14,6 +14,7 @@ import { Shell } from "./Shell";
 export function Root() {
   useAppCommands();
   useActivityReporting();
+  useLoadRecorder();
   useJobsBootstrap();
   const status = useStatus();
   useEffect(() => {
