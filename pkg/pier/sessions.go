@@ -99,7 +99,7 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			out, err := c.drv.Exec(ctx, s.ID, "cat /run/pier/status.json 2>/dev/null || echo absent")
+			out, err := c.exec(ctx, s.ID, "cat /run/pier/status.json 2>/dev/null || echo absent")
 			if err != nil {
 				return // unreachable (ssm blip) — keep plain "running"
 			}
@@ -236,6 +236,7 @@ func (c *Client) Remove(ctx context.Context, s Session) error {
 	if s.State == driver.StateFailed {
 		return tombstone.Dismiss(config.Dir(), s.Name)
 	}
+	c.forget(s.ID)
 	return c.drv.Destroy(ctx, s.ID)
 }
 
@@ -245,7 +246,7 @@ func (c *Client) Keep(ctx context.Context, s Session) error {
 	if s.State == driver.StateParked {
 		return fmt.Errorf("%w: %s — attach first", ErrParked, s.Name)
 	}
-	_, err := c.drv.Exec(ctx, s.ID,
+	_, err := c.exec(ctx, s.ID,
 		"sudo sed -i 's/^idle_timeout=.*/idle_timeout=never/' /etc/pier/supervisor.conf")
 	return err
 }
@@ -354,7 +355,7 @@ func (c *Client) SetupLog(ctx context.Context, s Session, lines int) (string, er
 	if lines > 0 {
 		read = fmt.Sprintf("tail -n %d ~/.pier-setup.log", lines)
 	}
-	out, err := c.drv.Exec(ctx, s.ID, `[ -f ~/.pier-setup.log ] && `+read+` || `+noSetupLog)
+	out, err := c.exec(ctx, s.ID, `[ -f ~/.pier-setup.log ] && `+read+` || `+noSetupLog)
 	if err == nil && lines > 0 && strings.Count(out, "\n") >= lines-1 {
 		out = "… older lines trimmed — pier logs " + s.Name + " prints everything\n" + out
 	}

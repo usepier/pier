@@ -117,6 +117,12 @@ func Serve(ctx context.Context, o Options) error {
 	case <-settled:
 	case <-time.After(exitGrace):
 	}
+	s.mu.Lock()
+	be := s.be
+	s.mu.Unlock()
+	if be != nil {
+		be.Close()
+	}
 	if err := in.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
@@ -289,7 +295,11 @@ func (s *Server) backend() (Backend, error) {
 // config (a cloud or account change).
 func (s *Server) reopen() {
 	s.mu.Lock()
+	old := s.be
 	s.be = nil
 	s.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
 	s.overview.kick(0)
 }

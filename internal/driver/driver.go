@@ -255,6 +255,11 @@ type Driver interface {
 	// one remote mechanism is OpenSSH, so this is a contract, not a leak.
 	SSHTarget(ctx context.Context, id string) (opts []string, dest string, err error)
 
+	// InvalidateTarget forgets anything SSHTarget cached about reaching a
+	// session (a probed public IP), so the next connection resolves afresh
+	// — after a failure, or once the session parked and woke elsewhere.
+	InvalidateTarget(id string)
+
 	// Exec runs a one-shot command (status reads, push bootstrap) without a TTY.
 	Exec(ctx context.Context, id string, command string) (string, error)
 

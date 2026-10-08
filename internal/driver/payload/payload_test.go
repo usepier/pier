@@ -668,3 +668,16 @@ func TestGitConfigCarriesTheEffectiveIdentity(t *testing.T) {
 		t.Error("an identity without a name must be rejected")
 	}
 }
+
+// One multiplexed connection carries a frontend's terminals, streams and
+// commands; sshd's default of 10 channels is too few. New VMs and older
+// ones alike get the higher limit.
+func TestSSHDAllowsMultiplexing(t *testing.T) {
+	if !strings.Contains(sshdConf, "MaxSessions 64") {
+		t.Fatal("pier's sshd drop-in must raise MaxSessions")
+	}
+	up := sessionUp(false)
+	if !strings.Contains(up, "grep -q MaxSessions") || !strings.Contains(up, sshdConf) {
+		t.Error("sessions from older images must pick the limit up on bootstrap or claim")
+	}
+}

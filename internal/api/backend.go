@@ -40,6 +40,8 @@ type Backend interface {
 	StartFill(repoRoot string) (pier.Job, error)
 	StartResize(s pier.Session, machineType string) (pier.Job, error)
 	SetupLog(ctx context.Context, s pier.Session, lines int) (string, error)
+	// Close ends the backend's ssh connections.
+	Close()
 }
 
 var _ Backend = (*pier.Client)(nil)

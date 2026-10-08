@@ -427,8 +427,15 @@ func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]i
 }
 
 func (d *Driver) SSHTarget(ctx context.Context, id string) ([]string, string, error) {
+	if err := d.needKey(id); err != nil {
+		return nil, "", err
+	}
 	return d.sshOpts(id), "agent@" + id, nil
 }
+
+// InvalidateTarget is a no-op: every connection rides the IAP tunnel by
+// instance name, so nothing about reaching a session is cached.
+func (d *Driver) InvalidateTarget(string) {}
 
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)

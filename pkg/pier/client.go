@@ -11,17 +11,21 @@
 package pier
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/internal/driver/awsec2"
 	"github.com/usepier/pier/internal/driver/gcpgce"
 	"github.com/usepier/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/sshmux"
 )
 
 // Re-exported so frontends name pier's types without importing internals.
@@ -58,6 +62,10 @@ type Options struct {
 	Out io.Writer
 	// Notify receives one-off transport notices ("using the ssm tunnel").
 	Notify func(string)
+	// Mux keeps one multiplexed ssh connection per session for long-lived
+	// frontends (the api, the app): terminals and streams open one, and
+	// status reads ride whatever is open. Close the client when done.
+	Mux bool
 }
 
 // Client is a configured pier: the user's config plus the cloud driver it
@@ -66,6 +74,7 @@ type Client struct {
 	cfg  config.Config
 	drv  driver.Driver
 	opts Options
+	mux  *sshmux.Manager // nil unless Options.Mux
 }
 
 // Open loads the user's config and returns a client for its cloud.
@@ -84,7 +93,54 @@ func New(cfg config.Config, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{cfg: cfg, drv: drv, opts: opts}, nil
+	c := &Client{cfg: cfg, drv: drv, opts: opts}
+	if opts.Mux {
+		c.mux = sshmux.New(filepath.Join(config.Dir(), "mux"), drv.SSHTarget)
+		c.mux.Invalidate = drv.InvalidateTarget
+		c.mux.IdleClose = 5 * time.Minute
+		c.mux.CleanStale()
+	}
+	return c, nil
+}
+
+// Close ends the client's ssh connections. Clients without Options.Mux hold
+// none.
+func (c *Client) Close() {
+	if c.mux != nil {
+		c.mux.Close()
+	}
+}
+
+// Conn returns the session's multiplexed connection, opening it if needed:
+// for long-lived users (terminals, streams). Needs Options.Mux.
+func (c *Client) Conn(ctx context.Context, s Session) (*sshmux.Conn, error) {
+	if c.mux == nil {
+		return nil, fmt.Errorf("this client keeps no connections (Options.Mux is off)")
+	}
+	if err := CheckReady(s); err != nil {
+		return nil, err
+	}
+	return c.mux.Conn(ctx, s.ID)
+}
+
+// exec runs a one-shot command in a session: over its open connection when
+// there is one, else as a fresh ssh — a status read never opens a
+// connection just for itself.
+func (c *Client) exec(ctx context.Context, id, script string) (string, error) {
+	if c.mux != nil {
+		if conn := c.mux.Existing(id); conn != nil {
+			out, err := conn.Exec(ctx, script, nil)
+			return string(out), err
+		}
+	}
+	return c.drv.Exec(ctx, id, script)
+}
+
+// Forget closes a session's connection (it parked or was removed).
+func (c *Client) forget(id string) {
+	if c.mux != nil {
+		c.mux.Drop(id)
+	}
 }
 
 // NewDriver builds the cloud driver a config selects.

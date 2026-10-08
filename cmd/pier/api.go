@@ -35,6 +35,7 @@ func cmdAPI(args []string) {
 
 	opts := options()
 	opts.Out = nil // meters and bake output have no terminal to go to
+	opts.Mux = true
 	opts.Notify = func(msg string) { fmt.Fprintln(os.Stderr, "pier api: "+msg) }
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

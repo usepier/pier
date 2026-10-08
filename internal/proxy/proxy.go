@@ -29,7 +29,9 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -185,7 +187,7 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 				w := &worker{
 					id: id, name: hostname(s.Name), dest: dest, ip: ip,
 					shadow: shadowOf(ip), tcfg: tcfg,
-					ctl:      filepath.Join(ctlDir, id+".ctl"),
+					ctl:      filepath.Join(ctlDir, ctlName(id)),
 					cacheDir: cacheDir,
 					opts:     sshOpts, out: opt.Out, names: names, lh: lh,
 					relays: map[int]net.Listener{},
@@ -559,4 +561,12 @@ func hostname(name string) string {
 		s = "session"
 	}
 	return s
+}
+
+// ctlName keeps a control socket's name short whatever the session id: a
+// socket path is capped at 104 bytes on macOS and ssh adds a temporary
+// suffix while binding, which a long instance name would overflow.
+func ctlName(id string) string {
+	h := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(h[:6]) + ".ctl"
 }

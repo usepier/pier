@@ -121,6 +121,7 @@ func (f *fake) StartResize(s pier.Session, t string) (pier.Job, error) {
 	return pier.Job{ID: "j4", Kind: pier.JobResize, Session: s.Name}, nil
 }
 func (f *fake) DiskMonthlyUSD() float64 { return 3.8 }
+func (f *fake) Close()                  {}
 func (f *fake) Resume(ctx context.Context, s pier.Session) error {
 	if f.block != nil {
 		select {

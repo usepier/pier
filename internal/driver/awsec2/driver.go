@@ -373,8 +373,15 @@ func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]i
 }
 
 func (d *Driver) SSHTarget(ctx context.Context, id string) ([]string, string, error) {
+	if err := d.needKey(id); err != nil {
+		return nil, "", err
+	}
 	return d.sshOpts(ctx, id), "agent@" + id, nil
 }
+
+// InvalidateTarget drops the cached direct-connect probe: a woken instance
+// has a new public IP.
+func (d *Driver) InvalidateTarget(id string) { d.dropProbe(id) }
 
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)

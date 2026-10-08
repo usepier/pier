@@ -51,7 +51,9 @@ runcmd:
     # StreamLocalBindUnlink: an attach forwards the laptop's browser opener
     # as a unix socket; a reconnecting attach must be able to replace the
     # previous connection's socket.
-    printf 'ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\n' > /etc/ssh/sshd_config.d/10-pier.conf
+    # MaxSessions: one multiplexed connection carries a client's terminals,
+    # streams and commands as channels; the default of 10 is too few.
+    printf '` + sshdConf + `' > /etc/ssh/sshd_config.d/10-pier.conf
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
     install -d -m 700 -o agent -g agent /home/agent/.ssh
     grep -qxF '{{PUBKEY}}' /home/agent/.ssh/authorized_keys 2>/dev/null || echo '{{PUBKEY}}' >> /home/agent/.ssh/authorized_keys
@@ -168,11 +170,12 @@ func sessionUp(runSetup bool) string {
 # running when this does, and tmux must not start with the old line).
 sed -i 's#^cd ~/work/\* 2>/dev/null || true$#if [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi#' "$HOME/.bashrc" 2>/dev/null || true
 # sshd: drop dead connections (a dropped attach must not leave a phantom
-# tmux client), and let an attach replace the browser-opener socket a
-# previous connection forwarded. Written here too so sessions from older
-# images and pooled sessions get it.
-if ! grep -q StreamLocalBindUnlink /etc/ssh/sshd_config.d/10-pier.conf 2>/dev/null; then
-  printf 'ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\n' | sudo tee /etc/ssh/sshd_config.d/10-pier.conf >/dev/null
+# tmux client), let an attach replace the browser-opener socket a previous
+# connection forwarded, and allow enough channels on one multiplexed
+# connection. Written here too so sessions from older images and pooled
+# sessions get it.
+if ! grep -q MaxSessions /etc/ssh/sshd_config.d/10-pier.conf 2>/dev/null; then
+  printf '` + sshdConf + `' | sudo tee /etc/ssh/sshd_config.d/10-pier.conf >/dev/null
   sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true
 fi
 mkdir -p "$HOME/.pier" # where an attach forwards the browser opener
@@ -338,6 +341,9 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin, gitcfg string) s
 		"{{EXPORTREF}}", exportRef(spec.Name),
 	).Replace(bootstrapTmpl)
 }
+
+// sshdConf is pier's sshd drop-in, as a printf format.
+const sshdConf = `ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\nMaxSessions 64\n`
 
 // recordBase marks what the session started from, inside the checkout, so
 // in-VM tooling compares its changes against the right point without asking
