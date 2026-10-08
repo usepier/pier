@@ -211,8 +211,10 @@ func (d *Driver) Images(ctx context.Context) ([]driver.Image, error) {
 		if len(r) < 4 || r[0] == nil || r[2] == nil {
 			continue
 		}
-		if r[3] != nil && *r[3] != me {
-			continue // a teammate's
+		if r[3] == nil || *r[3] != me {
+			// A teammate's — or one with no owner at all, from before
+			// images carried one: never assumed to be yours.
+			continue
 		}
 		img := driver.Image{ID: *r[0], Repo: *r[2]}
 		if r[1] != nil {

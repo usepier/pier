@@ -224,8 +224,10 @@ func (d *Driver) Images(ctx context.Context) ([]driver.Image, error) {
 		if r.Labels[MetaRepo] == "" {
 			continue
 		}
-		if u, ok := r.Labels[LabelUser]; ok && u != labelValue(me) {
-			continue // a teammate's
+		if u := r.Labels[LabelUser]; u == "" || u != labelValue(me) {
+			// A teammate's — or one with no owner at all, from before
+			// images carried one: never assumed to be yours.
+			continue
 		}
 		img := driver.Image{ID: r.Name, Repo: r.Labels[MetaRepo]}
 		img.Created, _ = time.Parse(time.RFC3339, r.Created)

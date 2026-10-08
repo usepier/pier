@@ -102,3 +102,32 @@ func TestListReadsOriginAndBase(t *testing.T) {
 		t.Fatalf("List = %+v", got)
 	}
 }
+
+// Only images carrying your identity are yours: a teammate's, or one with
+// no owner tag at all, never are.
+func TestImagesAreOnlyYours(t *testing.T) {
+	const me = "arn:aws:iam::123456789012:user/kerem"
+	bin := t.TempDir()
+	script := `#!/bin/sh
+case "$*" in
+*get-caller-identity*) echo '` + me + `' ;;
+*describe-images*) cat <<'JSON'
+[["ami-mine","2026-10-01T10:00:00.000Z","shop","` + me + `"],
+ ["ami-teammate","2026-10-02T10:00:00.000Z","shop","arn:aws:iam::123456789012:user/alice"],
+ ["ami-ownerless","2026-10-03T10:00:00.000Z","legacy",null]]
+JSON
+;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "aws"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	imgs, err := (&Driver{}).Images(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 1 || imgs[0].ID != "ami-mine" {
+		t.Errorf("images = %+v", imgs)
+	}
+}

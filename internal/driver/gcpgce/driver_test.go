@@ -521,3 +521,22 @@ func TestLifecycle(t *testing.T) {
 		t.Errorf("destroy missing delete, got: %s", actions)
 	}
 }
+
+// Only images labeled with your identity are yours: a teammate's, or one
+// with no owner label at all, never are.
+func TestImagesAreOnlyYours(t *testing.T) {
+	me := labelValue("testuser@example.com")
+	d, _ := setupTestDriver(t, map[string]mockResponse{
+		"compute images list": {Stdout: `[
+ {"name":"pier-shop-mine","creationTimestamp":"2026-10-01T10:00:00Z","labels":{"pier-managed":"1","` + MetaRepo + `":"shop","` + LabelUser + `":"` + me + `"}},
+ {"name":"pier-shop-alice","creationTimestamp":"2026-10-02T10:00:00Z","labels":{"pier-managed":"1","` + MetaRepo + `":"shop","` + LabelUser + `":"alice-example-com"}},
+ {"name":"pier-legacy","creationTimestamp":"2026-10-03T10:00:00Z","labels":{"pier-managed":"1","` + MetaRepo + `":"legacy"}}]`},
+	})
+	imgs, err := d.Images(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 1 || imgs[0].ID != "pier-shop-mine" {
+		t.Errorf("images = %+v", imgs)
+	}
+}
