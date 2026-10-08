@@ -394,7 +394,7 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 	}
 	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
 [ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
-# SSH forwards the client's TERM, but newer terminals (for example Ghostty)
+# SSH forwards the client's TERM, but newer terminal emulators
 # may not exist in the VM image's terminfo database yet. Keep the richer entry
 # when it is installed and otherwise use the portable 256-colour baseline.
 if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
