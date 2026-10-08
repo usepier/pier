@@ -39,6 +39,7 @@ type Backend interface {
 	StartBake(repoRoot string, include *bool) (pier.Job, error)
 	StartFill(repoRoot string) (pier.Job, error)
 	StartResize(s pier.Session, machineType string) (pier.Job, error)
+	SetupLog(ctx context.Context, s pier.Session, lines int) (string, error)
 }
 
 var _ Backend = (*pier.Client)(nil)

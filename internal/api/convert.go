@@ -83,11 +83,16 @@ func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched b
 	}
 	origins := map[string]string{}
 	disk := be.DiskMonthlyUSD()
+	hourly, parked := map[string]float64{}, map[string]int{}
 	for _, s := range all {
 		w := wireSession(be, s)
 		o.Sessions = append(o.Sessions, w)
 		if s.Origin != "" && origins[s.Repo] == "" {
 			origins[s.Repo] = s.Origin
+		}
+		hourly[s.Repo] += w.HourlyUSD
+		if s.State == pier.StateParked && !w.Pooled {
+			parked[s.Repo]++
 		}
 		if w.Pooled {
 			if s.State == pier.StateParked {
@@ -111,7 +116,10 @@ func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched b
 		if co != nil && co.Origin != "" {
 			origin = co.Origin
 		}
-		o.Repos = append(o.Repos, wireRepo(r, co, origin))
+		wr := wireRepo(r, co, origin)
+		wr.HourlyUSD = hourly[r.Name]
+		wr.IdleMonthlyUSD = r.MonthlyUSD + float64(parked[r.Name])*disk
+		o.Repos = append(o.Repos, wr)
 		o.Totals.IdleMonthlyUSD += r.MonthlyUSD
 	}
 	return o

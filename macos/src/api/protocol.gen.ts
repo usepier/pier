@@ -270,8 +270,14 @@ export interface Repo {
   poolStale: number;
   poolAges: string[];
   sessions: number;
-  /** idle cost: pooled disks plus image storage */
+  /** pooled disks plus image storage */
   monthlyUsd: number;
+  /**
+   * HourlyUSD is what the repo's sessions bill right now; IdleMonthlyUSD
+   * what it costs while nothing runs: parked disks, the pool, the image.
+   */
+  hourlyUsd: number;
+  idleMonthlyUsd: number;
   reminders: Reminder[];
 }
 
@@ -429,6 +435,8 @@ export interface WatchResult<T> {
 export interface Methods {
   /** The account's vCPU quota use in the active region. */
   "account.headroom": { params: Empty; result: Quota };
+  /** Runs the cloud login that fixes the last expired-login error, narrating its output (browser prompts, device codes) as progress. */
+  "auth.login": { params: Empty; result: null };
   /** Checks the environment and the cloud account. */
   "doctor.run": { params: Empty; result: Check[] };
   /** Bakes the checkout's repo into a session image in a background job. */
@@ -443,6 +451,8 @@ export interface Methods {
   "jobs.list": { params: Empty; result: Job[] };
   /** The tail of a job's human log. */
   "jobs.log": { params: LogParams; result: LogText };
+  /** The tail of a session's setup log (a failed create's own log for a create that never finished). */
+  "logs.setup": { params: LogParams; result: LogText };
   /** The sidebar, Home and cockpit data, refreshed if older than a few seconds. */
   "overview.get": { params: Empty; result: Overview };
   /** The overview, pushed after every refresh. */

@@ -45,8 +45,8 @@ class Shared<T extends keyof Watches> {
       this.watch = rpc.watch(
         this.topic,
         this.params,
-        (d) => {
-          const data = this.reduce ? this.reduce(this.state.data, d) : d;
+        (d, snapshot) => {
+          const data = this.reduce && !snapshot ? this.reduce(this.state.data, d) : d;
           this.state = { data, error: undefined };
           for (const l of this.listeners) l();
         },
@@ -79,6 +79,8 @@ function key(topic: string, params: unknown) {
 }
 
 export interface WatchOptions<T extends keyof Watches> {
+  /** false skips subscribing (nothing to watch yet). */
+  enabled?: boolean;
   /** How long the subscription outlives its last viewer. */
   graceMs?: number;
   /** Folds each update into the previous data (append-style topics). */
@@ -86,16 +88,20 @@ export interface WatchOptions<T extends keyof Watches> {
 }
 
 /** Live data for a topic; undefined until the first snapshot. */
+const idle: Live<never> = { data: undefined, error: undefined };
+const noop = () => () => {};
+
 export function useWatch<T extends keyof Watches>(
   topic: T,
   params: Watches[T]["params"],
   opts: WatchOptions<T> = {},
 ): Live<Watches[T]["data"]> {
+  const enabled = opts.enabled ?? true;
   const k = key(topic, params);
   let s = shared.get(k) as Shared<T> | undefined;
-  if (!s) {
+  if (!s && enabled) {
     s = new Shared(topic, params, opts.graceMs ?? 30_000, opts.reduce);
     shared.set(k, s as unknown as Shared<keyof Watches>);
   }
-  return useSyncExternalStore(s.subscribe, s.get);
+  return useSyncExternalStore(s && enabled ? s.subscribe : noop, s && enabled ? s.get : () => idle);
 }

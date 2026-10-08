@@ -2,7 +2,8 @@
 // the UI can run in a plain browser or in `tauri dev` against the pier built
 // from this checkout. Each connection rebuilds pier (cheap when nothing
 // changed) and spawns a fresh `pier api`, so a Go change takes effect on
-// reload. Never part of a build.
+// reload. PIER_API_BIN runs another pier binary instead (an installed one,
+// say) without building. Never part of a build.
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
@@ -21,15 +22,17 @@ export function pierApiBridge(): Plugin {
         wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws));
       });
       wss.on("connection", (ws) => {
-        const built = spawnSync("make", ["-C", repo, "build"], { encoding: "utf8" });
-        if (built.status !== 0) {
-          ws.close(4000, `pier failed to build:\n${built.stderr || built.stdout}`.slice(0, 120));
-          server.config.logger.error(built.stderr || built.stdout);
-          return;
+        let bin = process.env.PIER_API_BIN;
+        if (!bin) {
+          const built = spawnSync("make", ["-C", repo, "build"], { encoding: "utf8" });
+          if (built.status !== 0) {
+            ws.close(4000, `pier failed to build:\n${built.stderr || built.stdout}`.slice(0, 120));
+            server.config.logger.error(built.stderr || built.stdout);
+            return;
+          }
+          bin = resolve(repo, "pier");
         }
-        const child: ChildProcess = spawn(resolve(repo, "pier"), ["api"], {
-          stdio: ["pipe", "pipe", "pipe"],
-        });
+        const child: ChildProcess = spawn(bin, ["api"], { stdio: ["pipe", "pipe", "pipe"] });
         let buf = "";
         child.stdout?.setEncoding("utf8");
         child.stdout?.on("data", (chunk: string) => {

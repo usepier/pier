@@ -85,14 +85,18 @@ type Repo struct {
 	Baking    bool       `json:"baking"` // a bake started on this machine is still running
 	// The pool: Target members kept, Ready parked and claimable, Filling
 	// being set up, Stale about to recycle. Ages is one entry per member.
-	PoolTarget  int        `json:"poolTarget"`
-	PoolReady   int        `json:"poolReady"`
-	PoolFilling int        `json:"poolFilling"`
-	PoolStale   int        `json:"poolStale"`
-	PoolAges    []string   `json:"poolAges"`
-	Sessions    int        `json:"sessions"`
-	MonthlyUSD  float64    `json:"monthlyUsd"` // idle cost: pooled disks plus image storage
-	Reminders   []Reminder `json:"reminders"`
+	PoolTarget  int      `json:"poolTarget"`
+	PoolReady   int      `json:"poolReady"`
+	PoolFilling int      `json:"poolFilling"`
+	PoolStale   int      `json:"poolStale"`
+	PoolAges    []string `json:"poolAges"`
+	Sessions    int      `json:"sessions"`
+	MonthlyUSD  float64  `json:"monthlyUsd"` // pooled disks plus image storage
+	// HourlyUSD is what the repo's sessions bill right now; IdleMonthlyUSD
+	// what it costs while nothing runs: parked disks, the pool, the image.
+	HourlyUSD      float64    `json:"hourlyUsd"`
+	IdleMonthlyUSD float64    `json:"idleMonthlyUsd"`
+	Reminders      []Reminder `json:"reminders"`
 }
 
 // Reminder is one piece of rebake guidance. pier never acts on it.

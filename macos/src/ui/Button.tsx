@@ -4,11 +4,11 @@ import { Button as AriaButton } from "react-aria-components";
 type Variant = "primary" | "secondary" | "plain" | "danger";
 
 const variants: Record<Variant, string> = {
-  primary: "bg-accent text-on-accent shadow-sm hover:brightness-105 pressed:brightness-95",
+  primary: "bg-accent text-on-accent shadow-sm hover:brightness-105 data-pressed:brightness-95",
   secondary:
-    "bg-control text-label border border-separator shadow-[0_0.5px_1px_rgb(0_0_0/0.08)] hover:bg-hover pressed:bg-selected",
-  plain: "text-label hover:bg-hover pressed:bg-selected",
-  danger: "bg-bad text-white shadow-sm hover:brightness-105 pressed:brightness-95",
+    "bg-control text-label border border-separator shadow-[0_0.5px_1px_rgb(0_0_0/0.08)] hover:bg-hover data-pressed:bg-selected",
+  plain: "text-label hover:bg-hover data-pressed:bg-selected",
+  danger: "bg-bad text-white shadow-sm hover:brightness-105 data-pressed:brightness-95",
 };
 
 export interface ButtonProps extends Omit<ComponentProps<typeof AriaButton>, "children" | "className"> {
@@ -54,7 +54,7 @@ export function IconButton({
     <AriaButton
       aria-label={label}
       {...rest}
-      className={`inline-flex size-7 items-center justify-center rounded-ctl text-secondary outline-none hover:bg-hover hover:text-label pressed:bg-selected disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-accent ${className}`}
+      className={`inline-flex size-7 items-center justify-center rounded-ctl text-secondary outline-none hover:bg-hover hover:text-label data-pressed:bg-selected disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-accent ${className}`}
     >
       {children}
     </AriaButton>

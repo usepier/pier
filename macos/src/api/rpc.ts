@@ -61,7 +61,7 @@ export class Watch<T extends keyof Watches> {
     private readonly rpc: Rpc,
     readonly topic: T,
     private readonly params: Watches[T]["params"],
-    private readonly onData: (d: Watches[T]["data"]) => void,
+    private readonly onData: (d: Watches[T]["data"], snapshot: boolean) => void,
     private readonly onError: (e: unknown) => void,
   ) {}
 
@@ -78,7 +78,7 @@ export class Watch<T extends keyof Watches> {
       this.sub = r.sub;
       this.seq = r.seq;
       this.rpc.adoptWatch(r.sub, this as unknown as Watch<keyof Watches>);
-      this.onData(r.snapshot);
+      this.onData(r.snapshot, true);
     } catch (e) {
       if (!(e instanceof Disconnected)) this.onError(e);
     }
@@ -91,7 +91,7 @@ export class Watch<T extends keyof Watches> {
       return;
     }
     this.seq = ev.seq;
-    this.onData(ev.data as Watches[T]["data"]);
+    this.onData(ev.data as Watches[T]["data"], false);
   }
 
   close() {
@@ -247,7 +247,7 @@ export class Rpc {
   watch<T extends keyof Watches>(
     topic: T,
     params: Watches[T]["params"],
-    onData: (d: Watches[T]["data"]) => void,
+    onData: (d: Watches[T]["data"], snapshot: boolean) => void,
     onError: (e: unknown) => void = () => {},
   ): Watch<T> {
     const w = new Watch(this, topic, params, onData, onError);

@@ -7,7 +7,15 @@ import { ConnectionBanner } from "./ConnectionBanner";
  * The window: a translucent sidebar under the traffic lights, and the
  * content pane with its toolbar row. Blank toolbar space drags the window.
  */
-export function Shell({ sidebar, toolbar }: { sidebar: ReactNode; toolbar?: ReactNode }) {
+export function Shell({
+  sidebar,
+  toolbar,
+  banners,
+}: {
+  sidebar: ReactNode;
+  toolbar?: ReactNode;
+  banners?: ReactNode;
+}) {
   const layout = useDefaultLayout({ id: "pier.shell", storage: localStorage });
   return (
     <Group orientation="horizontal" className="h-full" {...layout}>
@@ -24,6 +32,7 @@ export function Shell({ sidebar, toolbar }: { sidebar: ReactNode; toolbar?: Reac
           {toolbar}
         </div>
         <ConnectionBanner />
+        {banners}
         <div className="min-h-0 flex-1">
           <Outlet />
         </div>

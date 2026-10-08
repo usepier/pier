@@ -96,7 +96,15 @@ func (f *fake) MachineCatalog(string) []pier.Machine { return nil }
 func (f *fake) Doctor(context.Context) []pier.Check {
 	return []pier.Check{{Name: "aws cli", OK: true}, {Name: "ssm plugin", Detail: "missing"}}
 }
-func (f *fake) ReauthCommand(error) *exec.Cmd { return nil }
+func (f *fake) ReauthCommand(err error) *exec.Cmd {
+	if err == nil {
+		return nil
+	}
+	return exec.Command("sh", "-c", "echo 'Open https://device.example/verify'; echo 'code: ABCD-1234' >&2")
+}
+func (f *fake) SetupLog(_ context.Context, s pier.Session, lines int) (string, error) {
+	return "… older lines trimmed — pier logs x prints everything\n==> installing\npier setup: done\n", nil
+}
 func (f *fake) StartCreate(req pier.CreateRequest) (pier.Job, error) {
 	f.mu.Lock()
 	f.created = append(f.created, req)

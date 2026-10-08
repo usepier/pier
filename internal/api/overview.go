@@ -45,6 +45,7 @@ type overviewPoller struct {
 	sweptAt  time.Time
 	quotaAt  time.Time
 	quota    *wire.Quota
+	lastErr  error
 
 	round sync.Mutex // one refresh at a time
 }
@@ -222,7 +223,7 @@ func (p *overviewPoller) publish(be Backend, sessions []pier.Session, enriched b
 	p.mu.Unlock()
 	o := buildOverview(be, sessions, quota, enriched)
 	p.mu.Lock()
-	p.have, p.last, p.sessions, p.at = true, o, sessions, time.Now()
+	p.have, p.last, p.sessions, p.at, p.lastErr = true, o, sessions, time.Now(), nil
 	fns := make([]func(wire.Overview), 0, len(p.listeners))
 	for _, fn := range p.listeners {
 		fns = append(fns, fn)
@@ -233,8 +234,16 @@ func (p *overviewPoller) publish(be Backend, sessions []pier.Session, enriched b
 	}
 }
 
+// lastError is the error of the last failed refresh, nil after a good one.
+func (p *overviewPoller) lastError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastErr
+}
+
 func (p *overviewPoller) fail(err error) {
 	p.mu.Lock()
+	p.lastErr = err
 	o := p.last
 	o.Error = errorData(err)
 	o.UpdatedAt = time.Now().UTC()

@@ -25,6 +25,10 @@
       "preset": "recommended",
       "complexity": {
         "noImportantStyles": "off"
+      },
+      "suspicious": {
+        "noArrayIndexKey": "off",
+        "noControlCharactersInRegex": "off"
       }
     }
   },
