@@ -71,11 +71,48 @@ type decision struct {
 	Behavior     string          `json:"behavior"` // allow | deny | "" (release: let the agent ask in its terminal)
 	Message      string          `json:"message,omitempty"`
 	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
+	// UpdatedPermissions changes the agent's permissions as it goes on
+	// (approving a plan can switch it to accepting edits).
+	UpdatedPermissions json.RawMessage `json:"updated_permissions,omitempty"`
 }
 
 // permissionWait bounds how long a request waits on a frontend before the
-// agent asks in its own terminal.
-var permissionWait = 120 * time.Second
+// agent asks in its own terminal: just under the hook's own limit, so a
+// question or a plan stays answerable in the app as long as the agent
+// waits at all. Attaching to the agent's window, or the last frontend
+// going, hands it to the terminal at once.
+var permissionWait = 870 * time.Second
+
+// answer turns a frontend's answer to a request into the agent's decision:
+// a question's answers go into the tool's input (the agent reads them
+// from there), an approved plan can switch the permission mode.
+func answer(input json.RawMessage, behavior, message string, answers, notes map[string]string, mode string) (decision, error) {
+	d := decision{Behavior: behavior, Message: message}
+	if behavior == "allow" && len(answers) > 0 {
+		in := map[string]any{}
+		if len(input) > 0 && json.Unmarshal(input, &in) != nil {
+			return d, errors.New("the request's input isn't an object")
+		}
+		in["answers"] = answers
+		if len(notes) > 0 {
+			ann := map[string]any{}
+			for q, n := range notes {
+				ann[q] = map[string]string{"notes": n}
+			}
+			in["annotations"] = ann
+		}
+		d.UpdatedInput, _ = json.Marshal(in)
+	}
+	if behavior == "allow" && mode != "" {
+		switch mode {
+		case "default", "acceptEdits", "bypassPermissions":
+		default:
+			return d, fmt.Errorf("unknown permission mode %q", mode)
+		}
+		d.UpdatedPermissions, _ = json.Marshal([]map[string]string{{"type": "setMode", "mode": mode, "destination": "session"}})
+	}
+	return d, nil
+}
 
 func agentDir(home string) string { return filepath.Join(home, ".pier", "agent") }
 
@@ -310,6 +347,18 @@ func (a *agents) decide(id string, d decision) bool {
 	return false
 }
 
+// pendingInput is a waiting request's tool input.
+func (a *agents) pendingInput(id string) (json.RawMessage, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, s := range a.byPane {
+		if s.Pending != nil && s.Pending.ID == id {
+			return s.Pending.Input, true
+		}
+	}
+	return nil, false
+}
+
 // releaseAll lets every pending request fall back to the agent's own
 // terminal: the last frontend that could answer is gone.
 func (a *agents) releaseAll() {
@@ -516,14 +565,20 @@ func registerAgentOps(a *agents, h *hub, home string, touch func()) {
 			return nil, err
 		}
 		tool, _ := r.Payload["tool_name"].(string)
-		input, _ := json.Marshal(r.Payload["tool_input"])
+		in, _ := r.Payload["tool_input"].(map[string]any)
+		withPlan(home, tool, in)
+		input, _ := json.Marshal(in)
 		a.hook("claude", "PermissionRequest", r.Pane, r.Payload)
 		return a.requestPermission(r.Pane, tool, input, h.answerable), nil
 	}
 	ops["decide"] = func(raw json.RawMessage) (any, error) {
 		var r struct {
-			ID string
-			decision
+			ID       string
+			Behavior string
+			Message  string
+			Answers  map[string]string
+			Notes    map[string]string
+			Mode     string
 		}
 		if err := json.Unmarshal(raw, &r); err != nil {
 			return nil, err
@@ -532,7 +587,15 @@ func registerAgentOps(a *agents, h *hub, home string, touch func()) {
 			return nil, fmt.Errorf("a decision is allow or deny")
 		}
 		touch()
-		if !a.decide(r.ID, r.decision) {
+		input, ok := a.pendingInput(r.ID)
+		if !ok {
+			return nil, errors.New("that request is no longer waiting — answer it in the session's terminal")
+		}
+		d, err := answer(input, r.Behavior, r.Message, r.Answers, r.Notes, r.Mode)
+		if err != nil {
+			return nil, err
+		}
+		if !a.decide(r.ID, d) {
 			return nil, errors.New("that request is no longer waiting — answer it in the session's terminal")
 		}
 		return nil, nil
@@ -561,6 +624,24 @@ func registerAgentOps(a *agents, h *hub, home string, touch func()) {
 		return nil, nil
 	}
 	h.onLastApprover = a.releaseAll
+}
+
+// withPlan fills a plan approval's input with the plan when the agent left
+// it in its plan file: the frontend shows it.
+func withPlan(home, tool string, in map[string]any) {
+	if tool != "ExitPlanMode" || in == nil {
+		return
+	}
+	if p, _ := in["plan"].(string); p != "" {
+		return
+	}
+	path, _ := in["planFilePath"].(string)
+	if path == "" || !strings.HasPrefix(filepath.Clean(path), filepath.Clean(home)+"/") {
+		return
+	}
+	if b, err := os.ReadFile(path); err == nil && len(b) < 1<<20 {
+		in["plan"] = string(b)
+	}
 }
 
 // agentTopic is what the "agent" stream topic carries: every agent, and

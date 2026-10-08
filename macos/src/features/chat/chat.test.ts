@@ -82,3 +82,32 @@ describe("palette", () => {
     expect(rankEntries(entries, ">create").map((e) => e.id)).toEqual(["c:new"]);
   });
 });
+
+import { answerOf, collect, emptyState } from "./answers";
+
+describe("question answers", () => {
+  const choice = {
+    question: "Which DB?",
+    kind: "choice",
+    options: [{ label: "Postgres" }, { label: "SQLite" }],
+  };
+  const multi = { ...choice, question: "Which features?", multiSelect: true };
+  const number = { question: "Workers?", kind: "number", min: 1, max: 8, default: 2, unit: "workers" };
+  const text = { question: "Anything else?", kind: "text" };
+  it("reads each kind of question", () => {
+    expect(answerOf(choice, { ...emptyState(choice), picked: ["SQLite"] })).toBe("SQLite");
+    expect(answerOf(multi, { ...emptyState(multi), picked: ["Postgres", "SQLite"], other: "Redis" })).toBe(
+      "Postgres, SQLite, Redis",
+    );
+    expect(answerOf(number, emptyState(number))).toBe("2 workers");
+    expect(answerOf(text, emptyState(text))).toBeUndefined();
+  });
+  it("leaves unanswered questions out, keeps notes", () => {
+    const { answers, notes } = collect(
+      [choice, text],
+      [{ ...emptyState(choice), picked: ["Postgres"], note: "we run it" }, emptyState(text)],
+    );
+    expect(answers).toEqual({ "Which DB?": "Postgres" });
+    expect(notes).toEqual({ "Which DB?": "we run it" });
+  });
+});

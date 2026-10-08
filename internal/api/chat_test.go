@@ -109,6 +109,34 @@ func TestChatParked(t *testing.T) {
 	}
 }
 
+// A question reaches the client as questions, and its answers go back by
+// question text.
+func TestChatQuestion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{
+		sessions: []pier.Session{{ID: "i-1", Name: "fix", State: pier.StateRunning}},
+		tx:       []pier.TranscriptChunk{chunk(0, true, txUser)},
+		more:     make(chan pier.TranscriptChunk),
+		agent: `{"agents":[{"pane":"%1","kind":"claude","state":"waiting","waiting":"permission","since":"2026-10-08T10:00:01Z",
+			"pending":{"id":"q1","tool":"AskUserQuestion","input":{"questions":[{"question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}]}]},"at":"2026-10-08T10:00:01Z"}}],"queue":[]}`,
+	}
+	c := start(t, f)
+	resp, _ := c.call("chat.watch", map[string]any{"id": "i-1"})
+	var snap wire.ChatSnapshot
+	remarshal(t, resp["result"].(map[string]any)["snapshot"], &snap)
+	p := snap.Agent.Pending
+	if p == nil || len(p.Questions) != 1 || p.Questions[0].Options[1].Label != "SQLite" || p.Questions[0].Kind != "choice" {
+		t.Fatalf("pending = %+v", p)
+	}
+	c.call("chat.decide", map[string]any{"sessionId": "i-1", "requestId": "q1", "behavior": "allow", "answers": map[string]string{"Which database?": "SQLite"}})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.decided) != 1 || f.decided[0] != "q1:allow:Which database?=SQLite" {
+		t.Errorf("decided = %v", f.decided)
+	}
+}
+
 func TestNotices(t *testing.T) {
 	var buf bytes.Buffer
 	s := &Server{out: bufio.NewWriter(&buf)}

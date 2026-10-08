@@ -28,8 +28,8 @@ func claudeHooks() []byte {
 	for _, ev := range hookEvents {
 		h := map[string]any{"type": "command", "command": "/usr/local/bin/pier-supervisor hook claude " + ev}
 		if ev == "PermissionRequest" {
-			// The request waits on the app for at most permissionWait; the
-			// hook's own limit must never cut that short.
+			// The request waits on the app for at most permissionWait (870s);
+			// the hook's own limit must never cut that short.
 			h["timeout"] = 900
 		}
 		entry := map[string]any{"hooks": []any{h}}
@@ -172,6 +172,9 @@ func hookMain(args []string) int {
 		}
 		if len(d.UpdatedInput) > 0 {
 			dec["updatedInput"] = d.UpdatedInput
+		}
+		if len(d.UpdatedPermissions) > 0 {
+			dec["updatedPermissions"] = d.UpdatedPermissions
 		}
 		resp, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PermissionRequest", "decision": dec}})
 		os.Stdout.Write(resp)

@@ -188,10 +188,17 @@ func (f *fake) StartDeliver(s pier.Session, id, text, mode string) (pier.Job, er
 	return pier.Job{ID: "j-deliver", Kind: pier.JobDeliver, Session: s.Name, PID: 1}, nil
 }
 func (f *fake) Interrupt(context.Context, pier.Session) error { return nil }
-func (f *fake) Decide(_ context.Context, _ pier.Session, id, behavior, _ string, _ json.RawMessage) error {
+func (f *fake) Decide(_ context.Context, _ pier.Session, id string, d pier.Decision) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.decided = append(f.decided, id+":"+behavior)
+	note := id + ":" + d.Behavior
+	for q, a := range d.Answers {
+		note += ":" + q + "=" + a
+	}
+	if d.Mode != "" {
+		note += ":" + d.Mode
+	}
+	f.decided = append(f.decided, note)
 	return nil
 }
 func (f *fake) Upload(_ context.Context, _ pier.Session, name string, data []byte) (string, error) {

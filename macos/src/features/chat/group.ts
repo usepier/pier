@@ -10,8 +10,9 @@ const minRun = 3;
 
 function stepLike(i: ChatItem): boolean {
   if (i.kind === "thinking") return true;
-  // The task list stays in view: it is the plan.
-  return i.kind === "tool" && i.tool?.view !== "todo";
+  // The task list, questions and plans stay in view: they are the
+  // conversation, not its steps.
+  return i.kind === "tool" && !["todo", "ask", "plan"].includes(i.tool?.view ?? "");
 }
 
 export function groupItems(items: ChatItem[]): Block[] {

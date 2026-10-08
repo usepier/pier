@@ -57,7 +57,7 @@ type Backend interface {
 	SendPrompt(ctx context.Context, s pier.Session, id, text, mode string) error
 	StartDeliver(s pier.Session, id, text, mode string) (pier.Job, error)
 	Interrupt(ctx context.Context, s pier.Session) error
-	Decide(ctx context.Context, s pier.Session, requestID, behavior, message string, updatedInput json.RawMessage) error
+	Decide(ctx context.Context, s pier.Session, requestID string, d pier.Decision) error
 	Upload(ctx context.Context, s pier.Session, name string, data []byte) (string, error)
 	ListFiles(ctx context.Context, s pier.Session) ([]string, bool, error)
 	PeekAgent(ctx context.Context, s pier.Session, lines int) (string, error)

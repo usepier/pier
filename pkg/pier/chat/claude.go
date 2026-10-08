@@ -238,6 +238,16 @@ func claudeTool(b claudeBlock) *wire.ToolCall {
 	case "Task", "Agent":
 		t.View = wire.ToolTask
 		t.Summary = oneLine(str(in, "description"))
+	case "AskUserQuestion":
+		t.View = wire.ToolAsk
+		_, t.Questions, _ = Asks(b.Name, b.Input)
+		if len(t.Questions) > 0 {
+			t.Summary = oneLine(t.Questions[0].Question)
+		}
+	case "ExitPlanMode":
+		t.View = wire.ToolPlan
+		_, _, t.Plan = Asks(b.Name, b.Input)
+		t.Summary = firstLine(t.Plan)
 	default:
 		t.Summary = b.Name
 	}
@@ -301,6 +311,12 @@ func (c *claude) toolResult(b claudeBlock, structured json.RawMessage) *Change {
 	case wire.ToolTodo:
 		if nt := todos(sr["newTodos"]); nt != nil {
 			t.Todos = nt
+		}
+	case wire.ToolAsk:
+		t.Answers = answersOf(sr)
+	case wire.ToolPlan:
+		if p := str(sr, "plan"); p != "" {
+			t.Plan = p // as approved, edits included
 		}
 	}
 	if t.View != wire.ToolBash {

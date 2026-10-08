@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bufio"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,5 +118,52 @@ func TestClipKeepsTheEndOfOutput(t *testing.T) {
 	got, cut := clipTail(long, 100)
 	if !cut || len(got) > 110 || got[len(got)-14:] != "ERROR: the end" {
 		t.Errorf("clipTail kept %q", got)
+	}
+}
+
+func TestAsksAndPlans(t *testing.T) {
+	title, qs, _ := Asks("AskUserQuestion", json.RawMessage(`{"title":"Before I start","questions":[
+		{"question":"Which database?","header":"DB","multiSelect":false,"options":[{"label":"Postgres","description":"we run it"},{"label":"SQLite"}]},
+		{"question":"How many workers?","kind":"number","min":1,"max":8,"defaultValue":2,"unit":"workers"},
+		{"question":"Anything else?","kind":"text","placeholder":"optional"}]}`))
+	if title != "Before I start" || len(qs) != 3 || qs[0].Kind != "choice" || len(qs[0].Options) != 2 || qs[0].Options[0].Description != "we run it" {
+		t.Fatalf("questions = %q %+v", title, qs)
+	}
+	if qs[1].Kind != "number" || *qs[1].Min != 1 || *qs[1].Default != 2 || qs[1].Unit != "workers" || qs[2].Placeholder != "optional" {
+		t.Errorf("number/text = %+v %+v", qs[1], qs[2])
+	}
+	if _, _, plan := Asks("ExitPlanMode", json.RawMessage(`{"plan":"# Plan\n1. x"}`)); plan != "# Plan\n1. x" {
+		t.Errorf("plan = %q", plan)
+	}
+
+	p := NewParser("claude")
+	var items []wire.ChatItem
+	for _, line := range []string{
+		`{"type":"assistant","message":{"id":"m","role":"assistant","content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[{"question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}]}]}}]},"uuid":"a","timestamp":"2026-10-09T10:00:00Z"}`,
+		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"q1","type":"tool_result","content":"User has answered your questions: \"Which database?\"=\"Postgres\"."}]},"toolUseResult":{"questions":[],"answers":{"Which database?":"Postgres"}},"uuid":"b","timestamp":"2026-10-09T10:00:05Z"}`,
+		`{"type":"assistant","message":{"id":"n","role":"assistant","content":[{"type":"tool_use","id":"p1","name":"ExitPlanMode","input":{}}]},"uuid":"c","timestamp":"2026-10-09T10:00:06Z"}`,
+		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"p1","type":"tool_result","content":"User has approved your plan."}]},"toolUseResult":{"plan":"# Fix login\n1. read the cookie name from config"},"uuid":"d","timestamp":"2026-10-09T10:00:09Z"}`,
+	} {
+		for _, c := range p.Feed([]byte(line)) {
+			if c.Op == wire.ChatAppend {
+				items = append(items, c.Item)
+			} else {
+				for i := range items {
+					if items[i].ID == c.Item.ID {
+						items[i] = c.Item
+					}
+				}
+			}
+		}
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %+v", items)
+	}
+	ask, plan := items[0].Tool, items[1].Tool
+	if ask.View != wire.ToolAsk || ask.Summary != "Which database?" || ask.Answers["Which database?"] != "Postgres" {
+		t.Errorf("ask = %+v", ask)
+	}
+	if plan.View != wire.ToolPlan || plan.Plan != "# Fix login\n1. read the cookie name from config" || plan.Status != wire.ToolOK {
+		t.Errorf("plan = %+v", plan)
 	}
 }

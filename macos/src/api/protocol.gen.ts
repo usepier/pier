@@ -291,13 +291,24 @@ export interface AgentParams {
   prompt?: string;
 }
 
-/** DecideParams answers a permission request. */
+/**
+ * DecideParams answers what the agent waits on: allow or deny a tool use;
+ * answer its questions (allow with Answers); approve its plan (allow, Mode
+ * "acceptEdits" to let it edit without asking) or send it back (deny with
+ * Message, the feedback).
+ */
 export interface DecideParams {
   sessionId: string;
   requestId: string;
   /** allow | deny */
   behavior: string;
   message?: string;
+  /** Answers by question text; several choices joined with ", ". */
+  answers?: Record<string, string>;
+  /** Notes the user added to an answer, by question text. */
+  notes?: Record<string, string>;
+  /** default | acceptEdits */
+  mode?: string;
 }
 
 /** DiffParams asks for one changed file's diff. */
@@ -689,7 +700,10 @@ export interface PeekParams {
   lines?: number;
 }
 
-/** PermissionRequest is the agent asking to use a tool. */
+/**
+ * PermissionRequest is the agent waiting on you: to use a tool, to answer
+ * its questions (Questions), or to approve its plan (Plan).
+ */
 export interface PermissionRequest {
   id: string;
   tool: string;
@@ -697,6 +711,11 @@ export interface PermissionRequest {
   summary: string;
   input?: string;
   at: string;
+  /** Questions are what the agent asks (AskUserQuestion), under Title. */
+  questions?: Question[];
+  title?: string;
+  /** Plan is the plan to approve (ExitPlanMode), markdown. */
+  plan?: string;
 }
 
 /** PoolSizeParams sets a repo's pool size; Path is its linked checkout. */
@@ -772,6 +791,37 @@ export interface ProxySession {
 export interface PushParams {
   sessionId: string;
   opId: string;
+}
+
+/** Question is one question the agent asks. */
+export interface Question {
+  question: string;
+  /** a short chip: "Auth method" */
+  header?: string;
+  helper?: string;
+  /** Kind: choice (pick from Options), text or number. */
+  kind: string;
+  options?: QuestionOption[];
+  multiSelect?: boolean;
+  placeholder?: string;
+  /** Number questions: the range, step, starting value and unit. */
+  min?: number;
+  max?: number;
+  step?: number;
+  default?: number;
+  unit?: string;
+}
+
+/** QuestionOption is one choice of a question. */
+export interface QuestionOption {
+  label: string;
+  description?: string;
+  /**
+   * Preview is shown while the option is focused: markdown, or HTML when
+   * PreviewHTML.
+   */
+  preview?: string;
+  previewHtml?: boolean;
 }
 
 /** QueuedPrompt is a prompt the session holds until its agent can take it. */
@@ -1203,6 +1253,13 @@ export interface ToolCall {
   edit?: EditView;
   bash?: BashView;
   todos?: TodoItem[];
+  /**
+   * Questions and the answers given (by question text), for an ask;
+   * Plan, markdown, for a plan.
+   */
+  questions?: Question[];
+  answers?: Record<string, string>;
+  plan?: string;
 }
 
 /** BashView is a command and its output. */
@@ -1241,7 +1298,7 @@ export interface TodoItem {
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
 
 /** ToolView is how a tool call is best shown. */
-export type ToolView = "edit" | "write" | "bash" | "read" | "todo" | "search" | "web" | "task" | "generic";
+export type ToolView = "edit" | "write" | "bash" | "read" | "todo" | "search" | "web" | "task" | "ask" | "plan" | "generic";
 
 /** Totals are the account-wide numbers the header shows. */
 export interface Totals {

@@ -16,7 +16,7 @@ import {
 } from "@/state/outbox";
 import { Banner } from "@/ui/Banner";
 import { Spinner } from "@/ui/Spinner";
-import { PermissionCard, TerminalWaitCard } from "./Cards";
+import { PendingCard, TerminalWaitCard } from "./Cards";
 import { Composer } from "./Composer";
 import { Transcript } from "./Transcript";
 import { Working } from "./Working";
@@ -137,7 +137,7 @@ export function ChatView({
       />
       <div className="shrink-0 px-5">
         {live && agent?.pending && (
-          <PermissionCard sessionId={s.id} req={agent.pending} agentName={name} onTerminal={onTerminal} />
+          <PendingCard sessionId={s.id} req={agent.pending} agentName={name} onTerminal={onTerminal} />
         )}
         {live && agent?.state === "waiting" && !agent.pending && (
           <TerminalWaitCard agentName={name} onTerminal={onTerminal} />

@@ -199,16 +199,19 @@ first contact, the same install a create or claim does.
 A session can start with an agent (`--agent claude|codex`, `-p` for its
 first prompt). The supervisor launches it in a tmux window of its own
 (`@pier-role=agent`) and follows it through hooks: claude reads them from
-`/etc/pier/claude-hooks.json` (`--settings`, added to the user's own), codex
-reports finished turns through its notify program. Prompts — the first one,
-and any a frontend sends — wait in a queue on the session's disk and are
-typed into the agent's pane when it is ready, each once by id; a prompt for
-a parked session wakes it from a background job on the laptop. A
-permission request waits on a frontend only while one that can answer is
-connected, and falls back to the agent's own prompt when none is, when
-someone attaches to its window, or after two minutes. Restore keeps the
-agent window's role and relaunches it on the conversation its hooks last
-reported, hooks included.
+`/etc/pier/claude-hooks.json` (`--settings`, added to the user's own),
+codex reports finished turns through its notify program. Prompts — the
+first one, and any a frontend sends — wait in a queue on the session's
+disk and are typed into the agent's pane when it is ready, each once by
+id; a prompt for a parked session wakes it from a background job on the
+laptop. A permission request waits on a frontend only while one that can
+answer is connected, and falls back to the agent's own prompt when none
+is, when someone attaches to its window, or just before the hook's own
+limit (about fourteen minutes). Its questions (AskUserQuestion) are
+answered the same way — the answers go back in the tool's input — and its
+plans (ExitPlanMode) approved, optionally switching it to accepting edits,
+or sent back with feedback. Restore keeps the agent window's role and
+relaunches it on the conversation its hooks last reported, hooks included.
 
 The stream also tails the agent's transcript — the JSON lines claude and
 codex write as they go — in complete lines from the offset a frontend

@@ -87,15 +87,36 @@ func (c *Client) Interrupt(ctx context.Context, s Session) error {
 	return err
 }
 
-// Decide answers a pending permission request: behavior "allow" or "deny"
-// (with message, the reason the agent hears).
-func (c *Client) Decide(ctx context.Context, s Session, requestID, behavior, message string, updatedInput json.RawMessage) error {
-	if behavior != "allow" && behavior != "deny" {
+// Decision answers an agent's permission request.
+type Decision struct {
+	Behavior string // allow | deny
+	// Message is what the agent hears with a deny: why, or what to change
+	// (feedback on a plan).
+	Message string
+	// Answers are a question's answers, by question text; Notes what the
+	// user added to them.
+	Answers map[string]string
+	Notes   map[string]string
+	// Mode switches the agent's permission mode as it goes on: approving a
+	// plan with "acceptEdits" lets it edit without asking.
+	Mode string
+}
+
+// Decide answers a pending permission request: a tool use allowed or
+// denied, a question answered, a plan approved or sent back.
+func (c *Client) Decide(ctx context.Context, s Session, requestID string, d Decision) error {
+	if d.Behavior != "allow" && d.Behavior != "deny" {
 		return errors.New(`a decision is "allow" or "deny"`)
 	}
-	args := map[string]any{"id": requestID, "behavior": behavior, "message": message}
-	if len(updatedInput) > 0 {
-		args["updated_input"] = updatedInput
+	args := map[string]any{"id": requestID, "behavior": d.Behavior, "message": d.Message}
+	if len(d.Answers) > 0 {
+		args["answers"] = d.Answers
+	}
+	if len(d.Notes) > 0 {
+		args["notes"] = d.Notes
+	}
+	if d.Mode != "" {
+		args["mode"] = d.Mode
 	}
 	_, err := c.Op(ctx, s, "decide", args)
 	return err

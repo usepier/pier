@@ -4,10 +4,12 @@ import {
   Circle,
   CircleCheck,
   CircleDot,
+  ClipboardList,
   FilePlus,
   FileText,
   Globe,
   ListChecks,
+  MessageCircleQuestion,
   Pencil,
   Search,
   SquareTerminal,
@@ -17,6 +19,7 @@ import { useState } from "react";
 import type { EditView, ToolCall } from "@/api/protocol.gen";
 import { Badge } from "@/ui/Badge";
 import { Spinner } from "@/ui/Spinner";
+import { Markdown } from "./Markdown";
 
 const icons = {
   bash: SquareTerminal,
@@ -27,6 +30,8 @@ const icons = {
   web: Globe,
   task: Bot,
   todo: ListChecks,
+  ask: MessageCircleQuestion,
+  plan: ClipboardList,
   generic: Wrench,
 } as const;
 
@@ -39,6 +44,8 @@ const verbs: Record<string, string> = {
   web: "Fetched",
   task: "Delegated",
   todo: "Updated the plan",
+  ask: "Asked",
+  plan: "Proposed a plan",
 };
 
 /** A path relative to the checkout, when it is in one. */
@@ -138,6 +145,33 @@ function ToolDetail({ tool: t }: { tool: ToolCall }) {
   }
   if ((t.view === "edit" || t.view === "write") && t.edit) {
     return <Hunks edit={t.edit} />;
+  }
+  if (t.view === "ask") {
+    return (
+      <div className="flex flex-col gap-1.5">
+        {(t.questions ?? []).map((q) => (
+          <div key={q.question}>
+            <div className="text-sm text-secondary">{q.question}</div>
+            <div className="selectable text-sm">
+              {t.answers?.[q.question] ?? (
+                <span className="text-tertiary">
+                  {t.status === "running" ? "waiting for you" : "not answered"}
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (t.view === "plan") {
+    return t.plan ? (
+      <div className="rounded-ctl border border-separator px-3 py-2">
+        <Markdown text={t.plan} />
+      </div>
+    ) : (
+      <div className="text-xs text-tertiary">{t.result}</div>
+    );
   }
   if (t.view === "todo") {
     return (

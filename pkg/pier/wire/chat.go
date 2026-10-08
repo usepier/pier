@@ -45,6 +45,8 @@ const (
 	ToolSearch  ToolView = "search" // grep, glob: what matched
 	ToolWeb     ToolView = "web"    // a fetch or a search on the web
 	ToolTask    ToolView = "task"   // a subagent
+	ToolAsk     ToolView = "ask"    // questions the agent asked you
+	ToolPlan    ToolView = "plan"   // a plan the agent put to you
 	ToolGeneric ToolView = "generic"
 )
 
@@ -74,6 +76,11 @@ type ToolCall struct {
 	Edit      *EditView  `json:"edit,omitempty"`
 	Bash      *BashView  `json:"bash,omitempty"`
 	Todos     []TodoItem `json:"todos,omitempty"`
+	// Questions and the answers given (by question text), for an ask;
+	// Plan, markdown, for a plan.
+	Questions []Question        `json:"questions,omitempty"`
+	Answers   map[string]string `json:"answers,omitempty"`
+	Plan      string            `json:"plan,omitempty"`
 }
 
 // EditView is a file change.
@@ -123,13 +130,47 @@ type QueuedPrompt struct {
 	At   time.Time `json:"at"`
 }
 
-// PermissionRequest is the agent asking to use a tool.
+// PermissionRequest is the agent waiting on you: to use a tool, to answer
+// its questions (Questions), or to approve its plan (Plan).
 type PermissionRequest struct {
 	ID      string    `json:"id"`
 	Tool    string    `json:"tool"`
 	Summary string    `json:"summary"` // the call in one line
 	Input   string    `json:"input,omitempty"`
 	At      time.Time `json:"at"`
+	// Questions are what the agent asks (AskUserQuestion), under Title.
+	Questions []Question `json:"questions,omitempty"`
+	Title     string     `json:"title,omitempty"`
+	// Plan is the plan to approve (ExitPlanMode), markdown.
+	Plan string `json:"plan,omitempty"`
+}
+
+// Question is one question the agent asks.
+type Question struct {
+	Question string `json:"question"`
+	Header   string `json:"header,omitempty"` // a short chip: "Auth method"
+	Helper   string `json:"helper,omitempty"`
+	// Kind: choice (pick from Options), text or number.
+	Kind        string           `json:"kind"`
+	Options     []QuestionOption `json:"options,omitempty"`
+	MultiSelect bool             `json:"multiSelect,omitempty"`
+	Placeholder string           `json:"placeholder,omitempty"`
+	// Number questions: the range, step, starting value and unit.
+	Min     *float64 `json:"min,omitempty"`
+	Max     *float64 `json:"max,omitempty"`
+	Step    *float64 `json:"step,omitempty"`
+	Default *float64 `json:"default,omitempty"`
+	Unit    string   `json:"unit,omitempty"`
+}
+
+// QuestionOption is one choice of a question.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	// Preview is shown while the option is focused: markdown, or HTML when
+	// PreviewHTML.
+	Preview     string `json:"preview,omitempty"`
+	PreviewHTML bool   `json:"previewHtml,omitempty"`
 }
 
 // ChatSnapshot is a chat as a watch begins.
@@ -189,12 +230,20 @@ type ChatSendResult struct {
 	Job *Job `json:"job,omitempty"`
 }
 
-// DecideParams answers a permission request.
+// DecideParams answers what the agent waits on: allow or deny a tool use;
+// answer its questions (allow with Answers); approve its plan (allow, Mode
+// "acceptEdits" to let it edit without asking) or send it back (deny with
+// Message, the feedback).
 type DecideParams struct {
 	SessionID string `json:"sessionId"`
 	RequestID string `json:"requestId"`
 	Behavior  string `json:"behavior"` // allow | deny
 	Message   string `json:"message,omitempty"`
+	// Answers by question text; several choices joined with ", ".
+	Answers map[string]string `json:"answers,omitempty"`
+	// Notes the user added to an answer, by question text.
+	Notes map[string]string `json:"notes,omitempty"`
+	Mode  string            `json:"mode,omitempty"` // default | acceptEdits
 }
 
 // HistoryParams pages older chat items in.

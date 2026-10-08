@@ -167,3 +167,47 @@ func TestHooksAndLaunch(t *testing.T) {
 		t.Errorf("codex launch = %q", c)
 	}
 }
+
+// A question's answers go back in the tool's input; an approved plan can
+// switch the agent to accepting edits; a refusal carries its reason.
+func TestAnswer(t *testing.T) {
+	in := json.RawMessage(`{"questions":[{"question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}]}]}`)
+	d, err := answer(in, "allow", "", map[string]string{"Which database?": "Postgres"}, map[string]string{"Which database?": "we run it already"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	json.Unmarshal(d.UpdatedInput, &got)
+	if got["answers"].(map[string]any)["Which database?"] != "Postgres" || got["questions"] == nil ||
+		got["annotations"].(map[string]any)["Which database?"].(map[string]any)["notes"] != "we run it already" {
+		t.Errorf("updated input = %s", d.UpdatedInput)
+	}
+	d, _ = answer(json.RawMessage(`{"plan":"1. do it"}`), "allow", "", nil, nil, "acceptEdits")
+	if len(d.UpdatedInput) != 0 || string(d.UpdatedPermissions) != `[{"destination":"session","mode":"acceptEdits","type":"setMode"}]` {
+		t.Errorf("plan approval = %+v", d)
+	}
+	d, _ = answer(nil, "deny", "split step 2", nil, nil, "acceptEdits")
+	if d.Behavior != "deny" || d.Message != "split step 2" || d.UpdatedPermissions != nil {
+		t.Errorf("keep planning = %+v", d)
+	}
+	if _, err := answer(nil, "allow", "", nil, nil, "yolo"); err == nil {
+		t.Error("an unknown mode was accepted")
+	}
+}
+
+func TestWithPlan(t *testing.T) {
+	home := t.TempDir()
+	plan := filepath.Join(home, ".claude", "plans", "p.md")
+	os.MkdirAll(filepath.Dir(plan), 0o700)
+	os.WriteFile(plan, []byte("# Plan\n1. fix it"), 0o600)
+	in := map[string]any{"planFilePath": plan}
+	withPlan(home, "ExitPlanMode", in)
+	if in["plan"] != "# Plan\n1. fix it" {
+		t.Errorf("plan = %v", in["plan"])
+	}
+	out := map[string]any{"planFilePath": "/etc/passwd"}
+	withPlan(home, "ExitPlanMode", out)
+	if out["plan"] != nil {
+		t.Error("a file outside home was read")
+	}
+}

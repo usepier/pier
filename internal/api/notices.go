@@ -75,7 +75,17 @@ func (n *notices) agent(sess pier.Session, a *wire.AgentDetail) {
 	case a.State == wire.AgentWaiting:
 		body := "It's waiting for your answer."
 		if p := a.Pending; p != nil {
-			body = fmt.Sprintf("Allow %s: %s?", p.Tool, p.Summary)
+			switch {
+			case len(p.Questions) > 0:
+				body = p.Questions[0].Question
+				if len(p.Questions) > 1 {
+					body += fmt.Sprintf(" (and %d more)", len(p.Questions)-1)
+				}
+			case p.Tool == "ExitPlanMode":
+				body = "Its plan is ready for you to review."
+			default:
+				body = fmt.Sprintf("Allow %s: %s?", p.Tool, p.Summary)
+			}
 		}
 		n.send(sess, "needs_input", key, sess.Name+" needs you", body)
 	case a.State == wire.AgentReady && (prev == string(wire.AgentWorking) || prev == string(wire.AgentWaiting)):

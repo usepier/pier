@@ -380,6 +380,7 @@ func wireAgentDetail(d *pier.AgentDetail) *wire.AgentDetail {
 	}
 	if p := d.Pending; p != nil {
 		w.Pending = &wire.PermissionRequest{ID: p.ID, Tool: p.Tool, Summary: chat.Summarize(p.Tool, p.Input), Input: string(p.Input), At: p.At.UTC()}
+		w.Pending.Title, w.Pending.Questions, w.Pending.Plan = chat.Asks(p.Tool, p.Input)
 	}
 	for _, q := range d.Queue {
 		w.Queue = append(w.Queue, wire.QueuedPrompt{ID: q.ID, Text: q.Text, At: q.At.UTC()})
@@ -481,7 +482,9 @@ func init() {
 	handle("chat.decide", "Answers the agent's permission request: allow or deny.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.DecideParams) (*wire.Empty, error) {
 			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error {
-				return be.Decide(ctx, sess, p.RequestID, p.Behavior, p.Message, nil)
+				return be.Decide(ctx, sess, p.RequestID, pier.Decision{
+					Behavior: p.Behavior, Message: p.Message, Answers: p.Answers, Notes: p.Notes, Mode: p.Mode,
+				})
 			})
 		})
 	handle("chat.peek", "The bottom of the agent's pane as text: what it is doing, without attaching.",
