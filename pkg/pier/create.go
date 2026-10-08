@@ -2,6 +2,7 @@ package pier
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,8 +23,47 @@ type CreateRequest struct {
 	// (nil = config; 0 = never).
 	Idle, Cap *time.Duration
 	// NoPool skips claiming one of the repo's pooled sessions.
-	NoPool   bool
+	NoPool bool
+	// Agent starts an agent in the session, optionally with a first prompt.
+	Agent    *AgentRequest
 	Progress Progress
+}
+
+// AgentRequest is the agent a new session starts with.
+type AgentRequest struct {
+	Kind           string // claude | codex
+	Model          string
+	PermissionMode string // claude's --permission-mode; "" = its default
+	Prompt         string
+}
+
+// agentSpec turns a request into the launch spec, with fresh ids: the
+// conversation (claude's, so its transcript is known up front), the launch
+// and the first prompt each happen once.
+func agentSpec(a *AgentRequest) (*driver.AgentSpec, error) {
+	if a == nil {
+		return nil, nil
+	}
+	switch a.Kind {
+	case "claude", "codex":
+	default:
+		return nil, fmt.Errorf("unknown agent %q (claude or codex)", a.Kind)
+	}
+	sp := &driver.AgentSpec{Kind: a.Kind, Model: a.Model, PermissionMode: a.PermissionMode, Prompt: a.Prompt,
+		PromptID: newJobID(), LaunchID: newJobID()}
+	if a.Kind == "claude" {
+		sp.Conversation = newUUID()
+	}
+	return sp, nil
+}
+
+// newUUID is a random (v4) UUID.
+func newUUID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // CreateResult is a finished create.
@@ -79,6 +119,10 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 	}
 	image := c.cfg.BakedImage(repo)
 
+	agent, err := agentSpec(req.Agent)
+	if err != nil {
+		return CreateResult{}, err
+	}
 	poolable := c.cfg.PoolSize(repo) > 0 && !req.NoPool
 	var res CreateResult
 	if poolable {
@@ -87,6 +131,7 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 			return CreateResult{}, err
 		}
 		pp.IdleTimeout, pp.UnattendedCap = idle, cap_
+		pp.Agent = agent
 		sess, err := pool.Claim(ctx, pp, sessions, req.Branch, req.Branch, base)
 		if err != nil {
 			// A pooled session accelerates, never gates: whatever broke the
@@ -102,7 +147,7 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 	if !res.Claimed {
 		sess, err := c.drv.Create(ctx, driver.CreateSpec{
 			Name: req.Branch, Repo: req.RepoRoot, Branch: req.Branch, BaseRef: base, Image: image,
-			IdleTimeout: idle, UnattendedCap: cap_,
+			IdleTimeout: idle, UnattendedCap: cap_, Agent: agent,
 			Progress: step,
 		})
 		if err != nil {

@@ -188,6 +188,9 @@ grep -q 'BROWSER=/usr/local/bin/xdg-open' "$HOME/.bashrc" 2>/dev/null || echo 'e
 	if runSetup {
 		s += setupWindow
 	}
+	// The agent the session was made with, in a window of its own; its
+	// first prompt waits in the supervisor's queue until setup is done.
+	s += "\npier-supervisor agent launch || true\n"
 	return s
 }
 
@@ -248,6 +251,7 @@ KillMode=process
 [Install]
 WantedBy=multi-user.target
 UNIT
+sudo /usr/local/bin/pier-supervisor install-hooks || true
 sudo systemctl daemon-reload
 # restart, not enable --now: a baked image boots its own (older) supervisor
 # before this runs, and --now leaves a running unit alone — the session

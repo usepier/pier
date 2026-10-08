@@ -187,6 +187,8 @@ set -uo pipefail
 # Processes die with the stop anyway; ending them now keeps the setup log and
 # shells from writing past the scrub.
 tmux kill-server 2>/dev/null || true
+# The bake's agent state and uploads are per session.
+rm -rf "$HOME/.pier/agent" "$HOME/.pier/uploads"
 # Containers hold their environment (env_file values included) in their
 # config: remove them. Images, volumes and the build cache — the warmth —
 # stay, and a session's setup re-run recreates containers in seconds.

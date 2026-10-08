@@ -9,12 +9,14 @@ package payload
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/usepier/pier/internal/driver"
 )
@@ -133,7 +135,11 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 	}
 	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(spec.Repo))
 	filesTar := filepath.Join(dir, "pier-files.tar")
-	if err := buildFilesTar(filesTar, manifest, spec.Repo, repoFiles, env, setupSrc); err != nil {
+	agentFiles, err := agentEntries(spec.Agent)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	if err := buildFilesTar(filesTar, manifest, spec.Repo, repoFiles, env, setupSrc, agentFiles...); err != nil {
 		return nil, "", "", "", err
 	}
 	if miss := envFilesNotCarried(spec.Repo, repoFiles); len(miss) > 0 {
@@ -248,4 +254,28 @@ func Sanitize(name string) string {
 		s = "session"
 	}
 	return s
+}
+
+// agentEntries are the files that start a session's agent: the launch
+// spec the supervisor reads, and the first prompt in its queue.
+func agentEntries(a *driver.AgentSpec) ([]tarEntry, error) {
+	if a == nil {
+		return nil, nil
+	}
+	spec, err := json.Marshal(map[string]string{
+		"id": a.LaunchID, "kind": a.Kind, "model": a.Model,
+		"permission_mode": a.PermissionMode, "conversation": a.Conversation,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := []tarEntry{{Name: "home/.pier/agent/spec.json", Data: spec, Mode: 0o600}}
+	if strings.TrimSpace(a.Prompt) != "" {
+		p, err := json.Marshal(map[string]any{"id": a.PromptID, "text": a.Prompt, "at": time.Now().UTC(), "first": true})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tarEntry{Name: "home/.pier/agent/queue/" + a.PromptID + ".json", Data: p, Mode: 0o600})
+	}
+	return out, nil
 }

@@ -58,6 +58,10 @@ type hub struct {
 	results []result // recent op results, oldest first: a replayed id gets its answer
 	running map[string]chan struct{}
 	boot    string
+	agent   json.RawMessage
+	// onLastApprover runs when the last frontend able to answer
+	// permission requests disconnects.
+	onLastApprover func()
 }
 
 type result struct {
@@ -120,6 +124,9 @@ func (h *hub) handle(conn net.Conn) {
 		h.mu.Lock()
 		delete(h.subs, c)
 		h.mu.Unlock()
+		if c.wants("approvals") && !h.answerable() && h.onLastApprover != nil {
+			h.onLastApprover()
+		}
 	}()
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 64<<10), 8<<20)
@@ -136,10 +143,13 @@ func (h *hub) handle(conn net.Conn) {
 			}
 			c.mu.Unlock()
 			h.mu.Lock()
-			status, env := h.status, h.env
+			status, env, agent := h.status, h.env, h.agent
 			h.mu.Unlock()
 			if c.wants("status") && status != nil {
 				c.send(message{Ev: "status", Data: status})
+			}
+			if c.wants("agent") && agent != nil {
+				c.send(message{Ev: "agent", Data: agent})
 			}
 			if c.wants("env") {
 				if env == nil {
@@ -195,6 +205,8 @@ func (h *hub) publish(topic string, data any) {
 		h.status = b
 	case "env":
 		h.env = b
+	case "agent":
+		h.agent = b
 	}
 	var to []*client
 	for c := range h.subs {
@@ -251,10 +263,15 @@ func (h *hub) op(r request) (json.RawMessage, error) {
 	}
 }
 
-// ops are the changes frontends can ask for, by name.
+// ops are the changes frontends (and the agent's hooks) can ask for, by
+// name. Agent ops are added when the supervisor's agent tracker starts.
 var ops = map[string]func(args json.RawMessage) (any, error){
 	"container": containerOp,
 }
+
+// answerable reports whether a connected frontend can answer permission
+// requests (it subscribed to "approvals").
+func (h *hub) answerable() bool { return h.watching("approvals") }
 
 func runOp(name string, args json.RawMessage) (json.RawMessage, error) {
 	f, ok := ops[name]
@@ -354,18 +371,27 @@ func opMain(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: pier-supervisor op <json>")
 		return 2
 	}
+	out, code := opRequest(args[0])
+	os.Stdout.Write(out)
+	return code
+}
+
+// opRequest sends one op request to the supervisor and returns its data
+// and an exit code: 0 done, 1 failed (reason on stderr), 2 malformed,
+// 3 no supervisor socket.
+func opRequest(req string) ([]byte, int) {
 	var r request
-	if err := json.Unmarshal([]byte(args[0]), &r); err != nil || r.ID == "" {
+	if err := json.Unmarshal([]byte(req), &r); err != nil || r.ID == "" {
 		fmt.Fprintln(os.Stderr, "pier-supervisor: an op is JSON with an id")
-		return 2
+		return nil, 2
 	}
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pier-supervisor: no stream socket:", err)
-		return 3
+		return nil, 3
 	}
 	defer conn.Close()
-	conn.Write(append([]byte(args[0]), '\n'))
+	conn.Write(append([]byte(req), '\n'))
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 64<<10), 8<<20)
 	for sc.Scan() {
@@ -375,11 +401,10 @@ func opMain(args []string) int {
 		}
 		if m.OK == nil || !*m.OK {
 			fmt.Fprintln(os.Stderr, m.Err)
-			return 1
+			return nil, 1
 		}
-		os.Stdout.Write(m.Data)
-		return 0
+		return m.Data, 0
 	}
 	fmt.Fprintln(os.Stderr, "pier-supervisor: the supervisor went away mid-op")
-	return 1
+	return nil, 1
 }

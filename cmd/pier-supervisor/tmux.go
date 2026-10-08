@@ -57,10 +57,12 @@ type savedWindow struct {
 	// AutoName is tmux's automatic-rename: restore leaves such a window
 	// unnamed so it keeps following its program instead of pinning whatever
 	// the name happened to be at snapshot time.
-	AutoName bool        `json:"auto_name,omitempty"`
-	Active   bool        `json:"active,omitempty"`
-	Layout   string      `json:"layout"`
-	Panes    []savedPane `json:"panes"`
+	AutoName bool   `json:"auto_name,omitempty"`
+	Active   bool   `json:"active,omitempty"`
+	Layout   string `json:"layout"`
+	// Role is what pier made the window for ("agent"), kept across a wake.
+	Role  string      `json:"role,omitempty"`
+	Panes []savedPane `json:"panes"`
 }
 
 type savedPane struct {
@@ -106,7 +108,8 @@ const paneSep = "|pier|"
 
 var paneFormat = strings.Join([]string{
 	"#{session_name}", "#{window_index}", "#{window_name}", "#{window_active}", "#{automatic-rename}",
-	"#{window_layout}", "#{pane_index}", "#{pane_active}", "#{pane_id}", "#{pane_pid}", "#{pane_current_path}",
+	"#{window_layout}", "#{pane_index}", "#{pane_active}", "#{pane_id}", "#{pane_pid}", "#{@pier-role}",
+	"#{pane_current_path}",
 }, paneSep)
 
 // reapTabs ends tab sessions nobody is attached to. They end themselves
@@ -134,8 +137,8 @@ const TabSessionPrefix = "pier-tab-"
 func parsePaneList(out string) tmuxState {
 	var st tmuxState
 	for _, line := range strings.Split(out, "\n") {
-		f := strings.SplitN(line, paneSep, 11)
-		if len(f) != 11 {
+		f := strings.SplitN(line, paneSep, 12)
+		if len(f) != 12 {
 			continue
 		}
 		wi, err1 := strconv.Atoi(f[1])
@@ -156,11 +159,11 @@ func parsePaneList(out string) tmuxState {
 		s := &st.Sessions[len(st.Sessions)-1]
 		if n := len(s.Windows); n == 0 || s.Windows[n-1].Index != wi {
 			s.Windows = append(s.Windows, savedWindow{
-				Index: wi, Name: f[2], Active: f[3] == "1", AutoName: f[4] == "1", Layout: f[5],
+				Index: wi, Name: f[2], Active: f[3] == "1", AutoName: f[4] == "1", Layout: f[5], Role: f[10],
 			})
 		}
 		w := &s.Windows[len(s.Windows)-1]
-		w.Panes = append(w.Panes, savedPane{Index: pi, Active: f[7] == "1", id: f[8], pid: pid, Path: f[10]})
+		w.Panes = append(w.Panes, savedPane{Index: pi, Active: f[7] == "1", id: f[8], pid: pid, Path: f[11]})
 	}
 	return st
 }
@@ -192,6 +195,14 @@ func snapshotTmux(run tmuxRunner, dir string, fg func(pid int) []string) error {
 				p := &w.Panes[pi]
 				p.Argv = fg(p.pid)
 				p.Kind, p.Resume = classifyPane(w.Name, p.Argv)
+				// The conversation the agent is on now, as its hooks reported
+				// it, beats the one its command line started with: a /clear
+				// moves claude to a new one.
+				if p.Kind == kindClaude && theAgents != nil {
+					if c := theAgents.conversation(p.id); uuidRe.MatchString(c) {
+						p.Resume = c
+					}
+				}
 				if p.Kind == kindOther {
 					p.Command = commandLine(prettyArgv(p.Argv, exec.LookPath))
 				}
@@ -449,12 +460,12 @@ func claudeKeptFlags(args []string) []string {
 		switch {
 		case a == "--dangerously-skip-permissions":
 			kept = append(kept, a)
-		case a == "--model" || a == "--permission-mode":
+		case a == "--model" || a == "--permission-mode" || a == "--settings":
 			if i+1 < len(args) {
 				kept = append(kept, a, args[i+1])
 				i++
 			}
-		case strings.HasPrefix(a, "--model=") || strings.HasPrefix(a, "--permission-mode="):
+		case strings.HasPrefix(a, "--model=") || strings.HasPrefix(a, "--permission-mode=") || strings.HasPrefix(a, "--settings="):
 			kept = append(kept, a)
 		}
 	}
@@ -495,9 +506,30 @@ func launchCommand(p savedPane) string {
 		// so the pane comes back as it was — claude, ready.
 		return commandLine(append(cmd, kept...)) + " || " + commandLine(append([]string{"claude"}, kept...))
 	case kindCodex:
-		return "codex resume --last || codex"
+		var args []string
+		if len(p.Argv) > 0 {
+			_, args = program(p.Argv)
+		}
+		kept := codexKeptFlags(args)
+		return commandLine(append([]string{"codex", "resume", "--last"}, kept...)) + " || " + commandLine(append([]string{"codex"}, kept...))
 	}
 	return ""
+}
+
+// codexKeptFlags carries over codex's model and its -c overrides (pier's
+// notify hook rides one) — never a prompt.
+func codexKeptFlags(args []string) []string {
+	var kept []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case (a == "-m" || a == "--model" || a == "-c" || a == "--config") && i+1 < len(args):
+			kept = append(kept, a, args[i+1])
+			i++
+		case strings.HasPrefix(a, "--model=") || strings.HasPrefix(a, "--config="):
+			kept = append(kept, a)
+		}
+	}
+	return kept
 }
 
 // commandLine joins argv for a shell, quoting only the words that need it.
@@ -676,6 +708,9 @@ func buildRestorePlan(st tmuxState, home string) []planStep {
 				if p.Kind == kindOther && p.Command != "" {
 					typed = append(typed, planStep{Args: []string{"send-keys", "-t", target, "-l", p.Command}, AwaitPrompt: target})
 				}
+			}
+			if w.Role != "" {
+				add("set-option", "-w", "-t", win, "@pier-role", w.Role)
 			}
 			if len(w.Panes) > 1 {
 				add("select-layout", "-t", win, w.Layout)

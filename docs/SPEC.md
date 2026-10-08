@@ -173,8 +173,10 @@ derives:
   connection; a forgotten tab keeping it awake is deliberately the user's
   problem. App→app loopback traffic (dev server holding a DB pool) doesn't
   count — only sshd's forward dials do.
-- `busy` — agent process-tree CPU above threshold in window, or recent pty
-  output (heuristic; harnesses stay stock, no hooks)
+- `busy` — an agent turn running (from the hooks of an agent pier
+  launched), agent process-tree CPU above threshold in window, or recent pty
+  output. Waiting on the human is not busy: a session parked mid-question
+  resumes the conversation on wake.
 
 Rules: attached or busy resets the idle clock; detached+quiet past
 `idle_timeout` → park; detached+busy past `unattended_cap` → park (runaway
@@ -193,6 +195,20 @@ supervisor rather than the ssh channel that asked, so a dropped connection
 can't leave one half done, and each carries an id that makes a retry a
 no-op. A session whose supervisor predates the stream gets this pier's on
 first contact, the same install a create or claim does.
+
+A session can start with an agent (`--agent claude|codex`, `-p` for its
+first prompt). The supervisor launches it in a tmux window of its own
+(`@pier-role=agent`) and follows it through hooks: claude reads them from
+`/etc/pier/claude-hooks.json` (`--settings`, added to the user's own), codex
+reports finished turns through its notify program. Prompts — the first one,
+and any a frontend sends — wait in a queue on the session's disk and are
+typed into the agent's pane when it is ready, each once by id; a prompt for
+a parked session wakes it from a background job on the laptop. A
+permission request waits on a frontend only while one that can answer is
+connected, and falls back to the agent's own prompt when none is, when
+someone attaches to its window, or after two minutes. Restore keeps the
+agent window's role and relaunches it on the conversation its hooks last
+reported, hooks included.
 
 `pier park <match>` parks a session on demand: a cloud stop, like any other.
 A stop from outside reaches the supervisor as systemd's SIGTERM, and it takes

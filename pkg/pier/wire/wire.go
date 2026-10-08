@@ -60,6 +60,29 @@ type Session struct {
 	Ports     []Port     `json:"ports,omitempty"`
 	ParkAt    *time.Time `json:"parkAt,omitempty"`
 	CapAt     *time.Time `json:"capAt,omitempty"`
+	// Agent is the agent pier launched in the session, as last reported.
+	Agent *AgentStatus `json:"agent,omitempty"`
+}
+
+// AgentState is where a session's agent is.
+type AgentState string
+
+const (
+	AgentStarting AgentState = "starting" // launched, not ready yet
+	AgentReady    AgentState = "ready"    // at its prompt
+	AgentWorking  AgentState = "working"  // a turn is running
+	AgentWaiting  AgentState = "waiting"  // stopped on you: a permission, a question
+	AgentEnded    AgentState = "ended"    // the program exited
+)
+
+// AgentStatus is a session's agent in a list view.
+type AgentStatus struct {
+	Kind    string     `json:"kind"` // claude | codex
+	State   AgentState `json:"state"`
+	Waiting string     `json:"waiting,omitempty"` // permission | input
+	Since   time.Time  `json:"since"`
+	Last    string     `json:"last,omitempty"` // its last message, trimmed
+	Queued  int        `json:"queued,omitempty"`
 }
 
 // Resources is a session's load. Sizes are bytes.

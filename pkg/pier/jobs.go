@@ -38,10 +38,11 @@ const (
 type JobKind string
 
 const (
-	JobCreate JobKind = "create"
-	JobBake   JobKind = "bake"
-	JobFill   JobKind = "fill"
-	JobResize JobKind = "resize"
+	JobCreate  JobKind = "create"
+	JobBake    JobKind = "bake"
+	JobFill    JobKind = "fill"
+	JobResize  JobKind = "resize"
+	JobDeliver JobKind = "deliver" // wake a parked session and queue a prompt there
 )
 
 // JobState is where a job is.
@@ -123,6 +124,27 @@ func (c *Client) StartCreate(req CreateRequest) (Job, error) {
 	}
 	if req.NoPool {
 		args = append(args, "--no-pool")
+	}
+	if a := req.Agent; a != nil {
+		args = append(args, "--agent", a.Kind)
+		if a.Model != "" {
+			args = append(args, "--model", a.Model)
+		}
+		if a.PermissionMode != "" {
+			args = append(args, "--permission-mode", a.PermissionMode)
+		}
+		if a.Prompt != "" {
+			// The prompt rides a private file, not argv: process lists are
+			// readable by every user of the machine.
+			if err := os.MkdirAll(jobsDir(), 0o700); err != nil {
+				return Job{}, err
+			}
+			pf := filepath.Join(jobsDir(), "prompt-"+newJobID())
+			if err := os.WriteFile(pf, []byte(a.Prompt), 0o600); err != nil {
+				return Job{}, err
+			}
+			args = append(args, "--prompt-file", pf)
+		}
 	}
 	return startJob(JobCreate, filepath.Base(req.RepoRoot), req.Branch, req.RepoRoot, CreateLogPath(req.Branch), false, args...)
 }

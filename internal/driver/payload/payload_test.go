@@ -681,3 +681,34 @@ func TestSSHDAllowsMultiplexing(t *testing.T) {
 		t.Error("sessions from older images must pick the limit up on bootstrap or claim")
 	}
 }
+
+// A session made with an agent carries its launch spec and first prompt to
+// the supervisor; one without carries neither.
+func TestAgentEntries(t *testing.T) {
+	none, err := agentEntries(nil)
+	if err != nil || none != nil {
+		t.Fatalf("no agent = %v %v", none, err)
+	}
+	es, err := agentEntries(&driver.AgentSpec{Kind: "claude", Conversation: "c-1", Prompt: "fix the login bug", PromptID: "p1", LaunchID: "l1"})
+	if err != nil || len(es) != 2 {
+		t.Fatalf("entries = %+v %v", es, err)
+	}
+	if es[0].Name != "home/.pier/agent/spec.json" || !strings.Contains(string(es[0].Data), `"conversation":"c-1"`) || es[0].Mode != 0o600 {
+		t.Errorf("spec = %s %s", es[0].Name, es[0].Data)
+	}
+	if es[1].Name != "home/.pier/agent/queue/p1.json" || !strings.Contains(string(es[1].Data), `"first":true`) {
+		t.Errorf("prompt = %s %s", es[1].Name, es[1].Data)
+	}
+	if es, _ := agentEntries(&driver.AgentSpec{Kind: "codex", LaunchID: "l2"}); len(es) != 1 {
+		t.Error("no prompt, no queue entry")
+	}
+}
+
+func TestScriptsLaunchTheAgentAndInstallHooks(t *testing.T) {
+	if !strings.Contains(sessionUp(true), "pier-supervisor agent launch") || !strings.Contains(sessionUp(false), "pier-supervisor agent launch") {
+		t.Error("creates and claims launch the agent once the session is up")
+	}
+	if !strings.Contains(installSupervisor, "pier-supervisor install-hooks") {
+		t.Error("every supervisor install writes the hooks file")
+	}
+}

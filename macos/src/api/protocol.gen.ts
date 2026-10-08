@@ -420,7 +420,25 @@ export interface Session {
   ports?: Port[];
   parkAt?: string;
   capAt?: string;
+  /** Agent is the agent pier launched in the session, as last reported. */
+  agent?: AgentStatus;
 }
+
+/** AgentStatus is a session's agent in a list view. */
+export interface AgentStatus {
+  /** claude | codex */
+  kind: string;
+  state: AgentState;
+  /** permission | input */
+  waiting?: string;
+  since: string;
+  /** its last message, trimmed */
+  last?: string;
+  queued?: number;
+}
+
+/** AgentState is where a session's agent is. */
+export type AgentState = "starting" | "ready" | "working" | "waiting" | "ended";
 
 /** SessionRef names a session by id. */
 export interface SessionRef {

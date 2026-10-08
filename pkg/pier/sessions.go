@@ -159,6 +159,14 @@ type beacon struct {
 	} `json:"res"`
 	ParkAt *time.Time `json:"park_at"`
 	CapAt  *time.Time `json:"cap_at"`
+	Agent  *struct {
+		Kind    string    `json:"kind"`
+		State   string    `json:"state"`
+		Waiting string    `json:"waiting"`
+		Since   time.Time `json:"since"`
+		Last    string    `json:"last"`
+		Queued  int       `json:"queued"`
+	} `json:"agent"`
 }
 
 // apply copies the beacon's load, ports and countdowns onto s.
@@ -177,6 +185,11 @@ func (b beacon) apply(s *Session) {
 	}
 	if b.CapAt != nil {
 		s.CapAt = *b.CapAt
+	}
+	s.Agent = nil
+	if b.Agent != nil {
+		a := AgentStatus(*b.Agent)
+		s.Agent = &a
 	}
 }
 
@@ -504,6 +517,7 @@ func CarryStatus(prev, next []Session) []Session {
 			next[i].Strained, next[i].Setup = p.Strained, p.Setup
 			next[i].Res, next[i].Ports = p.Res, p.Ports
 			next[i].ParkAt, next[i].CapAt = p.ParkAt, p.CapAt
+			next[i].Agent = p.Agent
 		}
 	}
 	return next

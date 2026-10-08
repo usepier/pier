@@ -79,6 +79,9 @@ var helpSections = []helpSection{
 			{"  --cap <dur|never>", "runaway cap for this session"},
 			{"  --no-park", "never park this session when idle"},
 			{"  --no-pool", "launch fresh instead of claiming a pooled session"},
+			{"  --agent <claude|codex>", "start an agent in its own window (with -p, its first prompt)"},
+			{"  -p, --prompt <text>", "the agent's first prompt, typed in once setup is done"},
+			{"  --model <model>", "the agent's model"},
 			{"pier ls [--json]", "list sessions"},
 			{"pier attach <session>", "attach; a parked session resumes with its tmux restored"},
 			{"pier logs <session> [-f]", "show or follow the setup log"},
@@ -149,6 +152,8 @@ func main() {
 		cmdKeep(args[1:])
 	case "park":
 		cmdPark(args[1:])
+	case "deliver":
+		cmdDeliver(args[1:]) // hidden: the background half of sending to a parked session
 	case "resize":
 		cmdResize(args[1:])
 	case "repos":
@@ -258,7 +263,9 @@ func stepLine(msg string) {
 func cmdNew(args []string) {
 	// Split positionals from flags so `pier my-branch -d` works (Go's flag
 	// package stops at the first positional).
-	takesValue := map[string]bool{"-idle": true, "--idle": true, "-cap": true, "--cap": true}
+	takesValue := map[string]bool{"-idle": true, "--idle": true, "-cap": true, "--cap": true,
+		"-agent": true, "--agent": true, "-model": true, "--model": true, "-p": true, "--prompt": true,
+		"-prompt-file": true, "--prompt-file": true, "-permission-mode": true, "--permission-mode": true}
 	var pos, flagArgs []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -280,7 +287,22 @@ func cmdNew(args []string) {
 	fs.BoolVar(&noPool, "no-pool", false, "")
 	idleS := fs.String("idle", "", "")
 	capS := fs.String("cap", "", "")
+	agentS := fs.String("agent", "", "")
+	modelS := fs.String("model", "", "")
+	permS := fs.String("permission-mode", "", "")
+	var promptS, promptFile string
+	fs.StringVar(&promptS, "p", "", "")
+	fs.StringVar(&promptS, "prompt", "", "")
+	fs.StringVar(&promptFile, "prompt-file", "", "") // a background create's prompt, kept out of argv
 	fs.Parse(flagArgs)
+	if promptFile != "" {
+		b, err := os.ReadFile(promptFile)
+		if err != nil {
+			fatal(fmt.Errorf("--prompt-file: %w", err))
+		}
+		os.Remove(promptFile)
+		promptS = string(b)
+	}
 	if len(pos) < 1 || len(pos) > 2 {
 		printUsage()
 		os.Exit(1)
@@ -305,6 +327,13 @@ func cmdNew(args []string) {
 			fatal(fmt.Errorf("--cap: %w", err))
 		}
 		req.Cap = &d
+	}
+	if *agentS != "" || promptS != "" {
+		kind := *agentS
+		if kind == "" {
+			kind = "claude"
+		}
+		req.Agent = &pier.AgentRequest{Kind: kind, Model: *modelS, PermissionMode: *permS, Prompt: promptS}
 	}
 
 	c := open()
@@ -721,6 +750,39 @@ func cmdPark(args []string) {
 		fatal(err)
 	}
 	fmt.Println(ui.OK.Render(s.Name+" parking") + ui.Dim.Render(" — disk only from here; attach wakes it with its tmux windows back"))
+}
+
+// cmdDeliver wakes a session if it's parked and queues a prompt for its
+// agent: the background job a frontend starts for a parked session.
+func cmdDeliver(args []string) {
+	fs := flag.NewFlagSet("deliver", flag.ExitOnError)
+	id := fs.String("id", "", "")
+	file := fs.String("prompt-file", "", "")
+	mode := fs.String("mode", "", "")
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			fs.Parse(args[i:])
+			break
+		}
+		pos = append(pos, args[i])
+	}
+	if len(pos) != 1 || *id == "" || *file == "" {
+		fatal(fmt.Errorf("usage: pier deliver <session> --id <id> --prompt-file <path> [--mode now]"))
+	}
+	b, err := os.ReadFile(*file)
+	if err != nil {
+		fatal(err)
+	}
+	c := open()
+	s := match(c, pos[0])
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := c.Deliver(ctx, s, *id, string(b), *mode, progress); err != nil {
+		fatal(err)
+	}
+	os.Remove(*file)
+	fmt.Println(ui.OK.Render("prompt queued in " + s.Name))
 }
 
 func cmdResize(args []string) {

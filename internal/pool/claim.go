@@ -109,6 +109,7 @@ func freshen(ctx context.Context, p Params, member *driver.Session, name, branch
 	spec := driver.CreateSpec{
 		Name: name, Repo: p.RepoRoot, Branch: branch, BaseRef: baseRef,
 		IdleTimeout: p.IdleTimeout, UnattendedCap: p.UnattendedCap,
+		Agent: p.Agent,
 	}
 	// The claiming pier's supervisor replaces the fill's, so a member stays
 	// claimable across pier upgrades.

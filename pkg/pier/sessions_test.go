@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -142,5 +143,34 @@ func TestBeaconCarriesLoadAndCountdown(t *testing.T) {
 	old.apply(&s2)
 	if s2.Res != nil || Countdown(s2, now) != "" || Load(s2) != "" {
 		t.Error("an older beacon carries no load or countdown")
+	}
+}
+
+func TestAgentSpecIDs(t *testing.T) {
+	sp, err := agentSpec(&AgentRequest{Kind: "claude", Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(sp.Conversation) {
+		t.Errorf("claude's conversation id must be a v4 UUID: %q", sp.Conversation)
+	}
+	if sp.PromptID == "" || sp.LaunchID == "" || sp.PromptID == sp.LaunchID {
+		t.Errorf("ids = %+v", sp)
+	}
+	if sp, _ := agentSpec(&AgentRequest{Kind: "codex"}); sp.Conversation != "" {
+		t.Error("codex picks its own conversation")
+	}
+	if _, err := agentSpec(&AgentRequest{Kind: "other"}); err == nil {
+		t.Error("unknown agents are refused")
+	}
+}
+
+func TestBeaconCarriesTheAgent(t *testing.T) {
+	var b beacon
+	json.Unmarshal([]byte(`{"state":"working","agent":{"kind":"claude","state":"waiting","waiting":"permission","last":"Shall I run the migration?","queued":1}}`), &b)
+	var s Session
+	b.apply(&s)
+	if s.Agent == nil || s.Agent.State != "waiting" || s.Agent.Waiting != "permission" || s.Agent.Queued != 1 {
+		t.Errorf("agent = %+v", s.Agent)
 	}
 }

@@ -28,6 +28,9 @@ func wireSession(be Backend, s pier.Session) wire.Session {
 	for _, p := range s.Ports {
 		w.Ports = append(w.Ports, wire.Port{Port: p.Port, Process: p.Process, PID: p.PID})
 	}
+	if a := s.Agent; a != nil {
+		w.Agent = &wire.AgentStatus{Kind: a.Kind, State: wire.AgentState(a.State), Waiting: a.Waiting, Since: a.Since.UTC(), Last: a.Last, Queued: a.Queued}
+	}
 	return w
 }
 

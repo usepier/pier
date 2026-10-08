@@ -272,7 +272,14 @@ func setupScriptOverride(repoRoot string) (path, warn string) {
 // extras, relative paths kept under repo/), a PIER_SETUP_SCRIPT override (as
 // home/.config/pier/setup.sh), and a generated home/.config/pier/env with the
 // session tokens. The bootstrap extracts the two prefixes to the right places.
-func buildFilesTar(dst string, manifest []string, repoRoot string, repoFiles []string, env map[string]string, setupSrc string) error {
+// tarEntry is one generated file for the files tar.
+type tarEntry struct {
+	Name string // tar path: home/... or repo/...
+	Data []byte
+	Mode int64
+}
+
+func buildFilesTar(dst string, manifest []string, repoRoot string, repoFiles []string, env map[string]string, setupSrc string, extra ...tarEntry) error {
 	f, err := os.Create(dst)
 	if err != nil {
 		return err
@@ -351,6 +358,15 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, repoFiles []s
 			if err := addFile(p, "repo/"+rel, mode); err != nil {
 				return err
 			}
+		}
+	}
+
+	for _, e := range extra {
+		if err := tw.WriteHeader(&tar.Header{Name: e.Name, Mode: e.Mode, Size: int64(len(e.Data))}); err != nil {
+			return err
+		}
+		if _, err := tw.Write(e.Data); err != nil {
+			return err
 		}
 	}
 

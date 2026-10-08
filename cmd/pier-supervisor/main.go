@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -84,6 +85,8 @@ type status struct {
 	// IdleTimeout and Cap are the configured limits, in seconds (0 = never).
 	IdleTimeout int64 `json:"idle_timeout,omitempty"`
 	Cap         int64 `json:"cap,omitempty"`
+	// Agent is the session's agent, when pier launched one.
+	Agent *agentSummary `json:"agent,omitempty"`
 }
 
 // port is a listening port and who holds it.
@@ -108,6 +111,15 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "op" {
 		os.Exit(opMain(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		os.Exit(hookMain(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "install-hooks" {
+		os.Exit(installHooksMain())
+	}
+	if len(os.Args) > 2 && os.Args[1] == "agent" && os.Args[2] == "launch" {
+		os.Exit(launchMain())
 	}
 
 	// A stop from outside (the cloud stopping the instance, a resize) shuts
@@ -143,18 +155,39 @@ func main() {
 	var cpu cpuSampler
 	var procs procSampler
 	h := newHub()
+	home, _ := os.UserHomeDir()
+	ag := newAgents(home, func() {})
+	theAgents = ag
+	var touchedAt atomic.Int64
+	registerAgentOps(ag, h, home, func() { touchedAt.Store(time.Now().UnixNano()) })
+	ag.notify = func() { h.publish("agent", ag.snapshot()) }
 	go func() {
 		if err := h.serve(); err != nil {
 			fmt.Println("pier-supervisor: stream socket:", err)
 		}
 	}()
+	// Prompts go in as soon as the agent can take them, not on the slower
+	// status tick.
+	go func() {
+		for {
+			ag.deliver(home, setupState() == "running")
+			time.Sleep(time.Second)
+		}
+	}()
+	lastTouch := int64(0)
 
 	for {
 		idleTimeout, cap_ := readConf()
 		listening, ports, tunnels := netSnapshot()
 		setup := setupState()
 		attached := tmuxAttached() || tunnels > 0
-		busy := setup == "running" || agentBusy() || ptyActive()
+		busy := setup == "running" || ag.turnOpen() || agentBusy() || ptyActive()
+		// Someone acting on the agent from a frontend (a prompt, an
+		// answer) is a human in the loop: the runaway clock starts over.
+		if t := touchedAt.Load(); t != lastTouch {
+			lastTouch = t
+			detachedBusySince = time.Time{}
+		}
 
 		now := time.Now()
 		st := "idle"
@@ -193,6 +226,8 @@ func main() {
 			at := detachedBusySince.Add(cap_)
 			last.CapAt = &at
 		}
+		last.Agent = ag.summary(home)
+		ag.releaseAttached(attachedWindows())
 		writeStatus(last)
 		h.publish("status", last)
 		if h.watching("env") {
@@ -239,6 +274,22 @@ func readConf() (idle, cap_ time.Duration) {
 		return 0
 	}
 	return get("idle_timeout"), get("unattended_cap")
+}
+
+// theAgents is the supervisor's agent tracker, for the tmux snapshot.
+var theAgents *agents
+
+// attachedWindows are the tmux windows a client is looking at.
+func attachedWindows() map[string]bool {
+	out, err := exec.Command("tmux", "list-clients", "-F", "#{window_id}").Output()
+	ws := map[string]bool{}
+	if err != nil {
+		return ws
+	}
+	for _, w := range strings.Fields(string(out)) {
+		ws[w] = true
+	}
+	return ws
 }
 
 func tmuxAttached() bool {

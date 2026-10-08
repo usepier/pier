@@ -133,7 +133,12 @@ func TestLayoutSize(t *testing.T) {
 }
 
 func TestParsePaneList(t *testing.T) {
-	row := func(f ...string) string { return strings.Join(f, paneSep) + "\n" }
+	// Rows as the snapshot's format prints them; the role field (empty
+	// here) sits before the cwd.
+	row := func(f ...string) string {
+		f = append(append(append([]string{}, f[:10]...), ""), f[10:]...)
+		return strings.Join(f, paneSep) + "\n"
+	}
 	out := row("main", "0", "editor", "1", "0", "b25f,200x50,0,0{100x50,0,0,0,99x50,101,0,1}", "0", "1", "%0", "101", "/home/agent/work/shop") +
 		row("main", "0", "editor", "1", "0", "b25f,200x50,0,0{100x50,0,0,0,99x50,101,0,1}", "1", "0", "%1", "102", "/home/agent/work/shop/web") +
 		row("main", "1", "bash", "0", "1", "aaaa,200x50,0,0,2", "0", "1", "%2", "103", "/home/agent/odd"+paneSep+"dir") +
@@ -479,11 +484,51 @@ func withMarker(t *testing.T, path string) {
 // A frontend's terminal tabs are grouped views of main; the snapshot keeps
 // main alone, or restore would rebuild every window once per open tab.
 func TestSnapshotSkipsTabSessions(t *testing.T) {
-	row := func(f ...string) string { return strings.Join(f, paneSep) + "\n" }
+	// Rows as the snapshot's format prints them; the role field (empty
+	// here) sits before the cwd.
+	row := func(f ...string) string {
+		f = append(append(append([]string{}, f[:10]...), ""), f[10:]...)
+		return strings.Join(f, paneSep) + "\n"
+	}
 	out := row("main", "0", "bash", "1", "1", "aaaa,80x24,0,0,1", "0", "1", "%0", "101", "/home/agent") +
 		row(TabSessionPrefix+"t1", "0", "bash", "1", "1", "aaaa,80x24,0,0,1", "0", "1", "%0", "101", "/home/agent")
 	st := parsePaneList(out)
 	if len(st.Sessions) != 1 || st.Sessions[0].Name != "main" {
 		t.Errorf("sessions = %+v, want main only", st.Sessions)
+	}
+}
+
+// The agent's window keeps its role across a wake, and its claude comes
+// back on its conversation with pier's hooks.
+func TestRestoreKeepsTheAgentWindow(t *testing.T) {
+	st := tmuxState{Sessions: []savedSession{{Name: "main", Windows: []savedWindow{{
+		Index: 1, Name: "agent", Role: "agent", Layout: "aaaa,80x24,0,0,1",
+		Panes: []savedPane{{Index: 0, Path: "/home/agent/work/shop", Kind: kindClaude, Resume: "11111111-2222-3333-4444-555555555555",
+			Argv: []string{"claude", "--session-id", "00000000-0000-0000-0000-000000000000", "--settings", hooksPath, "fix the bug"}}},
+	}}}}}
+	plan := buildRestorePlan(st, "/home/agent")
+	var role, run string
+	for _, step := range plan {
+		joined := strings.Join(step.Args, " ")
+		if strings.Contains(joined, "@pier-role agent") {
+			role = joined
+		}
+		if strings.Contains(joined, "PIER_RESTORE_RUN=") {
+			run = joined
+		}
+	}
+	if role == "" {
+		t.Error("the agent window must get its role back")
+	}
+	if !strings.Contains(run, "--resume 11111111-2222-3333-4444-555555555555") || !strings.Contains(run, "--settings") || strings.Contains(run, "fix the bug") {
+		t.Errorf("relaunch = %s", run)
+	}
+}
+
+func TestCodexRelaunchKeepsItsHook(t *testing.T) {
+	p := savedPane{Kind: kindCodex, Argv: []string{"codex", "-c", `notify=["x"]`, "-m", "gpt-5", "write tests"}}
+	got := launchCommand(p)
+	if !strings.Contains(got, "-m gpt-5") || !strings.Contains(got, "notify=") || strings.Contains(got, "write tests") {
+		t.Errorf("codex relaunch = %s", got)
 	}
 }
