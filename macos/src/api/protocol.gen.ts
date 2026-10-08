@@ -1159,7 +1159,7 @@ export interface TermLocalParams {
  * LocalPurpose names what a local terminal runs. The app never names a
  * command itself: pier decides what each purpose runs.
  */
-export type LocalPurpose = "login" | "setup" | "aws-sso" | "gcloud-login" | "gh-login" | "claude-token";
+export type LocalPurpose = "login" | "setup" | "aws-sso" | "gcloud-login" | "gh-login" | "claude-token" | "teardown";
 
 /** TermOpenParams opens a terminal tab into a session's tmux. */
 export interface TermOpenParams {
@@ -1429,6 +1429,8 @@ export interface Methods {
   "setup.defaults": { params: SetupDraft; result: SetupDefaults };
   /** What setup finds on this machine: tools, cloud logins, agent config, and the saved answers (else the defaults). */
   "setup.detect": { params: Empty; result: SetupState };
+  /** Runs the login setup.check asked for — aws sso login for the profile, gcloud auth login — narrating it (browser prompts, device codes) as progress. */
+  "setup.login": { params: SetupCheckParams; result: null };
   /** Ends the server once every earlier request has answered and this reply is out. */
   "shutdown": { params: Empty; result: unknown };
   /** Hangs a terminal up. Its tmux windows keep running in the session. */

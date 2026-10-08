@@ -8,6 +8,7 @@ import { linkCheckout } from "@/features/repos/link";
 import { hourly } from "@/lib/format";
 import { attentionOf, reasonText, reasonTone, useSeen } from "@/state/attention";
 import { sessionTone, useOverview } from "@/state/overview";
+import { useProxy } from "@/state/proxy";
 import { useUI } from "@/state/ui";
 import { IconButton } from "@/ui/Button";
 import { Meter } from "@/ui/Panel";
@@ -203,6 +204,7 @@ export function Sidebar() {
 function SidebarFooter() {
   const o = useOverview();
   const navigate = useNavigate();
+  const proxy = useProxy();
   const q = o?.quota;
   return (
     <div className="shrink-0 border-t border-separator px-3 py-2">
@@ -210,6 +212,16 @@ function SidebarFooter() {
         <span className="min-w-0 flex-1 truncate" title={o?.cloud}>
           {o ? `${o.totals.running} running · ${hourly(o.totals.hourlyUsd)}` : "connecting…"}
         </span>
+        {proxy?.running && (
+          <button
+            type="button"
+            onClick={() => navigate({ to: "/settings" })}
+            title={`Local names on: ${proxy.sessions.map((x) => x.host).join(", ") || "no running sessions"}`}
+            className="flex h-5 shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 text-2xs font-medium text-accent"
+          >
+            .pier
+          </button>
+        )}
         <IconButton label="Settings" className="size-6" onPress={() => navigate({ to: "/settings" })}>
           <Settings size={14} />
         </IconButton>

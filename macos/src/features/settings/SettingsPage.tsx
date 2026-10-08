@@ -20,6 +20,7 @@ import { usePrefs } from "@/state/prefs";
 import { attempt, toast } from "@/state/toasts";
 import { Empty } from "@/ui/Empty";
 import { Spinner } from "@/ui/Spinner";
+import { AccountSection, ChecksSection, ProxySection } from "./MaintenanceSections";
 
 /** The settings page: pier's own settings schema, one grouped form. */
 export function SettingsPage() {
@@ -40,6 +41,9 @@ export function SettingsPage() {
       <div className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
         <h1 className="text-xl font-semibold">Settings</h1>
         <AppSection />
+        <ProxySection />
+        <ChecksSection />
+        <AccountSection />
         {data.groups.map((g) => {
           const rows = data.settings.filter((s) => s.group === g.key);
           if (!rows.length) return null;

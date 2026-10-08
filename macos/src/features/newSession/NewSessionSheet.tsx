@@ -17,6 +17,7 @@ import { linkCheckout } from "@/features/repos/link";
 import { branchProblem, plural } from "@/lib/format";
 import { trackJob } from "@/state/jobs";
 import { useOverview } from "@/state/overview";
+import { usePrefs } from "@/state/prefs";
 import { attempt, toast } from "@/state/toasts";
 import { useUI } from "@/state/ui";
 import { Button } from "@/ui/Button";
@@ -28,7 +29,12 @@ const LINK = "\u0000link";
 
 /** New Session: which clone, which branch, and what travels with it. */
 export function NewSessionSheet() {
-  const { open, repo: preset } = useUI((s) => s.newSession);
+  const { open, repo: preset, preset: fill } = useUI((s) => s.newSession);
+  const defaultAgent = usePrefs((p) => p.defaultAgent);
+  const setPrefs = usePrefs((p) => p.set);
+  const [agent, setAgent] = useState(defaultAgent);
+  const [model, setModel] = useState("");
+  const [prompt, setPrompt] = useState("");
   const close = useUI((s) => s.closeNewSession);
   const o = useOverview();
   const navigate = useNavigate();
@@ -47,10 +53,13 @@ export function NewSessionSheet() {
     if (!opening) return;
     const fromPreset = checkouts.find((c) => c.name === preset)?.path;
     setPath(fromPreset ?? checkouts[0]?.path ?? "");
-    setBranch("");
+    setBranch(fill?.branch ?? "");
     setBase("");
     setNoPool(false);
-  }, [open, preset, checkouts]);
+    setPrompt(fill?.prompt ?? "");
+    setModel("");
+    setAgent(fill?.prompt && !defaultAgent ? "claude" : defaultAgent);
+  }, [open, preset, checkouts, fill, defaultAgent]);
 
   const info = useQuery({
     queryKey: ["inspect", path],
@@ -68,10 +77,19 @@ export function NewSessionSheet() {
     if (!canCreate) return;
     setBusy(true);
     const job = await attempt(() =>
-      rpc.call("sessions.create", { path, branch, base: base || undefined, noPool: noPool || undefined }),
+      rpc.call("sessions.create", {
+        path,
+        branch,
+        base: base || undefined,
+        noPool: noPool || undefined,
+        agent: agent
+          ? { kind: agent, model: model.trim() || undefined, prompt: prompt.trim() || undefined }
+          : undefined,
+      }),
     );
     setBusy(false);
     if (!job) return;
+    setPrefs({ defaultAgent: agent });
     trackJob(job);
     close();
     toast(`Creating ${branch}`, "info");
@@ -173,6 +191,54 @@ export function NewSessionSheet() {
           mono
           hint="Another branch or commit, if not your current HEAD. Uncommitted changes only travel with HEAD."
         />
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-secondary">Agent</span>
+          <div className="flex items-center gap-2">
+            <fieldset aria-label="Agent" className="m-0 flex rounded-ctl border-0 bg-selected p-0.5 text-sm">
+              {(
+                [
+                  ["claude", "Claude"],
+                  ["codex", "Codex"],
+                  ["", "None"],
+                ] as const
+              ).map(([k, label]) => (
+                <button
+                  key={k || "none"}
+                  type="button"
+                  aria-pressed={agent === k}
+                  onClick={() => setAgent(k)}
+                  className={`rounded-[4px] px-3 py-0.5 ${agent === k ? "bg-control text-label shadow-sm" : "text-secondary"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </fieldset>
+            {agent && (
+              <input
+                aria-label="Model"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="model (its default)"
+                className="selectable h-7 min-w-0 flex-1 rounded-ctl border border-separator bg-control px-2 font-mono text-sm outline-none placeholder:font-sans placeholder:text-tertiary focus:border-accent"
+              />
+            )}
+          </div>
+        </div>
+        {agent && (
+          <div className="flex flex-col gap-1">
+            <label htmlFor="first-prompt" className="text-xs font-medium text-secondary">
+              First prompt
+            </label>
+            <textarea
+              id="first-prompt"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={3}
+              placeholder="What to do — it starts once the session is set up. Optional."
+              className="selectable resize-none rounded-ctl border border-separator bg-control px-2 py-1.5 text-base outline-none placeholder:text-tertiary focus:border-accent"
+            />
+          </div>
+        )}
         <Checkbox isSelected={noPool} onChange={setNoPool} className="group flex items-center gap-2 text-sm">
           <span className="flex size-4 items-center justify-center rounded border border-separator bg-control group-data-selected:border-accent group-data-selected:bg-accent">
             <span className="hidden text-[10px] text-on-accent group-data-selected:block">✓</span>

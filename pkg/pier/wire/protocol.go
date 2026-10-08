@@ -209,6 +209,7 @@ const (
 	LocalGCloudLogin LocalPurpose = "gcloud-login" // gcloud auth login
 	LocalGHLogin     LocalPurpose = "gh-login"     // gh auth login
 	LocalClaudeToken LocalPurpose = "claude-token" // claude setup-token
+	LocalTeardown    LocalPurpose = "teardown"     // pier teardown
 )
 
 // TermLocalParams opens a terminal on this machine.

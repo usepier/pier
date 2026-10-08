@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { FolderGit2, Hammer, Minus, Plus, SquarePlus } from "lucide-react";
+import { FolderGit2, Hammer, Minus, Plus, Sparkles, SquarePlus } from "lucide-react";
 import { rpc } from "@/api/client";
 import type { Repo, Session } from "@/api/protocol.gen";
 import { PRBadge } from "@/features/github/PRBadge";
@@ -18,6 +18,9 @@ import { Empty } from "@/ui/Empty";
 import { Facts, Meter, Panel, Stat } from "@/ui/Panel";
 import { Sparkline } from "@/ui/Sparkline";
 import { StateDot } from "@/ui/StateDot";
+
+const onboardPrompt =
+  "Set this repository up for pier, using the pier-onboard skill: write .pier/setup.sh so a fresh session installs dependencies and starts services, check it runs, and open a pull request with it.";
 
 export function CockpitPage() {
   const { name } = useParams({ from: "/repo/$name" });
@@ -47,6 +50,26 @@ export function CockpitPage() {
             New Session
           </Button>
         </header>
+
+        {repo.checkout && !repo.hasPier && (
+          <div className="flex items-center gap-3 rounded-card border border-accent/30 bg-accent-soft px-4 py-3 text-sm">
+            <Sparkles size={16} className="shrink-0 text-accent" />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium">{repo.name} isn't set up for pier yet</div>
+              <div className="text-secondary">
+                An agent can write its .pier/setup.sh — so sessions start with dependencies installed and
+                services running.
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="primary"
+              onPress={() => openNew(repo.name, { branch: "pier-onboard", prompt: onboardPrompt })}
+            >
+              Set it up with an agent…
+            </Button>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-4 rounded-card border border-separator bg-raised/60 p-4 md:grid-cols-5">
           <Stat label="Running" value={running} />

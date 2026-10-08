@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"os/exec"
 	"strings"
 	"sync"
 
@@ -47,37 +48,43 @@ func init() {
 			if cmd == nil {
 				return nil, nil // nothing expired
 			}
-			cmd.Stdin = nil
-			r, w := io.Pipe()
-			cmd.Stdout, cmd.Stderr = w, w
-			if err := cmd.Start(); err != nil {
-				return nil, err
-			}
-			var wg sync.WaitGroup
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				sc := bufio.NewScanner(r)
-				for sc.Scan() {
-					if line := strings.TrimSpace(sc.Text()); line != "" {
-						c.Progress(wire.Event{Kind: wire.EventNote, Message: line})
-					}
-				}
-			}()
-			go func() {
-				<-ctx.Done()
-				if cmd.Process != nil {
-					cmd.Process.Kill()
-				}
-			}()
-			err = cmd.Wait()
-			w.Close()
-			wg.Wait()
-			if err != nil {
+			if err := runLogin(ctx, c, cmd); err != nil {
 				return nil, err
 			}
 			s.reopen() // fresh credentials: start from a clean client
 			s.overview.kick(0)
 			return nil, nil
 		})
+}
+
+// runLogin runs a cloud login with no terminal, narrating its output
+// (browser prompts, device codes) as the call's progress.
+func runLogin(ctx context.Context, c *Call, cmd *exec.Cmd) error {
+	cmd.Stdin = nil
+	r, w := io.Pipe()
+	cmd.Stdout, cmd.Stderr = w, w
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			if line := strings.TrimSpace(sc.Text()); line != "" {
+				c.Progress(wire.Event{Kind: wire.EventNote, Message: line})
+			}
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+	}()
+	err := cmd.Wait()
+	w.Close()
+	wg.Wait()
+	return err
 }

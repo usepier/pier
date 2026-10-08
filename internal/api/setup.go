@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 
 	"github.com/usepier/pier/internal/config"
@@ -163,6 +164,22 @@ func init() {
 				s.reopen()
 			}
 			return out, err
+		})
+	handle("setup.login", "Runs the login setup.check asked for — aws sso login for the profile, gcloud auth login — narrating it (browser prompts, device codes) as progress.",
+		func(ctx context.Context, s *Server, c *Call, p wire.SetupCheckParams) (*wire.Empty, error) {
+			var argv []string
+			switch p.Cloud {
+			case "aws-ec2":
+				if !awsProfile.MatchString(p.Profile) {
+					return nil, invalidParams("bad AWS profile")
+				}
+				argv = []string{"aws", "sso", "login", "--profile", p.Profile}
+			case "gcp-gce":
+				argv = []string{"gcloud", "auth", "login"}
+			default:
+				return nil, invalidParams("cloud is aws-ec2 or gcp-gce")
+			}
+			return nil, runLogin(ctx, c, exec.Command(argv[0], argv[1:]...))
 		})
 	handle("setup.adminDoc", "The commands an admin runs when the person setting pier up can't create its groundwork.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.CloudRef) (wire.LogText, error) {

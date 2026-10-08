@@ -8,10 +8,15 @@ import { Sidebar } from "@/features/sidebar/Sidebar";
 import { applyAccent } from "@/lib/theme";
 import { useJobsBootstrap } from "@/state/jobs";
 import { useActivityReporting, useLoadRecorder } from "@/state/overview";
+import { usePrefs } from "@/state/prefs";
+import { startProxy } from "@/state/proxy";
 import { Toasts } from "@/ui/Toasts";
 import { useAppCommands } from "./appCommands";
 import { useAttentionEffects } from "./attention";
+import { router } from "./router";
 import { Shell } from "./Shell";
+
+let sentToSetup = false;
 
 export function Root() {
   useAppCommands();
@@ -20,6 +25,16 @@ export function Root() {
   useJobsBootstrap();
   useAttentionEffects();
   const status = useStatus();
+  // A Mac pier hasn't been set up on opens on setup, once.
+  useEffect(() => {
+    if (status !== "ready" || rpc.info?.configured || sentToSetup) return;
+    sentToSetup = true;
+    void router.navigate({ to: "/setup" });
+  }, [status]);
+  const proxyOnLaunch = usePrefs((p) => p.proxyOnLaunch);
+  useEffect(() => {
+    if (status === "ready" && proxyOnLaunch && rpc.info?.configured) void startProxy();
+  }, [status, proxyOnLaunch]);
   useEffect(() => {
     if (status !== "ready") return;
     void rpc

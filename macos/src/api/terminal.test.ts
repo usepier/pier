@@ -23,7 +23,10 @@ describe("terminal plumbing", () => {
     handlers.get("term.output")!({ termId: "t1", seq: 2, data: b64("world") });
     const got: string[] = [];
     attachSink("t1", {
-      output: (bytes, done) => (got.push(new TextDecoder().decode(bytes)), done()),
+      output: (bytes, done) => {
+        got.push(new TextDecoder().decode(bytes));
+        done();
+      },
       exit: () => {},
     });
     expect(got.join("")).toBe("hello world");

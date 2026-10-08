@@ -240,6 +240,12 @@ func init() {
 				argv = []string{"gh", "auth", "login"}
 			case wire.LocalClaudeToken:
 				argv = []string{"claude", "setup-token"}
+			case wire.LocalTeardown:
+				exe, err := os.Executable()
+				if err != nil {
+					return wire.TermOpened{}, err
+				}
+				argv = []string{exe, "teardown"}
 			default:
 				return wire.TermOpened{}, invalidParams("unknown purpose " + string(p.Purpose))
 			}

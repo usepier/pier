@@ -639,7 +639,9 @@ in-flight work three seconds to see its cancellation.
   fixes it), `setup.defaults` (what a draft gives new sessions, with
   costs), `setup.apply` (groundwork, config, checks, the onboarding skill;
   kinds `no_default_vpc`, `no_billing` and `no_permission` say what to do)
-  and `setup.adminDoc`. Logins run in local terminals (`term.openLocal`).
+  and `setup.adminDoc`. `setup.login` runs a cloud login, narrating its
+  browser prompts; logins that want a terminal (gh, a Claude token) and
+  `pier teardown` run in local ones (`term.openLocal`).
   `doctor.run` and `pier doctor --json` give each check the command that
   fixes it.
 - **Proxy and ports.** `proxy.start` runs `pier proxy` inside `pier api`,

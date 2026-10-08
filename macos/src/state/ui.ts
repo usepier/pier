@@ -2,9 +2,15 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+/** What a New Session sheet opens with. */
+export interface NewSessionPreset {
+  branch?: string;
+  prompt?: string;
+}
+
 interface UI {
-  newSession: { open: boolean; repo?: string };
-  openNewSession: (repo?: string) => void;
+  newSession: { open: boolean; repo?: string; preset?: NewSessionPreset };
+  openNewSession: (repo?: string, preset?: NewSessionPreset) => void;
   closeNewSession: () => void;
   collapsed: Record<string, boolean>;
   toggleRepo: (name: string) => void;
@@ -14,7 +20,7 @@ export const useUI = create<UI>()(
   persist(
     (set) => ({
       newSession: { open: false },
-      openNewSession: (repo) => set({ newSession: { open: true, repo } }),
+      openNewSession: (repo, preset) => set({ newSession: { open: true, repo, preset } }),
       closeNewSession: () => set({ newSession: { open: false } }),
       collapsed: {},
       toggleRepo: (name) => set((s) => ({ collapsed: { ...s.collapsed, [name]: !s.collapsed[name] } })),

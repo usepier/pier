@@ -5,6 +5,7 @@ import { useWatch } from "@/api/live";
 import type { Session } from "@/api/protocol.gen";
 import { bytes } from "@/lib/format";
 import { recordLoad, useLoadHistory } from "@/state/history";
+import { openPort, useProxy } from "@/state/proxy";
 import { attempt } from "@/state/toasts";
 import { Badge } from "@/ui/Badge";
 import { IconButton } from "@/ui/Button";
@@ -28,12 +29,12 @@ function Section({ title, children, count }: { title: string; count?: number; ch
 export function EnvironmentPanel({
   session: s,
   onOpenWindow,
-  onOpenPort,
 }: {
   session: Session;
   onOpenWindow: (id: string) => void;
-  onOpenPort?: (port: number) => void;
 }) {
+  const proxy = useProxy();
+  const served = proxy?.running ? proxy.sessions.find((x) => x.id === s.id) : undefined;
   const live = ["running", "working", "idle"].includes(s.state) && s.hasKey;
   const env = useWatch("env", { id: s.id }, { enabled: live });
   const hist = useLoadHistory(s.id);
@@ -89,15 +90,16 @@ export function EnvironmentPanel({
               <li key={p.port} className="flex items-center gap-2">
                 <span className="w-14 font-mono tabular-nums">{p.port}</span>
                 <span className="min-w-0 flex-1 truncate text-secondary">{p.process}</span>
-                {onOpenPort && (
-                  <IconButton
-                    label={`Open port ${p.port}`}
-                    className="size-6"
-                    onPress={() => onOpenPort(p.port)}
-                  >
-                    <ExternalLink size={12} />
-                  </IconButton>
+                {served?.ports.includes(p.port) && (
+                  <span className="shrink-0 font-mono text-[10.5px] text-tertiary">{served.host}</span>
                 )}
+                <IconButton
+                  label={`Open port ${p.port}`}
+                  className="size-6"
+                  onPress={() => void openPort(s, p.port)}
+                >
+                  <ExternalLink size={12} />
+                </IconButton>
               </li>
             ))}
           </ul>

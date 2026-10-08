@@ -12,6 +12,10 @@ interface Prefs {
   diffSplit: boolean;
   /** Remove sessions whose pull request merged, when nothing in them is left behind. */
   autoRemoveMerged: boolean;
+  /** Start the proxy (sessions as <session>.pier) when the app opens. */
+  proxyOnLaunch: boolean;
+  /** The agent new sessions start with: claude, codex, or "" for none. */
+  defaultAgent: string;
   set: (p: Partial<Omit<Prefs, "set">>) => void;
 }
 
@@ -23,6 +27,8 @@ export const usePrefs = create<Prefs>()(
       terminalFontSize: 12.5,
       diffSplit: false,
       autoRemoveMerged: false,
+      proxyOnLaunch: false,
+      defaultAgent: "claude",
       set: (p) => set(p),
     }),
     { name: "pier.prefs" },

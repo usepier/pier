@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { rpc } from "@/api/client";
+import type { LocalPurpose } from "@/api/protocol.gen";
 import { RpcError } from "@/api/rpc";
 import { attachSink, pause, resume, sendInput, sendResize } from "@/api/terminal";
 import { inTauri } from "@/api/transport";
@@ -35,12 +36,15 @@ export function TerminalView({
   window: windowId,
   visible,
   local,
+  profile,
 }: {
   sessionId?: string;
   window?: string;
   visible: boolean;
   /** A local terminal for one of pier's steps instead of a session window. */
-  local?: "login" | "setup";
+  local?: LocalPurpose;
+  /** The AWS profile an aws-sso login is for. */
+  profile?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
@@ -145,7 +149,7 @@ export function TerminalView({
     }
     try {
       const opened = local
-        ? await rpc.call("term.openLocal", { purpose: local, cols: t.cols, rows: t.rows })
+        ? await rpc.call("term.openLocal", { purpose: local, profile, cols: t.cols, rows: t.rows })
         : await rpc.call("term.open", {
             sessionId: sessionId!,
             window: windowId,
@@ -167,7 +171,7 @@ export function TerminalView({
       setPhase("failed");
       setError(e instanceof RpcError ? e.message : String(e));
     }
-  }, [local, sessionId, windowId]);
+  }, [local, profile, sessionId, windowId]);
 
   // Attach when it matters, pause and later detach when it doesn't.
   useEffect(() => {
