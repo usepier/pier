@@ -109,6 +109,9 @@ jobs:
           codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple "$dmg"
+          # A name without the version, for a link that always gets the
+          # newest: releases/latest/download/Pier_<arch>.dmg
+          cp "$dmg" "dist/Pier_${{ matrix.arch }}.dmg"
           cp "$out"/macos/Pier.app.tar.gz "dist/Pier_${VERSION}_${{ matrix.arch }}.app.tar.gz"
           cp "$out"/macos/Pier.app.tar.gz.sig "dist/Pier_${VERSION}_${{ matrix.arch }}.app.tar.gz.sig"
       - name: Gatekeeper accepts it, and the bundled pier is the tag's

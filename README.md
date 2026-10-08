@@ -113,6 +113,9 @@ Or the Mac app, which bundles the same pier (and its `pier` command):
 brew install --cask usepier/tap/pier
 ```
 
+or download it: [Apple silicon](https://github.com/usepier/pier/releases/latest/download/Pier_aarch64.dmg),
+[Intel](https://github.com/usepier/pier/releases/latest/download/Pier_x64.dmg).
+
 The app is the CLI's sessions with a window around them: each repository and
 its sessions in a sidebar; a chat with each session's agent, read from the
 agent's own transcript; its terminals; what changed, as diffs you can
