@@ -7,6 +7,7 @@ import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
 import { ChatView } from "@/features/chat/ChatView";
 import { FilesPanel } from "@/features/files/FilesPanel";
+import { PRPanel } from "@/features/github/PRPanel";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { ChangesPanel } from "@/features/review/ChangesPanel";
 import { age } from "@/lib/format";
@@ -63,7 +64,7 @@ export function SessionPage() {
           )}
         </Panel>
         <Separator className="w-px bg-separator outline-none data-[separator=active]:bg-accent" />
-        <Panel id="inspector" defaultSize={340} minSize={260} maxSize={720} className="flex min-w-0 flex-col">
+        <Panel id="inspector" defaultSize={390} minSize={260} maxSize={720} className="flex min-w-0 flex-col">
           <div
             role="tablist"
             className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-separator px-1.5 [scrollbar-width:none]"
@@ -71,6 +72,7 @@ export function SessionPage() {
             {(
               [
                 ["changes", "Changes"],
+                ["pr", s.pr ? `PR #${s.pr.number}` : "PR"],
                 ["files", "Files"],
                 ["env", "Environment"],
                 ["log", s.state === "failed" ? "Create log" : "Log"],
@@ -91,6 +93,7 @@ export function SessionPage() {
           </div>
           <div className="min-h-0 flex-1">
             {tab === "changes" && <ChangesPanel session={s} />}
+            {tab === "pr" && <PRPanel session={s} />}
             {tab === "files" && <FilesPanel session={s} />}
             {tab === "env" && (
               <EnvironmentPanel

@@ -10,6 +10,8 @@ interface Prefs {
   terminalFontSize: number;
   /** Diffs side by side rather than one column. */
   diffSplit: boolean;
+  /** Remove sessions whose pull request merged, when nothing in them is left behind. */
+  autoRemoveMerged: boolean;
   set: (p: Partial<Omit<Prefs, "set">>) => void;
 }
 
@@ -20,6 +22,7 @@ export const usePrefs = create<Prefs>()(
       backgroundDetachMs: 600_000,
       terminalFontSize: 12.5,
       diffSplit: false,
+      autoRemoveMerged: false,
       set: (p) => set(p),
     }),
     { name: "pier.prefs" },

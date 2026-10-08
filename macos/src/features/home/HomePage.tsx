@@ -2,7 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Anchor } from "lucide-react";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { ago, hourly, monthly } from "@/lib/format";
-import { needingAttention, reasonText, useSeen } from "@/state/attention";
+import { needingAttention, reasonText, reasonTone, useSeen } from "@/state/attention";
 import { useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview } from "@/state/overview";
 import { useUI } from "@/state/ui";
@@ -10,6 +10,14 @@ import { Button } from "@/ui/Button";
 import { Empty } from "@/ui/Empty";
 import { Meter, Panel, Stat } from "@/ui/Panel";
 import { StateDot } from "@/ui/StateDot";
+
+const toneText: Record<string, string> = {
+  warn: "text-warn",
+  bad: "text-bad",
+  ok: "text-ok",
+  merged: "text-merged",
+  accent: "text-accent",
+};
 
 const jobVerb: Record<string, string> = {
   create: "Creating",
@@ -76,13 +84,15 @@ export function HomePage() {
                   >
                     <StateDot tone={sessionTone(s)} />
                     <span className="font-medium">{s.name}</span>
-                    <span
-                      className={`shrink-0 text-xs ${reason === "needs_input" ? "text-warn" : reason === "finished" ? "text-accent" : "text-bad"}`}
-                    >
+                    <span className={`shrink-0 text-xs ${toneText[reasonTone[reason]]}`}>
                       {reasonText[reason]}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-xs text-secondary">
-                      {reason === "finished" || reason === "needs_input" ? s.agent?.last : s.failReason}
+                      {reason === "finished" || reason === "needs_input"
+                        ? s.agent?.last
+                        : reason === "create_failed" || reason === "setup_failed"
+                          ? s.failReason
+                          : s.pr && `#${s.pr.number} ${s.pr.title}`}
                     </span>
                     <span className="shrink-0 text-xs text-tertiary">
                       {s.agent ? ago(s.agent.since) : ""}

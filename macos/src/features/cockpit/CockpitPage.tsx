@@ -2,6 +2,7 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import { FolderGit2, Hammer, Minus, Plus, SquarePlus } from "lucide-react";
 import { rpc } from "@/api/client";
 import type { Repo, Session } from "@/api/protocol.gen";
+import { PRBadge } from "@/features/github/PRBadge";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { linkCheckout } from "@/features/repos/link";
 import { confirm } from "@/lib/confirm";
@@ -61,6 +62,8 @@ export function CockpitPage() {
 
         <SessionsPanel sessions={sessions} />
 
+        <PullRequestsPanel sessions={sessions.filter((s) => s.pr)} />
+
         <ResourcesPanel sessions={sessions.filter((s) => ["running", "working", "idle"].includes(s.state))} />
 
         <div className="grid gap-4 lg:grid-cols-3">
@@ -70,6 +73,50 @@ export function CockpitPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function PullRequestsPanel({ sessions }: { sessions: Session[] }) {
+  const navigate = useNavigate();
+  if (sessions.length === 0) return null;
+  const order: Record<string, number> = { open: 0, draft: 1, merged: 2, closed: 3 };
+  const list = [...sessions].sort(
+    (a, b) => order[a.pr!.state]! - order[b.pr!.state]! || b.pr!.number - a.pr!.number,
+  );
+  return (
+    <Panel title={`Pull requests · ${list.length}`}>
+      <ul className="flex flex-col">
+        {list.map((s) => {
+          const p = s.pr!;
+          return (
+            <li key={s.id}>
+              <button
+                type="button"
+                onClick={() => navigate({ to: "/session/$id", params: { id: s.id } })}
+                className="flex w-full items-center gap-2 rounded-ctl px-2 py-1.5 text-left text-sm hover:bg-hover"
+              >
+                <PRBadge pr={p} />
+                <span className="min-w-0 flex-1 truncate">{p.title}</span>
+                <span className="shrink-0 text-xs text-secondary">{s.name}</span>
+                <span className="w-28 shrink-0 text-right text-xs text-secondary">
+                  {p.state === "open" || p.state === "draft"
+                    ? p.checks === "failing"
+                      ? "checks failing"
+                      : p.review === "changes_requested"
+                        ? "changes requested"
+                        : p.review === "approved"
+                          ? "approved"
+                          : p.checks === "pending"
+                            ? "checks running"
+                            : "in review"
+                    : p.state}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </Panel>
   );
 }
 

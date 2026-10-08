@@ -281,6 +281,21 @@ function AppSection() {
           </div>
         </div>
         <div className="flex items-center gap-4 px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-base">Remove merged sessions</div>
+            <div className="text-xs text-secondary">
+              Once a session's pull request merges — only when everything in it is committed and merged.
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            aria-label="Remove merged sessions"
+            checked={p.autoRemoveMerged}
+            onChange={(e) => p.set({ autoRemoveMerged: e.target.checked })}
+            className="size-4 accent-[var(--accent)]"
+          />
+        </div>
+        <div className="flex items-center gap-4 px-3 py-2">
           <div className="min-w-0 flex-1 text-base">Terminal font size</div>
           <div className="w-56 shrink-0">
             <select

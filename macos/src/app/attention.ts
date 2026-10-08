@@ -11,8 +11,12 @@ import { onNotificationClick, showNotification } from "@/lib/notify";
 import { needingAttention, useSeen } from "@/state/attention";
 import { flushOutbox } from "@/state/outbox";
 import { useOverview } from "@/state/overview";
+import { usePrefs } from "@/state/prefs";
+import { toast } from "@/state/toasts";
 import { current } from "./appCommands";
 import { router } from "./router";
+
+const triedRemoving = new Set<string>();
 
 export function useAttentionEffects() {
   const status = useStatus();
@@ -37,6 +41,21 @@ export function useAttentionEffects() {
 
   const o = useOverview();
   const seen = useSeen((s) => s.seen);
+
+  // Merged sessions go, if asked — pier checks nothing would be lost, and
+  // says no otherwise; each is tried once per run of the app.
+  const autoRemove = usePrefs((p) => p.autoRemoveMerged);
+  useEffect(() => {
+    if (!autoRemove || !o) return;
+    for (const s of o.sessions) {
+      if (s.attention !== "merged_cleanup" || triedRemoving.has(s.id)) continue;
+      triedRemoving.add(s.id);
+      void rpc
+        .call("sessions.removeMerged", { id: s.id })
+        .then(() => toast(`Removed ${s.name}: its pull request merged`, "ok"))
+        .catch(() => {});
+    }
+  }, [autoRemove, o]);
   const count = o ? needingAttention(o.sessions, seen).length : 0;
   useEffect(() => {
     if (!inTauri) return;

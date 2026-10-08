@@ -3,10 +3,10 @@ import { ArrowUpFromLine, GitBranch, GitCommitHorizontal, GitPullRequest, Send }
 import { useState } from "react";
 import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
+import { composeInto } from "@/features/github/PRPanel";
 import { plural } from "@/lib/format";
 import { reviewMessage, useComments } from "@/state/comments";
 import { docId, useDocs } from "@/state/docs";
-import { useDrafts } from "@/state/drafts";
 import { sendPrompt } from "@/state/outbox";
 import { attempt, toast } from "@/state/toasts";
 import { Button } from "@/ui/Button";
@@ -17,9 +17,6 @@ import { StatusMark, splitPath, totals } from "./status";
 function running(s: Session) {
   return ["running", "working", "idle"].includes(s.state) && s.hasKey;
 }
-
-const prPrompt =
-  "Open a pull request for this branch: commit anything outstanding, push, then create it with `gh pr create` — a clear title, and a body that sums up what changed and why.";
 
 /** What the session's branch changed against its base, and the ways to ship it. */
 export function ChangesPanel({ session: s }: { session: Session }) {
@@ -34,7 +31,6 @@ export function ChangesPanel({ session: s }: { session: Session }) {
   const open = useDocs((d) => d.open);
   const activeDoc = useDocs((d) => d.active[s.id]);
   const comments = useComments((c) => c.comments[s.id]?.length ?? 0);
-  const setDraft = useDrafts((d) => d.setDraft);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
 
@@ -154,16 +150,15 @@ export function ChangesPanel({ session: s }: { session: Session }) {
           >
             {pushing ? "Pushing…" : "Push"}
           </Button>
-          <Button
-            size="sm"
-            icon={<GitPullRequest size={11} />}
-            onPress={() => {
-              setDraft(s.id, prPrompt);
-              useDocs.getState().setActive(s.id, "chat");
-            }}
-          >
-            Create PR…
-          </Button>
+          {!s.pr && (
+            <Button
+              size="sm"
+              icon={<GitPullRequest size={11} />}
+              onPress={() => void composeInto(s.id, "createPR")}
+            >
+              Create PR…
+            </Button>
+          )}
         </div>
       )}
       <CommitSheet

@@ -3,9 +3,10 @@ import { ChevronRight, House, Plus, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import type { Repo, Session } from "@/api/protocol.gen";
+import { PRBadge } from "@/features/github/PRBadge";
 import { linkCheckout } from "@/features/repos/link";
 import { hourly } from "@/lib/format";
-import { attentionOf, reasonText, useSeen } from "@/state/attention";
+import { attentionOf, reasonText, reasonTone, useSeen } from "@/state/attention";
 import { sessionTone, useOverview } from "@/state/overview";
 import { useUI } from "@/state/ui";
 import { IconButton } from "@/ui/Button";
@@ -46,9 +47,22 @@ function Row({
   );
 }
 
-function sessionHint(s: Session, seen: Record<string, string>): string {
+const hintTone: Record<string, string> = {
+  warn: "font-medium text-warn",
+  bad: "text-bad",
+  ok: "text-ok",
+  merged: "text-merged",
+  accent: "text-accent",
+};
+
+function sessionHint(s: Session, seen: Record<string, string>): [string, string] {
   const reason = attentionOf(s, seen);
-  if (reason && reason !== "finished") return reasonText[reason];
+  if (reason && reason !== "finished") return [reasonText[reason], hintTone[reasonTone[reason]] ?? ""];
+  const plain = plainHint(s);
+  return [plain, plain.includes("fail") ? "text-bad" : "text-tertiary"];
+}
+
+function plainHint(s: Session): string {
   if (s.state === "failed") return "failed";
   if (s.state === "creating") return "starting";
   if (s.state === "parked") return "parked";
@@ -103,7 +117,7 @@ function RepoGroup({ repo, sessions, path }: { repo: Repo; sessions: Session[]; 
         <div>
           {sessions.map((s) => {
             const p = `/session/${encodeURIComponent(s.id)}`;
-            const hint = sessionHint(s, seen);
+            const [hint, hintClass] = sessionHint(s, seen);
             const unread = attentionOf(s, seen) === "finished";
             return (
               <Row
@@ -119,12 +133,10 @@ function RepoGroup({ repo, sessions, path }: { repo: Repo; sessions: Session[]; 
                 >
                   {s.name}
                 </span>
-                {hint && (
-                  <span
-                    className={`shrink-0 text-xs ${hint.includes("fail") ? "text-bad" : hint === "needs you" ? "font-medium text-warn" : "text-tertiary"}`}
-                  >
-                    {hint}
-                  </span>
+                {hint ? (
+                  <span className={`shrink-0 text-xs ${hintClass}`}>{hint}</span>
+                ) : (
+                  s.pr && <PRBadge pr={s.pr} />
                 )}
                 {unread && !hint && (
                   <span className="size-1.5 shrink-0 rounded-full bg-accent" title="Finished" />

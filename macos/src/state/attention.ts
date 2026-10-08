@@ -21,17 +21,36 @@ export const useSeen = create<Seen>()(
   ),
 );
 
-export type Reason = "needs_input" | "finished" | "setup_failed" | "create_failed";
+export type Reason =
+  | "needs_input"
+  | "finished"
+  | "setup_failed"
+  | "create_failed"
+  | "ci_failing"
+  | "changes_requested"
+  | "merged_cleanup"
+  | "ready_to_merge";
+
+const fromPier = new Set<string>([
+  "needs_input",
+  "setup_failed",
+  "create_failed",
+  "ci_failing",
+  "changes_requested",
+  "merged_cleanup",
+  "ready_to_merge",
+]);
 
 /** Why a session needs the user, if it does. */
 export function attentionOf(s: Session, seen: Record<string, string>): Reason | undefined {
   if (s.pooled) return undefined;
-  if (s.attention) return s.attention as Reason;
+  const pier = s.attention && fromPier.has(s.attention) ? (s.attention as Reason) : undefined;
+  if (pier === "needs_input" || pier === "create_failed" || pier === "setup_failed") return pier;
   const a = s.agent;
   // A finished turn leaves its last message; an agent that only started
-  // has none.
+  // has none. An unseen one comes before what the pull request says.
   if (a && a.state === "ready" && a.last && a.since > (seen[s.id] ?? "")) return "finished";
-  return undefined;
+  return pier;
 }
 
 export const reasonText: Record<Reason, string> = {
@@ -39,11 +58,36 @@ export const reasonText: Record<Reason, string> = {
   finished: "finished",
   setup_failed: "setup failed",
   create_failed: "create failed",
+  ci_failing: "CI failing",
+  changes_requested: "changes requested",
+  merged_cleanup: "merged",
+  ready_to_merge: "ready to merge",
+};
+
+/** How a reason reads at a glance. */
+export const reasonTone: Record<Reason, "warn" | "bad" | "accent" | "ok" | "merged"> = {
+  needs_input: "warn",
+  finished: "accent",
+  setup_failed: "bad",
+  create_failed: "bad",
+  ci_failing: "bad",
+  changes_requested: "warn",
+  merged_cleanup: "merged",
+  ready_to_merge: "ok",
 };
 
 /** Sessions needing the user, most urgent first. */
 export function needingAttention(sessions: Session[], seen: Record<string, string>) {
-  const rank: Record<Reason, number> = { needs_input: 0, create_failed: 1, setup_failed: 2, finished: 3 };
+  const rank: Record<Reason, number> = {
+    needs_input: 0,
+    create_failed: 1,
+    setup_failed: 2,
+    ci_failing: 3,
+    changes_requested: 4,
+    finished: 5,
+    ready_to_merge: 6,
+    merged_cleanup: 7,
+  };
   return sessions
     .map((s) => ({ session: s, reason: attentionOf(s, seen) }))
     .filter((x): x is { session: Session; reason: Reason } => !!x.reason)

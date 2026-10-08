@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type InspectorTab = "changes" | "files" | "env" | "log" | "details";
+export type InspectorTab = "changes" | "pr" | "files" | "env" | "log" | "details";
 
 interface Inspector {
   tab: InspectorTab;
