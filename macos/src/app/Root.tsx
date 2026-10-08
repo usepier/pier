@@ -4,6 +4,7 @@ import { useStatus } from "@/api/live";
 import { AccountBanner } from "@/features/auth/AccountBanner";
 import { QuickOpen } from "@/features/files/QuickOpen";
 import { NewSessionSheet } from "@/features/newSession/NewSessionSheet";
+import { Palette } from "@/features/palette/Palette";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { applyAccent } from "@/lib/theme";
 import { useJobsBootstrap } from "@/state/jobs";
@@ -13,8 +14,10 @@ import { startProxy } from "@/state/proxy";
 import { Toasts } from "@/ui/Toasts";
 import { useAppCommands } from "./appCommands";
 import { useAttentionEffects } from "./attention";
+import { useDeepLinks } from "./deepLinks";
 import { router } from "./router";
 import { Shell } from "./Shell";
+import { UpdateBanner } from "./UpdateBanner";
 
 let sentToSetup = false;
 
@@ -24,6 +27,7 @@ export function Root() {
   useLoadRecorder();
   useJobsBootstrap();
   useAttentionEffects();
+  useDeepLinks();
   const status = useStatus();
   // A Mac pier hasn't been set up on opens on setup, once.
   useEffect(() => {
@@ -52,9 +56,18 @@ export function Root() {
   }, []);
   return (
     <>
-      <Shell sidebar={<Sidebar />} banners={<AccountBanner />} />
+      <Shell
+        sidebar={<Sidebar />}
+        banners={
+          <>
+            <UpdateBanner />
+            <AccountBanner />
+          </>
+        }
+      />
       <NewSessionSheet />
       <QuickOpen />
+      <Palette />
       <Toasts />
     </>
   );

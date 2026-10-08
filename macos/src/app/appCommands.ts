@@ -4,6 +4,7 @@ import { rpc } from "@/api/client";
 import { inTauri } from "@/api/transport";
 import { useQuickOpen } from "@/features/files/QuickOpen";
 import { hasActiveSave, saveActive } from "@/features/files/save";
+import { usePalette } from "@/features/palette/Palette";
 import { linkCheckout } from "@/features/repos/link";
 import { confirm } from "@/lib/confirm";
 import { needingAttention, useSeen } from "@/state/attention";
@@ -116,6 +117,13 @@ export function useAppCommands() {
           menu: "file",
           enabled: () => hasActiveSave(),
           run: () => void saveActive(),
+        },
+        {
+          id: "go.palette",
+          title: "Go to or Run…",
+          shortcut: "CmdOrCtrl+K",
+          menu: "go",
+          run: () => usePalette.getState().show(),
         },
         {
           id: "go.quickOpen",

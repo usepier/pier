@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "What the main window's web view may do.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -17,9 +19,22 @@
     "opener:default",
     "process:default",
     "window-state:default",
+    "updater:default",
+    "deep-link:default",
     {
       "identifier": "shell:allow-spawn",
-      "allow": [{ "name": "binaries/pier", "sidecar": true, "args": ["api", { "validator": "^--client=.*$" }] }]
+      "allow": [
+        {
+          "name": "binaries/pier",
+          "sidecar": true,
+          "args": [
+            "api",
+            {
+              "validator": "^--client=.*$"
+            }
+          ]
+        }
+      ]
     },
     "shell:allow-stdin-write",
     "shell:allow-kill"

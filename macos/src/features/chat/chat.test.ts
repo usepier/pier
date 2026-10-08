@@ -66,3 +66,19 @@ describe("mentions", () => {
     expect(rank(paths, "mkf")).toEqual(["Makefile"]);
   });
 });
+
+import { rankEntries } from "@/features/palette/rank";
+
+describe("palette", () => {
+  const run = () => {};
+  const entries = [
+    { id: "s:1", kind: "session" as const, title: "fix-login", detail: "shop · idle", run },
+    { id: "r:shop", kind: "repo" as const, title: "shop", detail: "repository", run },
+    { id: "c:new", kind: "command" as const, title: "New Session", keywords: "create start", run },
+  ];
+  it("finds by name, and > lists actions only", () => {
+    expect(rankEntries(entries, "login").map((e) => e.id)).toEqual(["s:1"]);
+    expect(rankEntries(entries, ">").map((e) => e.id)).toEqual(["c:new"]);
+    expect(rankEntries(entries, ">create").map((e) => e.id)).toEqual(["c:new"]);
+  });
+});

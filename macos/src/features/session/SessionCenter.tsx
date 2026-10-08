@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { rpc } from "@/api/client";
 import { useWatch } from "@/api/live";
 import type { Session, Window } from "@/api/protocol.gen";
+import { registerCommands } from "@/app/commands";
 import { ChatView } from "@/features/chat/ChatView";
 import { confirmClose, FileEditor } from "@/features/files/FileEditor";
 import { DiffView } from "@/features/review/DiffView";
@@ -69,6 +70,49 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
     const key = active === chatTab && raw ? `${chatTab}:raw` : active;
     if (key && key !== chatTab && !visited.includes(key)) setVisited((v) => [...v, key]);
   }, [active, raw, visited]);
+
+  // ⌘⇧] and ⌘⇧[ step through the tabs; ⌘L goes to the chat's message box.
+  const order = useMemo(
+    () => [...(hasChat ? [chatTab] : []), ...windows.map((w) => w.id), ...docs.map((d) => d.id)],
+    [hasChat, windows, docs],
+  );
+  useEffect(() => {
+    const step = (by: number) => {
+      const at = order.indexOf(active ?? "");
+      const next = order[(at + by + order.length) % order.length];
+      if (next) setActiveIn(s.id, next);
+    };
+    return registerCommands([
+      {
+        id: "view.nextTab",
+        title: "Next Tab",
+        shortcut: "CmdOrCtrl+Shift+]",
+        menu: "view",
+        run: () => step(1),
+      },
+      {
+        id: "view.prevTab",
+        title: "Previous Tab",
+        shortcut: "CmdOrCtrl+Shift+[",
+        menu: "view",
+        run: () => step(-1),
+      },
+      {
+        id: "session.message",
+        title: "Message the Agent",
+        shortcut: "CmdOrCtrl+L",
+        menu: "session",
+        enabled: () => hasChat,
+        run: () => {
+          setActiveIn(s.id, chatTab);
+          setRaw(false);
+          requestAnimationFrame(() =>
+            document.querySelector<HTMLTextAreaElement>("textarea[aria-label='Message']")?.focus(),
+          );
+        },
+      },
+    ]);
+  }, [order, active, s.id, setActiveIn, hasChat]);
 
   const add = async () => {
     const w = await attempt(() => rpc.call("tmux.newWindow", { sessionId: s.id }));

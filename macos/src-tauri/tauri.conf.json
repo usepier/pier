@@ -22,9 +22,17 @@
         "minHeight": 560,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 18, "y": 22 },
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 22
+        },
         "transparent": true,
-        "windowEffects": { "effects": ["sidebar"], "state": "followsWindowActiveState" },
+        "windowEffects": {
+          "effects": [
+            "sidebar"
+          ],
+          "state": "followsWindowActiveState"
+        },
         "backgroundThrottling": "disabled"
       }
     ],
@@ -35,13 +43,39 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "DeveloperTool",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.png"],
-    "externalBin": ["binaries/pier"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/pier"
+    ],
     "macOS": {
       "minimumSystemVersion": "14.0",
       "hardenedRuntime": true
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/usepier/pier/releases/latest/download/latest.json"
+      ]
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "pier"
+        ]
+      }
     }
   }
 }

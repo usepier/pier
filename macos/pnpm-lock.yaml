@@ -68,6 +68,9 @@ importers:
       '@tauri-apps/api':
         specifier: 2.12.1
         version: 2.12.1
+      '@tauri-apps/plugin-deep-link':
+        specifier: 2.6.1
+        version: 2.6.1
       '@tauri-apps/plugin-dialog':
         specifier: 2.8.1
         version: 2.8.1
@@ -80,6 +83,9 @@ importers:
       '@tauri-apps/plugin-shell':
         specifier: 2.4.1
         version: 2.4.1
+      '@tauri-apps/plugin-updater':
+        specifier: 2.13.2
+        version: 2.13.2
       '@tauri-apps/plugin-window-state':
         specifier: 2.5.0
         version: 2.5.0
@@ -712,6 +718,9 @@ packages:
     engines: {node: '>= 10'}
     hasBin: true
 
+  '@tauri-apps/plugin-deep-link@2.6.1':
+    resolution: {integrity: sha512-yomIOIoiiDwXW3Bgy/V5c4frWo9sfWM9WZQew2s7vr7hXtDdbLDCLzvytIMCjMxbnln9O0oJsTI3XdDd2T9XlA==}
+
   '@tauri-apps/plugin-dialog@2.8.1':
     resolution: {integrity: sha512-/DtE3B62JgpYuWFL5ATXM6KOXUq7pca7cJWOgSqULhZsgyjLk0PWKek1dbRDvhNBW6flNsOfWphsKnb+738Dmw==}
 
@@ -723,6 +732,9 @@ packages:
 
   '@tauri-apps/plugin-shell@2.4.1':
     resolution: {integrity: sha512-gFRjdGPz7r7u+4Oaky6E0jl/7fFY+Oq2XsHH9pCBxW/u8b4Q/mjWWKpuDaEqVYrlzlocA4tFtq0p26dgvvBheg==}
+
+  '@tauri-apps/plugin-updater@2.13.2':
+    resolution: {integrity: sha512-ekGlOBis1gztzDVuLAI54p0117BJXzFiHzYlcq3slC0LKKsHNy6TvnIdcl9g5DLuGOnViVT6EShdQczCM50SZQ==}
 
   '@tauri-apps/plugin-window-state@2.5.0':
     resolution: {integrity: sha512-ySI/32fpC1ZTslIZ00/wf9HujyDnkG3OPL16uuLjG53y1hTgjIJ9G2VPuOL1IV8GVr3xeF6lnr6h2T73HuGXow==}
@@ -2149,6 +2161,10 @@ snapshots:
       '@tauri-apps/cli-win32-ia32-msvc': 2.12.1
       '@tauri-apps/cli-win32-x64-msvc': 2.12.1
 
+  '@tauri-apps/plugin-deep-link@2.6.1':
+    dependencies:
+      '@tauri-apps/api': 2.12.1
+
   '@tauri-apps/plugin-dialog@2.8.1':
     dependencies:
       '@tauri-apps/api': 2.12.1
@@ -2162,6 +2178,10 @@ snapshots:
       '@tauri-apps/api': 2.12.1
 
   '@tauri-apps/plugin-shell@2.4.1':
+    dependencies:
+      '@tauri-apps/api': 2.12.1
+
+  '@tauri-apps/plugin-updater@2.13.2':
     dependencies:
       '@tauri-apps/api': 2.12.1
 
