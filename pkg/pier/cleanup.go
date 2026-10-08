@@ -45,10 +45,11 @@ func (c *Client) sweepable(s Session, maxAge time.Duration, now time.Time) bool 
 	return false
 }
 
-// sweep destroys every sweepable session in the list and returns the list
-// with those rows marked deleting. A destroy that fails leaves its row as
-// it was; the next listing tries again.
-func (c *Client) sweep(ctx context.Context, sessions []Session) []Session {
+// Sweep destroys every session in the list pier would never use again (a
+// pooled session nothing will claim, a bake instance whose bake is gone) and
+// returns the list with those rows marked deleting. A destroy that fails
+// leaves its row as it was; the next sweep tries again.
+func (c *Client) Sweep(ctx context.Context, sessions []Session) []Session {
 	maxAge, _ := c.cfg.PoolMaxAge() // unparsable → 0, which skips the age check
 	now := time.Now()
 	out := append([]Session(nil), sessions...)

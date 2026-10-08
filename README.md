@@ -482,11 +482,11 @@ for one create.
 Pooled sessions are stopped instances, so each costs disk only (~$3-4/mo at
 40 GiB). They recycle themselves when they go stale — after a re-bake, a
 setup-script change, or 14 days (`pool.max_age`). Upgrading pier doesn't
-stale them: a claim installs the current pier's in-VM supervisor. Any
-listing (`pier ls`, the app) also removes pooled sessions nothing would
-claim — a repo whose pool is off or has no image, a dead member, a fill that
-never parked — and bake instances whose bake died, from every repo, wherever
-you run it. The app's Repos tab shows every repo's pool with its cost:
+stale them: a claim installs the current pier's in-VM supervisor. Listing
+commands (`pier ls`, `pier repos`, `pier pool`) and the app, on load and every
+10 minutes after, also remove pooled sessions nothing would claim — a repo
+whose pool is off or has no image, a dead member, a fill that never parked —
+and bake instances whose bake died, from every repo, wherever you run them. The app's Repos tab shows every repo's pool with its cost:
 `+`/`-` sets the size, `f` fills, `x` drains.
 
 ### Rebake reminders

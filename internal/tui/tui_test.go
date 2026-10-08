@@ -30,6 +30,7 @@ type fake struct {
 	ready    map[string]int
 	setErr   error
 	enriched [][]pier.Session // what each status read was given
+	sweeps   int              // stray sweeps run
 }
 
 func newFake() *fake {
@@ -56,6 +57,10 @@ func newFake() *fake {
 func (f *fake) Cloud() string { return "AWS eu-central-1" }
 func (f *fake) ListSessions(context.Context) ([]pier.Session, error) {
 	return f.sessions, nil
+}
+func (f *fake) Sweep(_ context.Context, s []pier.Session) []pier.Session {
+	f.sweeps++
+	return s
 }
 func (f *fake) Enrich(_ context.Context, s []pier.Session) []pier.Session {
 	f.enriched = append(f.enriched, append([]pier.Session(nil), s...))
@@ -551,5 +556,30 @@ wait:
 	}
 	if got := f.enriched[0][0]; got.State != pier.StateRunning || got.Setup != "" {
 		t.Errorf("the status read must get the cloud's list, got %s/%q", got.State, got.Setup)
+	}
+}
+
+// Refreshing must not double as a cleanup pass: the stray sweep destroys
+// instances, so it runs on the first load and then at most every sweepEvery.
+func TestSweepIsThrottled(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 120, 30)
+	next, _ := m.Update(m.fetch())
+	m = next.(model)
+	if f.sweeps != 1 {
+		t.Fatalf("the first fetch must sweep once, swept %d times", f.sweeps)
+	}
+	for range 3 {
+		next, _ := m.Update(m.fetch())
+		m = next.(model)
+	}
+	if f.sweeps != 1 {
+		t.Errorf("refreshes inside sweepEvery must not sweep, swept %d times", f.sweeps)
+	}
+	m.sweptAt = time.Now().Add(-sweepEvery)
+	next, _ = m.Update(m.fetch())
+	m = next.(model)
+	if f.sweeps != 2 || time.Since(m.sweptAt) > time.Minute {
+		t.Errorf("a refresh after sweepEvery must sweep and restart the clock, swept %d times", f.sweeps)
 	}
 }

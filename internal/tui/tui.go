@@ -24,6 +24,7 @@ import (
 type Backend interface {
 	Cloud() string
 	ListSessions(ctx context.Context) ([]pier.Session, error)
+	Sweep(ctx context.Context, sessions []pier.Session) []pier.Session
 	Enrich(ctx context.Context, sessions []pier.Session) []pier.Session
 	Repos(sessions []pier.Session, curRoot string) []pier.Repo
 	Headroom(ctx context.Context) (pier.Quota, error)
@@ -127,7 +128,8 @@ type model struct {
 
 	frame   int
 	polling bool
-	watch   int // extra poll rounds after a spawn, until the new row shows
+	watch   int       // extra poll rounds after a spawn, until the new row shows
+	sweptAt time.Time // last stray sweep; see sweepEvery
 
 	// attach in flight: one bounded reconnect per attach, like the CLI
 	attaching     string
@@ -166,6 +168,7 @@ type sessionsMsg struct {
 	all      []pier.Session
 	err      error
 	enriched bool
+	swept    bool // the list went through a stray sweep
 }
 type quotaMsg string
 type tickMsg struct{}
@@ -208,11 +211,23 @@ func pollCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return pollMsg{} })
 }
 
+// sweepEvery spaces out the stray sweep. The list refreshes every few
+// seconds; the sweep destroys instances, so it runs on first load and then
+// only this often.
+const sweepEvery = 10 * time.Minute
+
 func (m model) fetch() tea.Msg {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	all, err := m.be.ListSessions(ctx)
-	return sessionsMsg{all: all, err: err}
+	if err != nil {
+		return sessionsMsg{err: err}
+	}
+	swept := time.Since(m.sweptAt) >= sweepEvery
+	if swept {
+		all = m.be.Sweep(ctx, all)
+	}
+	return sessionsMsg{all: all, swept: swept}
 }
 
 // enrich reads the running sessions' statuses for a list already on screen.
@@ -306,6 +321,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.loaded, m.authErr = true, nil
+		if msg.swept {
+			m.sweptAt = time.Now()
+		}
 		// The status read runs on the list as the cloud returned it. The
 		// carried copy below is display-only: reading that one would skip
 		// every session last seen idle or working (only plain running

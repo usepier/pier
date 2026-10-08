@@ -20,18 +20,21 @@ import (
 // Sessions is the one list every surface shows: the cloud's sessions with
 // their supervisor beacons read (working/idle, strain, setup state), plus a
 // failed row per create that died before becoming a session. Unclaimed
-// pooled sessions are included — SplitPool separates them.
+// pooled sessions are included — SplitPool separates them. It sweeps
+// strays first (see Sweep): a one-shot command is the natural moment to
+// collect what nothing will use.
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	sessions, err := c.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return c.Enrich(ctx, sessions), nil
+	return c.Enrich(ctx, c.Sweep(ctx, sessions)), nil
 }
 
-// ListSessions is Sessions without the per-session status reads: one cloud
-// call plus the local failed-create records. A frontend shows it at once and
-// fills in Enrich's answer when it lands.
+// ListSessions is Sessions without the sweep and the per-session status
+// reads: one cloud call plus the local failed-create records. It changes
+// nothing in the cloud, so frontends that refresh on a timer can call it as
+// often as they like and Sweep on their own, slower schedule.
 func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 	sessions, err := c.drv.List(ctx)
 	if err != nil {
@@ -41,7 +44,7 @@ func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 	for _, name := range revived {
 		tombstone.Dismiss(config.Dir(), name)
 	}
-	return c.sweep(ctx, merged), nil
+	return merged, nil
 }
 
 // Enrich returns a copy of sessions with each running session's supervisor
