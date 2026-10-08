@@ -115,17 +115,17 @@ updater's signed archive to the release; then it writes the updater's
 
 | Secret | What |
 |---|---|
-| `APPLE_CERTIFICATE` | the Developer ID Application certificate and key, exported as .p12, base64 |
+| `APPLE_CERTIFICATE` | the Developer ID Application certificate with its key, exported as .p12, base64 |
 | `APPLE_CERTIFICATE_PASSWORD` | the .p12's password |
 | `APPLE_SIGNING_IDENTITY` | `Developer ID Application: <name> (<team id>)` |
-| `APPLE_API_ISSUER`, `APPLE_API_KEY_ID`, `APPLE_API_PRIVATE_KEY` | an App Store Connect API key (Developer role) for notarization: issuer id, key id, the .p8's contents |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarization: the developer account's Apple ID, an app-specific password for it (account.apple.com → Sign-In and Security), the team id |
 | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater's signing key and its password |
 
 and the repository variable `TAURI_UPDATER_PUBKEY`, the updater key's
-public half, which goes into every build. Make the updater key once with
-`cd macos && pnpm tauri signer generate -w ~/.tauri/pier.key`, and keep a
-copy of it offline: installed apps only accept updates signed with it, so
-losing it strands every install on its current version.
+public half, which goes into every build. The updater key was made once
+with `pnpm tauri signer generate`; keep a copy of it and its password
+offline. Installed apps only accept updates signed with it, so losing it
+strands every install on its current version.
 
 Versioning is semver. While pier is 0.x, breaking changes bump the minor
 version.

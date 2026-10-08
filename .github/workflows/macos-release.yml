@@ -47,9 +47,15 @@ jobs:
         env:
           PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
           IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          [ -n "$PUBKEY" ] || { echo "::error::repository variable TAURI_UPDATER_PUBKEY is not set (CONTRIBUTING.md, Releasing the Mac app)"; exit 1; }
-          [ -n "$IDENTITY" ] || { echo "::error::secret APPLE_SIGNING_IDENTITY is not set (CONTRIBUTING.md, Releasing the Mac app)"; exit 1; }
+          missing=""
+          [ -n "$PUBKEY" ] || missing="$missing TAURI_UPDATER_PUBKEY(variable)"
+          for v in IDENTITY CERT APPLE_ID APPLE_PASSWORD UPDATER_KEY; do [ -n "${!v}" ] || missing="$missing $v"; done
+          [ -z "$missing" ] || { echo "::error::release settings missing:$missing (CONTRIBUTING.md, Releasing)"; exit 1; }
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -69,21 +75,15 @@ jobs:
           workspaces: macos/src-tauri
       - name: the bundled pier
         run: make mac-sidecar VERSION="$TAG"
-      - name: the notarization key
-        env:
-          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-        run: |
-          key="$RUNNER_TEMP/notary.p8"
-          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$key"
-          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
       - name: build, sign and notarize
         working-directory: macos
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VERSION: ${{ steps.v.outputs.version }}
@@ -97,8 +97,9 @@ jobs:
       - name: sign and notarize the disk image
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           VERSION: ${{ steps.v.outputs.version }}
         run: |
           out=macos/src-tauri/target/${{ matrix.target }}/release/bundle
@@ -106,7 +107,7 @@ jobs:
           dmg="dist/Pier_${VERSION}_${{ matrix.arch }}.dmg"
           cp "$out"/dmg/*.dmg "$dmg"
           codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
-          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple "$dmg"
           cp "$out"/macos/Pier.app.tar.gz "dist/Pier_${VERSION}_${{ matrix.arch }}.app.tar.gz"
           cp "$out"/macos/Pier.app.tar.gz.sig "dist/Pier_${VERSION}_${{ matrix.arch }}.app.tar.gz.sig"
