@@ -276,6 +276,19 @@ export interface CreateParams {
   idleMs?: number;
   capMs?: number;
   noPool?: boolean;
+  /** Agent starts an agent in the session, with its first prompt. */
+  agent?: AgentParams;
+}
+
+/** AgentParams is the agent a new session starts with. */
+export interface AgentParams {
+  /** claude | codex */
+  kind: string;
+  model?: string;
+  /** PermissionMode is claude's --permission-mode; "" keeps its default. */
+  permissionMode?: string;
+  /** Prompt is the first prompt, typed in once setup has finished. */
+  prompt?: string;
 }
 
 /** DecideParams answers a permission request. */

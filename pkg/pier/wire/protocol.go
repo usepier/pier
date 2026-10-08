@@ -147,6 +147,18 @@ type CreateParams struct {
 	IdleMs *int64 `json:"idleMs,omitempty"`
 	CapMs  *int64 `json:"capMs,omitempty"`
 	NoPool bool   `json:"noPool,omitempty"`
+	// Agent starts an agent in the session, with its first prompt.
+	Agent *AgentParams `json:"agent,omitempty"`
+}
+
+// AgentParams is the agent a new session starts with.
+type AgentParams struct {
+	Kind  string `json:"kind"` // claude | codex
+	Model string `json:"model,omitempty"`
+	// PermissionMode is claude's --permission-mode; "" keeps its default.
+	PermissionMode string `json:"permissionMode,omitempty"`
+	// Prompt is the first prompt, typed in once setup has finished.
+	Prompt string `json:"prompt,omitempty"`
 }
 
 // BakeParams starts a bake of a linked checkout's repo.

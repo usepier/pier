@@ -33,6 +33,18 @@ func TestCreateStartsAJob(t *testing.T) {
 	if errKind(resp) != "invalid_params" {
 		t.Errorf("a blank branch must be rejected: %v", resp)
 	}
+	c.call("sessions.create", map[string]any{"path": repo, "branch": "feat/y",
+		"agent": map[string]any{"kind": "claude", "model": "opus", "prompt": "fix the login"}})
+	f.mu.Lock()
+	a := f.created[len(f.created)-1].Agent
+	f.mu.Unlock()
+	if a == nil || a.Kind != "claude" || a.Model != "opus" || a.Prompt != "fix the login" {
+		t.Errorf("agent = %+v", a)
+	}
+	resp, _ = c.call("sessions.create", map[string]any{"path": repo, "branch": "feat/z", "agent": map[string]any{"kind": "vim"}})
+	if errKind(resp) != "invalid_params" {
+		t.Errorf("an unknown agent must be rejected: %v", resp)
+	}
 }
 
 // A job watch hands over everything written so far, then streams what the
