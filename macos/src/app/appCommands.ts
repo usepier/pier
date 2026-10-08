@@ -2,9 +2,13 @@ import { exit } from "@tauri-apps/plugin-process";
 import { useEffect } from "react";
 import { rpc } from "@/api/client";
 import { inTauri } from "@/api/transport";
+import { useQuickOpen } from "@/features/files/QuickOpen";
+import { hasActiveSave, saveActive } from "@/features/files/save";
 import { linkCheckout } from "@/features/repos/link";
 import { confirm } from "@/lib/confirm";
 import { needingAttention, useSeen } from "@/state/attention";
+import { unsavedCount } from "@/state/buffers";
+import { useInspector } from "@/state/inspector";
 import { trackJob } from "@/state/jobs";
 import { attempt, toast } from "@/state/toasts";
 import { useUI } from "@/state/ui";
@@ -39,7 +43,15 @@ const quitNoted = "pier.quitNoted";
 /** Quits; the first time, says what quitting leaves running. */
 async function quit() {
   if (!inTauri) return;
-  if (!localStorage.getItem(quitNoted)) {
+  const unsaved = unsavedCount();
+  if (unsaved > 0) {
+    const ok = await confirm(
+      "Quit with unsaved edits?",
+      `${unsaved === 1 ? "A file has" : `${unsaved} files have`} edits not saved to the session. They stay on this Mac and are back when you open pier again.`,
+      { ok: "Quit" },
+    );
+    if (!ok) return;
+  } else if (!localStorage.getItem(quitNoted)) {
     const ok = await confirm(
       "Quit pier?",
       "Agents keep working on their sessions after you quit, and sessions park on their own once they're idle. Prompts still on their way go out when you open pier again.",
@@ -96,6 +108,35 @@ export function useAppCommands() {
           shortcut: "CmdOrCtrl+Shift+H",
           menu: "go",
           run: () => router.navigate({ to: "/" }),
+        },
+        {
+          id: "file.save",
+          title: "Save",
+          shortcut: "CmdOrCtrl+S",
+          menu: "file",
+          enabled: () => hasActiveSave(),
+          run: () => void saveActive(),
+        },
+        {
+          id: "go.quickOpen",
+          title: "Open File…",
+          shortcut: "CmdOrCtrl+P",
+          menu: "go",
+          keywords: "find file",
+          enabled: () => !!current().session,
+          run: () => {
+            const id = current().session;
+            if (id) useQuickOpen.getState().show(id);
+          },
+        },
+        {
+          id: "go.search",
+          title: "Search in Session…",
+          shortcut: "CmdOrCtrl+Shift+F",
+          menu: "go",
+          keywords: "grep find text",
+          enabled: () => !!current().session,
+          run: () => useInspector.getState().showSearch(),
         },
         {
           id: "go.attention",

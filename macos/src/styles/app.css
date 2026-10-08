@@ -55,6 +55,15 @@
   --selected: rgb(0 0 0 / 0.08);
   --accent: #13a596;
   --on-accent: #ffffff;
+  /* Code, in the editor: the system's Xcode-like defaults. */
+  --hl-keyword: #ad3da4;
+  --hl-string: #c41a16;
+  --hl-number: #1c00cf;
+  --hl-comment: #707f8c;
+  --hl-function: #326d74;
+  --hl-type: #703daa;
+  --hl-property: #3e8087;
+  --hl-tag: #0b4f79;
   color-scheme: light dark;
 }
 
@@ -70,6 +79,14 @@
     --control: #2c2c2e;
     --hover: rgb(255 255 255 / 0.05);
     --selected: rgb(255 255 255 / 0.1);
+    --hl-keyword: #fc5fa3;
+    --hl-string: #fc6a5d;
+    --hl-number: #d0bf69;
+    --hl-comment: #7f8c98;
+    --hl-function: #67b7a4;
+    --hl-type: #d0a8ff;
+    --hl-property: #a167e6;
+    --hl-tag: #5dd8ff;
   }
 }
 

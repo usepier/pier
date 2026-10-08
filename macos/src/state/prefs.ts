@@ -8,6 +8,8 @@ interface Prefs {
   /** Every terminal detaches once the app has been in the background this long. */
   backgroundDetachMs: number;
   terminalFontSize: number;
+  /** Diffs side by side rather than one column. */
+  diffSplit: boolean;
   set: (p: Partial<Omit<Prefs, "set">>) => void;
 }
 
@@ -17,6 +19,7 @@ export const usePrefs = create<Prefs>()(
       hiddenDetachMs: 60_000,
       backgroundDetachMs: 600_000,
       terminalFontSize: 12.5,
+      diffSplit: false,
       set: (p) => set(p),
     }),
     { name: "pier.prefs" },

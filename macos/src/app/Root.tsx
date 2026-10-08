@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { rpc } from "@/api/client";
 import { useStatus } from "@/api/live";
 import { AccountBanner } from "@/features/auth/AccountBanner";
+import { QuickOpen } from "@/features/files/QuickOpen";
 import { NewSessionSheet } from "@/features/newSession/NewSessionSheet";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { applyAccent } from "@/lib/theme";
@@ -38,6 +39,7 @@ export function Root() {
     <>
       <Shell sidebar={<Sidebar />} banners={<AccountBanner />} />
       <NewSessionSheet />
+      <QuickOpen />
       <Toasts />
     </>
   );

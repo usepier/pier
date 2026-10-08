@@ -6,9 +6,12 @@ import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panel
 import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
 import { ChatView } from "@/features/chat/ChatView";
+import { FilesPanel } from "@/features/files/FilesPanel";
 import { JobProgress } from "@/features/jobs/JobProgress";
+import { ChangesPanel } from "@/features/review/ChangesPanel";
 import { age } from "@/lib/format";
 import { useChat } from "@/state/chat";
+import { type InspectorTab, useInspector } from "@/state/inspector";
 import { useRunningJobs } from "@/state/jobs";
 import { useSession } from "@/state/overview";
 import { attempt } from "@/state/toasts";
@@ -22,13 +25,12 @@ import { EnvironmentPanel } from "./EnvironmentPanel";
 import { SessionCenter } from "./SessionCenter";
 import { SessionHeader } from "./SessionHeader";
 
-type InspectorTab = "env" | "log" | "details";
-
 export function SessionPage() {
   const { id } = useParams({ from: "/session/$id" });
   const s = useSession(id);
   const [resizeJob, setResizeJob] = useState<string>();
-  const [tab, setTab] = useState<InspectorTab>("env");
+  const tab = useInspector((i) => i.tab);
+  const setTab = useInspector((i) => i.setTab);
   const [openWindow, setOpenWindow] = useState<string>();
   const layout = useDefaultLayout({ id: "pier.session", storage: localStorage });
   const resizing = useRunningJobs((j) => j.kind === "resize" && j.session === s?.name)[0]?.id ?? resizeJob;
@@ -62,11 +64,16 @@ export function SessionPage() {
         </Panel>
         <Separator className="w-px bg-separator outline-none data-[separator=active]:bg-accent" />
         <Panel id="inspector" defaultSize={340} minSize={260} maxSize={720} className="flex min-w-0 flex-col">
-          <div role="tablist" className="flex h-9 shrink-0 items-center gap-1 border-b border-separator px-2">
+          <div
+            role="tablist"
+            className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-separator px-1.5 [scrollbar-width:none]"
+          >
             {(
               [
+                ["changes", "Changes"],
+                ["files", "Files"],
                 ["env", "Environment"],
-                ["log", s.state === "failed" ? "Create log" : "Setup log"],
+                ["log", s.state === "failed" ? "Create log" : "Log"],
                 ["details", "Details"],
               ] as [InspectorTab, string][]
             ).map(([k, title]) => (
@@ -76,13 +83,15 @@ export function SessionPage() {
                 role="tab"
                 aria-selected={tab === k}
                 onClick={() => setTab(k)}
-                className={`h-7 rounded-ctl px-2.5 text-sm ${tab === k ? "bg-selected text-label" : "text-secondary hover:bg-hover"}`}
+                className={`h-7 shrink-0 rounded-ctl px-2 text-sm ${tab === k ? "bg-selected text-label" : "text-secondary hover:bg-hover"}`}
               >
                 {title}
               </button>
             ))}
           </div>
           <div className="min-h-0 flex-1">
+            {tab === "changes" && <ChangesPanel session={s} />}
+            {tab === "files" && <FilesPanel session={s} />}
             {tab === "env" && (
               <EnvironmentPanel
                 session={s}
