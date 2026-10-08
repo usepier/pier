@@ -642,6 +642,14 @@ in-flight work three seconds to see its cancellation.
   and `setup.adminDoc`. Logins run in local terminals (`term.openLocal`).
   `doctor.run` and `pier doctor --json` give each check the command that
   fixes it.
+- **Proxy and ports.** `proxy.start` runs `pier proxy` inside `pier api`,
+  on the connections it already keeps (one per session, not a second ssh
+  per session); its one-time network setup asks through the macOS
+  administrator prompt. `proxy.watch` reports each session's name and
+  mirrored ports, `proxy.trustCA` trusts its certificate for https.
+  `ports.forward` is `pier port` for the app, lasting as long as pier api
+  does. `cli.install` links /usr/local/bin/pier to the app's own pier,
+  behind the same prompt when the directory isn't writable.
 - **Errors** carry `data.kind` (`auth_expired` with the login command that
   fixes it, `not_set_up`, `parked`, `no_key`, …) so clients never parse
   messages.

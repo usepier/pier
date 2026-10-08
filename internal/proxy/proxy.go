@@ -71,6 +71,45 @@ const (
 type Options struct {
 	StateDir string // control sockets live under StateDir/proxy
 	Out      io.Writer
+	// Connect hands the proxy a session connection to carry its forwards,
+	// for a frontend that keeps one per session anyway (the app). nil: the
+	// proxy opens its own.
+	Connect func(ctx context.Context, id string) (Link, error)
+	// Privileged runs the one-time network setup (resolver file, loopback
+	// aliases) with admin rights. nil: sudo, in the terminal.
+	Privileged func(script string) error
+	// OnChange receives the proxy's state whenever it changes.
+	OnChange func(Status)
+}
+
+// Link is a session connection the proxy forwards over.
+type Link interface {
+	// Exec runs a script in the session and returns its output.
+	Exec(ctx context.Context, script string) ([]byte, error)
+	// Forward and Cancel add and remove a local forward (an ssh -L spec).
+	Forward(spec string) error
+	Cancel(spec string) error
+	// Generation changes when the connection was made again: its forwards
+	// are gone.
+	Generation() int
+}
+
+// Status is what the proxy serves right now.
+type Status struct {
+	Sessions []SessionStatus
+	// CATrusted says browsers trust https://<session>.pier; CAPath is the
+	// certificate to trust when not.
+	CATrusted bool
+	CAPath    string
+}
+
+// SessionStatus is one session's hostname and ports.
+type SessionStatus struct {
+	ID        string
+	Name      string // hostname, without .pier
+	IP        string
+	Ports     []int // mirrored on the session's own address
+	Localhost []int // mirrored on localhost too
 }
 
 // Run blocks until ctx is cancelled (ctrl-c), reconciling workers against
@@ -80,7 +119,10 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("pier proxy is macOS-only for now — `pier port <session> <port>` works everywhere")
 	}
-	if err := ensureNet(opt.Out); err != nil {
+	if opt.Out == nil {
+		opt.Out = io.Discard
+	}
+	if err := ensureNet(opt.Out, opt.Privileged); err != nil {
 		return err
 	}
 	ctlDir := filepath.Join(opt.StateDir, "proxy")
@@ -103,6 +145,9 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 	}
 	tcfg := &tls.Config{GetCertificate: mint.getCertificate, NextProtos: []string{"http/1.1"}}
 	names := &table{m: map[string]net.IP{}}
+	st := &statusBoard{onChange: opt.OnChange, ca: caPath(opt.StateDir), sessions: map[string]SessionStatus{}}
+	st.publish()
+	defer st.stop()
 	dns, err := serveDNS(net.JoinHostPort(dnsAddr, dnsPort), names.lookup)
 	if err != nil {
 		hint := ""
@@ -178,14 +223,18 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 					fmt.Fprintln(opt.Out, ui.Warn.Render("! out of proxy slots ("+fmt.Sprint(slotCount)+") — skipping "+s.Name))
 					continue
 				}
-				sshOpts, dest, err := drv.SSHTarget(ctx, id)
-				if err != nil {
-					fmt.Fprintln(opt.Out, ui.Warn.Render("! "+s.Name+": "+err.Error()))
-					slots.release(id)
-					continue
+				var sshOpts []string
+				var dest string
+				if opt.Connect == nil {
+					sshOpts, dest, err = drv.SSHTarget(ctx, id)
+					if err != nil {
+						fmt.Fprintln(opt.Out, ui.Warn.Render("! "+s.Name+": "+err.Error()))
+						slots.release(id)
+						continue
+					}
 				}
 				w := &worker{
-					id: id, name: hostname(s.Name), dest: dest, ip: ip,
+					id: id, name: hostname(s.Name), dest: dest, ip: ip, connect: opt.Connect, board: st,
 					shadow: shadowOf(ip), tcfg: tcfg,
 					ctl:      filepath.Join(ctlDir, ctlName(id)),
 					cacheDir: cacheDir,
@@ -225,6 +274,9 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 // IP; the public ip:port is pier's own sniffing relay, so https works too.
 type worker struct {
 	id, name, dest string
+	connect        func(ctx context.Context, id string) (Link, error)
+	link           Link
+	board          *statusBoard
 	ip, shadow     net.IP
 	tcfg           *tls.Config
 	ctl            string
@@ -249,6 +301,13 @@ func (w *worker) run() {
 	// stack another ssh + SSM tunnel for as long as the condition persists.
 	defer w.cancel()
 	defer func() { // relays die with the worker; the ssh forwards die with the master
+		if w.link != nil {
+			// A borrowed connection outlives the proxy: take the forwards
+			// back off it.
+			for p := range w.relays {
+				w.unforward(p)
+			}
+		}
 		for _, ln := range w.relays {
 			ln.Close()
 		}
@@ -260,29 +319,43 @@ func (w *worker) run() {
 			w.lh.release(p, w.id)
 		}
 	}()
-	_ = os.Remove(w.ctl) // stale socket from a crashed proxy blocks -M
-
-	var errb bytes.Buffer
-	master := exec.CommandContext(w.ctx, "ssh", append(slices.Clone(w.opts), "-M", "-S", w.ctl, "-N", w.dest)...)
-	master.Stderr = &errb
-	if err := master.Start(); err != nil {
-		w.logf(ui.Warn.Render("! %s: ssh: %v"), w.name, err)
-		return
-	}
 	masterDone := make(chan error, 1)
-	go func() { masterDone <- master.Wait() }()
-
-	if !w.waitReady(masterDone) {
-		if w.ctx.Err() == nil {
-			w.logf(ui.Warn.Render("! %s: tunnel didn't come up: %s"), w.name, strings.TrimSpace(errb.String()))
+	if w.connect != nil {
+		// The frontend's own connection: nothing to start or stop here.
+		link, err := w.connect(w.ctx, w.id)
+		if err != nil {
+			if w.ctx.Err() == nil {
+				w.logf(ui.Warn.Render("! %s: %v"), w.name, err)
+			}
+			return
 		}
-		return
+		w.link = link
+	} else {
+		_ = os.Remove(w.ctl) // stale socket from a crashed proxy blocks -M
+
+		var errb bytes.Buffer
+		master := exec.CommandContext(w.ctx, "ssh", append(slices.Clone(w.opts), "-M", "-S", w.ctl, "-N", w.dest)...)
+		master.Stderr = &errb
+		if err := master.Start(); err != nil {
+			w.logf(ui.Warn.Render("! %s: ssh: %v"), w.name, err)
+			return
+		}
+		go func() { masterDone <- master.Wait() }()
+
+		if !w.waitReady(masterDone) {
+			if w.ctx.Err() == nil {
+				w.logf(ui.Warn.Render("! %s: tunnel didn't come up: %s"), w.name, strings.TrimSpace(errb.String()))
+			}
+			return
+		}
 	}
 	if !w.names.set(w.name, w.ip) {
 		w.logf(ui.Warn.Render("! %s.%s already taken by another session — %s gets no hostname"), w.name, domain, w.id)
 		return
 	}
 	defer w.names.drop(w.name, w.ip)
+	w.board.set(SessionStatus{ID: w.id, Name: w.name, IP: w.ip.String()})
+	defer w.board.drop(w.id)
 	w.logf("%s %s", ui.Accent.Render("▸ "+w.name+"."+domain), ui.Dim.Render("→ "+w.ip.String()))
 	defer func() {
 		if w.ctx.Err() == nil { // master died on its own (parked?), not our shutdown
@@ -292,9 +365,22 @@ func (w *worker) run() {
 
 	forwards := map[int]bool{}
 	warnedOld := false
+	gen := 0
+	if w.link != nil {
+		gen = w.link.Generation()
+	}
 	tick := time.NewTicker(portsEvery)
 	defer tick.Stop()
 	for {
+		if w.link != nil && w.link.Generation() != gen {
+			// The connection was made again without our forwards: add them
+			// back.
+			gen = w.link.Generation()
+			for p := range forwards {
+				delete(forwards, p)
+				w.closePort(p)
+			}
+		}
 		if ports, hasField, err := w.beaconPorts(); err == nil {
 			if !hasField && !warnedOld {
 				w.logf(ui.Warn.Render("! %s predates port discovery — recreate the session to mirror ports (pier port still works)"), w.name)
@@ -339,8 +425,13 @@ func (w *worker) waitReady(masterDone <-chan error) bool {
 func (w *worker) beaconPorts() (ports []int, hasField bool, err error) {
 	ctx, cancel := context.WithTimeout(w.ctx, 10*time.Second)
 	defer cancel()
-	args := append(slices.Clone(w.opts), "-S", w.ctl, w.dest, "cat /run/pier/status.json")
-	out, err := exec.CommandContext(ctx, "ssh", args...).Output()
+	var out []byte
+	if w.link != nil {
+		out, err = w.link.Exec(ctx, "cat /run/pier/status.json")
+	} else {
+		args := append(slices.Clone(w.opts), "-S", w.ctl, w.dest, "cat /run/pier/status.json")
+		out, err = exec.CommandContext(ctx, "ssh", args...).Output()
+	}
 	if err != nil {
 		return nil, false, err
 	}
@@ -366,7 +457,7 @@ func (w *worker) sync(ports []int, forwards map[int]bool) {
 		if forwards[p] {
 			continue
 		}
-		if err := w.ctlOp(10*time.Second, "-O", "forward", "-L", w.spec(p)); err != nil {
+		if err := w.forward(p); err != nil {
 			w.logf(ui.Warn.Render("! %s.%s: mirroring %d failed: %v"), w.name, domain, p, err)
 		} else if ln, err := net.Listen("tcp", net.JoinHostPort(w.ip.String(), strconv.Itoa(p))); err != nil {
 			w.logf(ui.Warn.Render("! %s.%s: relay on %d failed: %v"), w.name, domain, p, err)
@@ -391,24 +482,14 @@ func (w *worker) sync(ports []int, forwards map[int]bool) {
 		if want[p] {
 			continue
 		}
-		_ = w.ctlOp(10*time.Second, "-O", "cancel", "-L", w.spec(p))
-		if ln, ok := w.relays[p]; ok {
-			ln.Close()
-			delete(w.relays, p)
-		}
-		if ac, ok := w.accels[p]; ok {
-			ac.Close()
-			delete(w.accels, p)
-		}
-		if ln, ok := w.lports[p]; ok {
-			ln.Close()
-			w.lh.release(p, w.id)
-			delete(w.lports, p)
-		}
+		w.unforward(p)
+		w.closePort(p)
 		delete(forwards, p)
 		changed = true
 	}
 	if changed {
+		w.board.set(SessionStatus{ID: w.id, Name: w.name, IP: w.ip.String(),
+			Ports: slices.Sorted(maps.Keys(w.relays)), Localhost: slices.Sorted(maps.Keys(w.lports))})
 		list := "(none)"
 		if open := slices.Sorted(maps.Keys(forwards)); len(open) > 0 {
 			list = intList(open)
@@ -426,6 +507,38 @@ func intList(ns []int) string {
 		parts[i] = strconv.Itoa(n)
 	}
 	return strings.Join(parts, " ")
+}
+
+// closePort stops relaying a port.
+func (w *worker) closePort(p int) {
+	if ln, ok := w.relays[p]; ok {
+		ln.Close()
+		delete(w.relays, p)
+	}
+	if ac, ok := w.accels[p]; ok {
+		ac.Close()
+		delete(w.accels, p)
+	}
+	if ln, ok := w.lports[p]; ok {
+		ln.Close()
+		w.lh.release(p, w.id)
+		delete(w.lports, p)
+	}
+}
+
+func (w *worker) forward(p int) error {
+	if w.link != nil {
+		return w.link.Forward(w.spec(p))
+	}
+	return w.ctlOp(10*time.Second, "-O", "forward", "-L", w.spec(p))
+}
+
+func (w *worker) unforward(p int) {
+	if w.link != nil {
+		_ = w.link.Cancel(w.spec(p))
+		return
+	}
+	_ = w.ctlOp(10*time.Second, "-O", "cancel", "-L", w.spec(p))
 }
 
 // spec binds ssh's forward on the shadow IP: the public ip:port belongs to
@@ -569,4 +682,51 @@ func hostname(name string) string {
 func ctlName(id string) string {
 	h := sha256.Sum256([]byte(id))
 	return hex.EncodeToString(h[:6]) + ".ctl"
+}
+
+// statusBoard keeps the proxy's state for Options.OnChange.
+type statusBoard struct {
+	mu       sync.Mutex
+	onChange func(Status)
+	ca       string
+	sessions map[string]SessionStatus
+	stopped  bool
+}
+
+func (b *statusBoard) set(s SessionStatus) {
+	b.mu.Lock()
+	b.sessions[s.ID] = s
+	b.mu.Unlock()
+	b.publish()
+}
+
+func (b *statusBoard) drop(id string) {
+	b.mu.Lock()
+	delete(b.sessions, id)
+	b.mu.Unlock()
+	b.publish()
+}
+
+func (b *statusBoard) stop() {
+	b.mu.Lock()
+	b.stopped = true
+	b.mu.Unlock()
+}
+
+func (b *statusBoard) publish() {
+	if b.onChange == nil {
+		return
+	}
+	b.mu.Lock()
+	if b.stopped {
+		b.mu.Unlock()
+		return
+	}
+	st := Status{CATrusted: caTrusted(b.ca), CAPath: b.ca, Sessions: []SessionStatus{}}
+	for _, s := range b.sessions {
+		st.Sessions = append(st.Sessions, s)
+	}
+	b.mu.Unlock()
+	slices.SortFunc(st.Sessions, func(a, c SessionStatus) int { return strings.Compare(a.Name, c.Name) })
+	b.onChange(st)
 }

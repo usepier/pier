@@ -70,6 +70,8 @@ type Server struct {
 	termReg  *terminals
 	notices  *notices
 	prs      *prCache
+	proxy    proxyRunner
+	ports    forwards
 	client   wire.InitializeParams // what the client said it handles
 
 	chatMu sync.Mutex
@@ -122,6 +124,7 @@ func Serve(ctx context.Context, o Options) error {
 	cancel()
 	s.closeTerminals()
 	s.notices.stop()
+	s.stopProxy()
 	settled := make(chan struct{})
 	go func() {
 		s.overview.stop()

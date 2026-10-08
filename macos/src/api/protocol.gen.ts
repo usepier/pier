@@ -11,6 +11,16 @@ export interface BakeParams {
   includeRepo?: boolean;
 }
 
+/** CLIStatus is the pier command on this Mac. */
+export interface CLIStatus {
+  /** where the command goes */
+  link: string;
+  /** it is this app's pier */
+  installed: boolean;
+  /** Other is another pier the shell finds first (a Homebrew one). */
+  other?: string;
+}
+
 /** CancelParams cancels an in-flight request ($/cancelRequest). */
 export interface CancelParams {
   id: number | string;
@@ -689,6 +699,23 @@ export interface Port {
   pid?: number;
 }
 
+/** PortForward is a port forwarded by hand. */
+export interface PortForward {
+  sessionId: string;
+  local: number;
+  remote: number;
+}
+
+/**
+ * PortParams forwards (or stops forwarding) a port of a session to this
+ * Mac.
+ */
+export interface PortParams {
+  sessionId: string;
+  local: number;
+  remote: number;
+}
+
 /** Process is one of a session's heaviest processes. */
 export interface Process {
   pid: number;
@@ -703,6 +730,29 @@ export interface Process {
 export interface ProgressParams {
   id: number | string;
   event: Event;
+}
+
+/**
+ * ProxyState is the local proxy: every running session as <name>.pier,
+ * its listening ports mirrored on this Mac.
+ */
+export interface ProxyState {
+  running: boolean;
+  sessions: ProxySession[];
+  /** CATrusted says https://<session>.pier opens without a warning. */
+  caTrusted: boolean;
+  /** why it stopped, if it failed */
+  error?: string;
+}
+
+/** ProxySession is one session as the proxy serves it. */
+export interface ProxySession {
+  id: string;
+  /** name.pier */
+  host: string;
+  ports: number[];
+  /** the ports mirrored on localhost too */
+  localhost: number[];
 }
 
 /** PushParams pushes a session's branch. */
@@ -1254,6 +1304,10 @@ export interface Methods {
   "chat.send": { params: ChatSendParams; result: ChatSendResult };
   /** A session's agent conversation: the newest items, then changes as the agent writes them. Parked sessions answer from this machine's copy. */
   "chat.watch": { params: SessionRef; result: WatchResult<ChatSnapshot> };
+  /** Installs the pier command (a link to this app's pier); macOS asks for an administrator's password if needed. */
+  "cli.install": { params: Empty; result: CLIStatus };
+  /** Whether the pier command in the shell is this app's pier. */
+  "cli.status": { params: Empty; result: CLIStatus };
   /** Starts, stops or restarts one of a session's containers. */
   "containers.action": { params: ContainerParams; result: null };
   /** Checks the environment and the cloud account. */
@@ -1302,6 +1356,12 @@ export interface Methods {
   "pool.fill": { params: PathParams; result: Job };
   /** Sets how many pooled sessions the checkout's repo keeps (0 turns the pool off and drains it). */
   "pool.setSize": { params: PoolSizeParams; result: null };
+  /** Forwards a session's port to 127.0.0.1 on this Mac for as long as pier runs. */
+  "ports.forward": { params: PortParams; result: null };
+  /** The ports forwarded by hand. */
+  "ports.list": { params: Empty; result: PortForward[] };
+  /** Stops a port forward. */
+  "ports.unforward": { params: PortParams; result: null };
   /** A session's pull request in full: checks, review threads, reviews. */
   "pr.get": { params: SessionRef; result: PRDetail };
   /** The end of a check's log (GitHub Actions). */
@@ -1310,6 +1370,14 @@ export interface Methods {
   "pr.merge": { params: PRMergeParams; result: null };
   /** Re-runs a workflow run's failed jobs. */
   "pr.rerun": { params: PRRerunParams; result: null };
+  /** Serves every running session as <session>.pier with its ports mirrored on this Mac. The first time, macOS asks for an administrator's password (local names and addresses). */
+  "proxy.start": { params: Empty; result: ProxyState };
+  /** Stops the proxy; sessions' names and mirrored ports go away. */
+  "proxy.stop": { params: Empty; result: null };
+  /** Makes this Mac trust the proxy's certificate, so https://<session>.pier opens without a warning (macOS asks for the password). */
+  "proxy.trustCA": { params: Empty; result: null };
+  /** The proxy's state: running, each session's name and mirrored ports. */
+  "proxy.watch": { params: Empty; result: WatchResult<ProxyState> };
   /** What a create from the checkout containing path would carry: branch, HEAD, uncommitted changes, base. */
   "repos.inspect": { params: PathParams; result: CheckoutInfo };
   /** Links the repository containing path as a local checkout to act from. */
@@ -1372,6 +1440,7 @@ export interface Watches {
   "env": { params: SessionRef; snapshot: Env; data: Env };
   "job": { params: JobRef; snapshot: JobUpdate; data: JobUpdate };
   "overview": { params: Empty; snapshot: Overview; data: Overview };
+  "proxy": { params: Empty; snapshot: ProxyState; data: ProxyState };
 }
 
 export interface ServerNotifications {

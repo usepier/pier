@@ -22,7 +22,7 @@ import (
 //     Inert /32s, gone at reboot, re-added by the next run.
 //
 // Everything else the proxy does is unprivileged and dies with the process.
-func ensureNet(out io.Writer) error {
+func ensureNet(out io.Writer, privileged func(script string) error) error {
 	var steps []string
 	content := "nameserver " + dnsAddr + "\nport " + dnsPort + "\ntimeout 1\n"
 	if b, err := os.ReadFile("/etc/resolver/" + domain); err != nil || string(b) != content {
@@ -47,7 +47,14 @@ func ensureNet(out io.Writer) error {
 	if len(missing) > 0 {
 		fmt.Fprintf(out, ui.Dim.Render("  ifconfig lo0 alias %s 255.255.255.255   (%d loopback IPs)\n"), missing[0], len(missing))
 	}
-	cmd := exec.Command("sudo", "/bin/sh", "-ec", strings.Join(steps, "\n"))
+	script := strings.Join(steps, "\n")
+	if privileged != nil {
+		if err := privileged(script); err != nil {
+			return fmt.Errorf("network setup: %w", err)
+		}
+		return nil
+	}
+	cmd := exec.Command("sudo", "/bin/sh", "-ec", script)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("network setup: %w", err)

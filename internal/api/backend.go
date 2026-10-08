@@ -74,6 +74,9 @@ type Backend interface {
 	RerunChecks(ctx context.Context, s pier.Session, runID int64) error
 	CheckLog(ctx context.Context, s pier.Session, jobID int64, maxBytes int) (string, error)
 	GitHubLimit() github.RateLimit
+	RunProxy(ctx context.Context, privileged func(script string) error, onChange func(pier.ProxyStatus)) error
+	ForwardPort(ctx context.Context, s pier.Session, local, remote int) error
+	UnforwardPort(s pier.Session, local, remote int) error
 }
 
 var _ Backend = (*pier.Client)(nil)
