@@ -11,6 +11,7 @@
 package pier
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -179,16 +180,21 @@ func (c *Client) DiskGiB() int {
 	return c.cfg.AWS.DiskGiB
 }
 
-// IsAuthExpired recognizes a cloud login expiry an interactive login fixes.
-func IsAuthExpired(err error) bool { return awsec2.LoginExpired(err) }
+// IsAuthExpired recognizes a cloud error an interactive login fixes, on
+// either cloud: an expired or missing CLI login.
+func IsAuthExpired(err error) bool {
+	var le *driver.LoginError
+	return errors.As(err, &le)
+}
 
-// ReauthCommand is the foreground login that fixes IsAuthExpired errors.
-func (c *Client) ReauthCommand() *exec.Cmd {
-	args := []string{"login"}
-	if c.cfg.AWS.Profile != "" {
-		args = append(args, "--profile", c.cfg.AWS.Profile)
+// ReauthCommand is the foreground login that fixes err, an IsAuthExpired
+// error; nil for any other error.
+func (c *Client) ReauthCommand(err error) *exec.Cmd {
+	var le *driver.LoginError
+	if !errors.As(err, &le) || len(le.Login) == 0 {
+		return nil
 	}
-	return exec.Command("aws", args...)
+	return exec.Command(le.Login[0], le.Login[1:]...)
 }
 
 // RepoRoot returns the git toplevel containing dir ("" = the process cwd).

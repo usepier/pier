@@ -97,6 +97,17 @@ var ErrNoKey = errors.New("no ssh key for this session on this machine")
 // candidate.
 var ErrClaimLost = errors.New("pool member claimed by another process")
 
+// LoginError is a cloud CLI failure an interactive login fixes: the CLI's
+// login session expired or was never made. Login is the argv of that login,
+// for a frontend to run in the user's terminal; Err keeps the CLI's message.
+type LoginError struct {
+	Login []string
+	Err   error
+}
+
+func (e *LoginError) Error() string { return e.Err.Error() }
+func (e *LoginError) Unwrap() error { return e.Err }
+
 // ClaimSpec names the session a warm pool member becomes.
 type ClaimSpec struct {
 	Name   string

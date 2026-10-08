@@ -43,7 +43,7 @@ type Backend interface {
 	Settings() []pier.SettingValue
 	Set(key, value string) error
 	MachineCatalog(currentType string) []pier.Machine
-	ReauthCommand() *exec.Cmd
+	ReauthCommand(err error) *exec.Cmd
 	DiskMonthlyUSD() float64
 }
 
@@ -111,7 +111,7 @@ type model struct {
 	quota    string
 
 	loading, loaded bool
-	authRequired    bool
+	authErr         error // a cloud login expired: enter runs the login that fixes it
 
 	sessIdx, repoIdx, setIdx int
 
@@ -293,7 +293,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err != nil {
 			if pier.IsAuthExpired(msg.err) {
-				m.authRequired = true
+				m.authErr = msg.err
 				m.status, m.statusBad = "your cloud login expired — enter signs in again", true
 				return m, nil
 			}
@@ -305,7 +305,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		m.loaded, m.authRequired = true, false
+		m.loaded, m.authErr = true, nil
 		// The status read runs on the list as the cloud returned it. The
 		// carried copy below is display-only: reading that one would skip
 		// every session last seen idle or working (only plain running
@@ -486,10 +486,10 @@ func (m model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.authRequired {
+	if m.authErr != nil {
 		switch k.String() {
 		case "enter":
-			return m, tea.ExecProcess(m.be.ReauthCommand(), func(err error) tea.Msg { return reauthMsg{err} })
+			return m, tea.ExecProcess(m.be.ReauthCommand(m.authErr), func(err error) tea.Msg { return reauthMsg{err} })
 		case "q", "esc":
 			return m, tea.Quit
 		}

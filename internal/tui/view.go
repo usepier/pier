@@ -149,7 +149,7 @@ func (m model) sessionList(w, h int) string {
 	}
 	var lines []string
 	switch {
-	case m.authRequired:
+	case m.authErr != nil:
 		lines = []string{"", sWarn.Render("your cloud login expired"), sDim.Render("press enter to sign in again")}
 	case !m.loaded:
 		lines = []string{"", sDim.Render("fetching sessions…")}
@@ -206,7 +206,7 @@ func scrollStart(cursor, n, rows int) int {
 
 func (m model) sessionDetail(w, h int) string {
 	s, ok := m.current()
-	if !ok || m.authRequired {
+	if !ok || m.authErr != nil {
 		return panel("Details", "", nil, w, h, false)
 	}
 	_, word := badge(s, m.frame)
@@ -523,7 +523,7 @@ func (m model) footer() string {
 		k = []string{"↑↓", "choose", "enter", "select", "esc", "cancel"}
 	case m.ov == ovHelp:
 		k = []string{"any key", "close"}
-	case m.authRequired:
+	case m.authErr != nil:
 		k = []string{"enter", "sign in", "q", "quit"}
 	case m.tab == tabSessions:
 		k = []string{"enter", "attach", "n", "new", "l", "logs", "m", "resize", "p", "keep", "d", "delete", "tab", "repos"}
@@ -532,7 +532,7 @@ func (m model) footer() string {
 	default:
 		k = []string{"enter", "change", "↑↓", "move", "tab", "sessions"}
 	}
-	if m.ov == ovNone && !m.authRequired {
+	if m.ov == ovNone && m.authErr == nil {
 		k = append(k, "?", "help", "q", "quit")
 	}
 	return fit(status, m.width) + "\n" + fitKeys(k, m.width-1)

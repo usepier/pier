@@ -35,9 +35,22 @@ func (d *Driver) gcloud(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		n := min(len(args), 3)
-		return "", fmt.Errorf("gcloud %s: %s", strings.Join(args[:n], " "), gcloudErr(errb.String()))
+		err := fmt.Errorf("gcloud %s: %s", strings.Join(args[:n], " "), gcloudErr(errb.String()))
+		if loginExpired(errb.String()) {
+			return "", &driver.LoginError{Login: gcloudLogin, Err: err}
+		}
+		return "", err
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// gcloudLogin renews (or makes) the gcloud account login pier runs as.
+var gcloudLogin = []string{"gcloud", "auth", "login"}
+
+// loginExpired recognizes gcloud's refusal to refresh an expired login.
+func loginExpired(stderr string) bool {
+	return strings.Contains(stderr, "Reauthentication") ||
+		strings.Contains(stderr, "problem refreshing your current auth tokens")
 }
 
 // gcloudErr compacts gcloud's stderr to its ERROR line. Crashes append
@@ -50,13 +63,8 @@ func (d *Driver) gcloud(ctx context.Context, args ...string) (string, error) {
 // ("Reauthentication failed. cannot prompt during non-interactive
 // execution") describes pier's subprocess plumbing, not the fix.
 func gcloudErr(stderr string) string {
-	for _, marker := range []string{
-		"Reauthentication",
-		"problem refreshing your current auth tokens",
-	} {
-		if strings.Contains(stderr, marker) {
-			return "gcloud auth has expired — run `gcloud auth login`, then retry"
-		}
+	if loginExpired(stderr) {
+		return "gcloud auth has expired — run `gcloud auth login`, then retry"
 	}
 	first := ""
 	for _, line := range strings.Split(stderr, "\n") {
@@ -86,7 +94,7 @@ func (d *Driver) user(ctx context.Context) (string, error) {
 	}
 	acct, _, _ := strings.Cut(out, "\n")
 	if acct == "" {
-		return "", fmt.Errorf("no active gcloud account — run `gcloud auth login`")
+		return "", &driver.LoginError{Login: gcloudLogin, Err: errors.New("no active gcloud account — run `gcloud auth login`")}
 	}
 	d.principal = acct
 	return acct, nil

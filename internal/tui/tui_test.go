@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/internal/ui"
 	"github.com/usepier/pier/pkg/pier"
 )
@@ -115,7 +117,7 @@ func (f *fake) Set(key, val string) error {
 	return config.Set(&f.cfg, key, val)
 }
 func (f *fake) MachineCatalog(string) []pier.Machine { return f.Machines(pier.Session{}) }
-func (f *fake) ReauthCommand() *exec.Cmd             { return exec.Command("true") }
+func (f *fake) ReauthCommand(error) *exec.Cmd        { return exec.Command("true") }
 func (f *fake) DiskMonthlyUSD() float64              { return 7.6 }
 
 // loaded returns a model that has received its first list at w×h.
@@ -358,10 +360,15 @@ func TestLogViewerSanitizesAndFollows(t *testing.T) {
 
 func TestAuthExpiryOffersSignIn(t *testing.T) {
 	m := loaded(t, newFake(), 120, 30)
-	next, _ := m.Update(sessionsMsg{err: errors.New("aws sts get-caller-identity: Your session has expired. Please reauthenticate using 'aws login'.")})
+	expired := &driver.LoginError{Login: []string{"aws", "login"}, Err: errors.New("aws sts get-caller-identity: Your session has expired. Please reauthenticate using 'aws login'.")}
+	next, _ := m.Update(sessionsMsg{err: fmt.Errorf("listing: %w", expired)})
 	m = next.(model)
-	if !m.authRequired || !strings.Contains(m.View(), "sign in") {
+	if m.authErr == nil || !strings.Contains(m.View(), "sign in") {
 		t.Error("an expired login must offer to sign in again")
+	}
+	next, _ = loaded(t, newFake(), 120, 30).Update(sessionsMsg{err: errors.New("aws ec2 describe-instances: access denied")})
+	if next.(model).authErr != nil {
+		t.Error("only login errors offer a sign-in")
 	}
 }
 

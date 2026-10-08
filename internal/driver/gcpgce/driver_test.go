@@ -41,6 +41,29 @@ func TestGcloudErr(t *testing.T) {
 // The instance name is the session ID and a GCE resource name: it must stay
 // under 63 chars, never end in "-" before the hash, and differ per principal
 // so two devs on one project can hold the same session name.
+// An expired gcloud login reaches every caller as a LoginError carrying
+// `gcloud auth login`, so frontends can offer to run it.
+func TestGcloudFailureCarriesItsLogin(t *testing.T) {
+	d, _ := setupTestDriver(t, map[string]mockResponse{
+		"compute instances list": {Stderr: "ERROR: (gcloud.compute.instances.list) There was a problem refreshing your current auth tokens: Reauthentication failed. cannot prompt during non-interactive execution.\n", ExitCode: 1},
+	})
+	_, err := d.List(context.Background())
+	var le *driver.LoginError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected a LoginError, got %v", err)
+	}
+	if got := strings.Join(le.Login, " "); got != "gcloud auth login" {
+		t.Errorf("login = %q", got)
+	}
+
+	d, _ = setupTestDriver(t, map[string]mockResponse{
+		"compute instances list": {Stderr: "ERROR: (gcloud.compute.instances.list) Could not fetch resource: quota\n", ExitCode: 1},
+	})
+	if _, err := d.List(context.Background()); err == nil || errors.As(err, &le) {
+		t.Errorf("other failures are not login problems, got %v", err)
+	}
+}
+
 func TestInstanceName(t *testing.T) {
 	a := instanceName("fix-auth", "kerem@example.com")
 	b := instanceName("fix-auth", "other@example.com")

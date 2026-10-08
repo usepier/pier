@@ -29,21 +29,36 @@ func (d *Driver) aws(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		n := min(len(args), 2)
-		return "", fmt.Errorf("aws %s: %s", strings.Join(args[:n], " "), strings.TrimSpace(errb.String()))
+		stderr := strings.TrimSpace(errb.String())
+		err := fmt.Errorf("aws %s: %s", strings.Join(args[:n], " "), stderr)
+		if login := loginFix(stderr, d.Profile); login != nil {
+			return "", &driver.LoginError{Login: login, Err: err}
+		}
+		return "", err
 	}
 	return strings.TrimSpace(out.String()), nil
 }
 
-// LoginExpired recognizes the AWS CLI's opt-in login session expiry. These
-// credentials are renewed with `aws login` (distinct from Identity Center's
-// `aws sso login`), so callers can offer the right interactive recovery
-// without treating every AWS error as an authentication problem.
-func LoginExpired(err error) bool {
-	if err == nil {
-		return false
+// loginFix names the interactive login that renews an expired AWS CLI
+// session, or nil when stderr is any other failure. The two logins don't
+// substitute for each other: `aws login` renews console-login credentials,
+// `aws sso login` an IAM Identity Center session (or makes its first token).
+func loginFix(stderr, profile string) []string {
+	msg := strings.ToLower(stderr)
+	var login []string
+	switch {
+	case strings.Contains(msg, "session has expired") && strings.Contains(msg, "aws login"):
+		login = []string{"aws", "login"}
+	case strings.Contains(msg, "aws sso login"), strings.Contains(msg, "sso session"),
+		strings.Contains(msg, "sso token"), strings.Contains(msg, "token from sso"):
+		login = []string{"aws", "sso", "login"}
+	default:
+		return nil
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "session has expired") && strings.Contains(msg, "aws login")
+	if profile != "" {
+		login = append(login, "--profile", profile)
+	}
+	return login
 }
 
 // --- SSH into the session ----------------------------------------------------
