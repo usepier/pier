@@ -123,7 +123,7 @@ func (c *prCache) run(ctx context.Context) {
 }
 
 // refresh reads the pull requests; true when they changed.
-func (c *prCache) refresh(ctx context.Context, be Backend, sessions []pier.Session) bool {
+func (c *prCache) refresh(ctx context.Context, be PullRequests, sessions []pier.Session) bool {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	prs, err := be.PullRequests(ctx, sessions)
@@ -157,7 +157,7 @@ func (c *prCache) cached(id string) (pier.PR, bool) {
 }
 
 // prFor finds a session's pull request: the cache, else a fresh look.
-func (s *Server) prFor(ctx context.Context, be Backend, sess pier.Session) (pier.PR, error) {
+func (s *Server) prFor(ctx context.Context, be PullRequests, sess pier.Session) (pier.PR, error) {
 	if p, ok := s.prs.cached(sess.ID); ok {
 		return p, nil
 	}

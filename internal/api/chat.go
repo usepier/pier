@@ -661,7 +661,7 @@ func cutPrefix(s, prefix string) (string, bool) {
 }
 
 // uploadStaged puts a running session's staged files in it.
-func uploadStaged(ctx context.Context, be Backend, sess pier.Session, local []string) ([]wire.Attachment, error) {
+func uploadStaged(ctx context.Context, be Chats, sess pier.Session, local []string) ([]wire.Attachment, error) {
 	var out []wire.Attachment
 	for _, p := range local {
 		data, err := os.ReadFile(p)

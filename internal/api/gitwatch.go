@@ -35,7 +35,7 @@ type gitFollower struct {
 	// skipped); kick wakes the keeper.
 	keep     *pier.GitState
 	keepSess pier.Session
-	keepBe   Backend
+	keepBe   Review
 	kick     chan struct{}
 }
 
@@ -90,7 +90,7 @@ func (f *gitFollower) fail(err error) {
 }
 
 // offline shows what this machine kept, once the session can't be read.
-func (f *gitFollower) offline(be Backend, sess pier.Session) {
+func (f *gitFollower) offline(be Sessions, sess pier.Session) {
 	f.mu.Lock()
 	shown := f.state != nil && !f.state.Live
 	f.mu.Unlock()
@@ -143,7 +143,7 @@ func (f *gitFollower) run(ctx context.Context) {
 	}
 }
 
-func (f *gitFollower) queueKeep(be Backend, sess pier.Session, g pier.GitState) {
+func (f *gitFollower) queueKeep(be Review, sess pier.Session, g pier.GitState) {
 	f.mu.Lock()
 	f.keep, f.keepBe, f.keepSess = &g, be, sess
 	f.mu.Unlock()
@@ -191,7 +191,7 @@ func (f *gitFollower) subscribe(fn func(wire.Changes)) (*wire.Changes, error, fu
 
 // keepSnapshots follows every running session's checkout (not just the
 // watched ones), so a session that parks still shows what it had.
-func (s *Server) keepSnapshots(be Backend, sessions []pier.Session) {
+func (s *Server) keepSnapshots(be Sessions, sessions []pier.Session) {
 	want := map[string]bool{}
 	for _, sess := range sessions {
 		if readable(be, sess) && sess.PoolGen == "" {

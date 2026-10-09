@@ -210,7 +210,7 @@ func (p *overviewPoller) refresh(ctx context.Context) {
 	}
 }
 
-func (p *overviewPoller) quotaDue(ctx context.Context, be Backend) {
+func (p *overviewPoller) quotaDue(ctx context.Context, be Account) {
 	p.mu.Lock()
 	due := time.Since(p.quotaAt) >= quotaEvery
 	p.mu.Unlock()

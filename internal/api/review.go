@@ -25,10 +25,10 @@ func wireChanges(c gitview.Changes, stamps map[string]string) wire.Changes {
 }
 
 // readable reports a session whose checkout can be read now.
-func readable(be Backend, s pier.Session) bool { return pier.Running(s) && be.HasKey(s) }
+func readable(be Sessions, s pier.Session) bool { return pier.Running(s) && be.HasKey(s) }
 
 // unreadable says why a session's checkout can't be read now.
-func unreadable(be Backend, s pier.Session) error {
+func unreadable(be Sessions, s pier.Session) error {
 	switch {
 	case s.State == pier.StateParked:
 		return fmt.Errorf("%w: %s — wake it to read it", pier.ErrParked, s.Name)

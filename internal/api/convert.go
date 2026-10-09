@@ -196,7 +196,7 @@ func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched b
 	return o
 }
 
-func wireSettings(be Backend) wire.Settings {
+func wireSettings(be Account) wire.Settings {
 	out := wire.Settings{Settings: []wire.Setting{}}
 	for _, g := range config.Groups {
 		out.Groups = append(out.Groups, wire.SettingGroup{Key: g.Key, Title: g.Title})
