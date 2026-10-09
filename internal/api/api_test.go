@@ -512,6 +512,11 @@ func TestErrorKinds(t *testing.T) {
 		{fmt.Errorf("x: %w", pier.ErrParked), wire.ErrParked},
 		{fmt.Errorf("x: %w", pier.ErrNoKey), wire.ErrNoKey},
 		{context.Canceled, wire.ErrCancelled},
+		{&driver.CloudError{Code: "VcpuLimitExceeded", Err: errors.New("aws ec2 run-instances: limit")}, wire.ErrQuota},
+		{&driver.CloudError{Code: "NoSuchEntity", Err: errors.New("aws iam get-role: gone")}, wire.ErrFailed},
+		{&github.Error{Status: 401, Message: "refused"}, wire.ErrGitHubAuth},
+		{fmt.Errorf("pull requests: %w", &github.Error{Status: 429, Message: "slow down"}), wire.ErrRateLimited},
+		{&pier.OpError{Code: "no_checkout", Message: "the session has no checkout yet"}, wire.ErrNoCheckout},
 		{errors.New("boom"), wire.ErrFailed},
 	} {
 		e := toRPCError(c.err)

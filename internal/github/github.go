@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
@@ -26,6 +25,36 @@ var ErrHeadMoved = errors.New("the pull request changed since it was reviewed")
 
 // ErrNoToken: no GitHub credential on this machine.
 var ErrNoToken = errors.New("no GitHub login on this machine — run `gh auth login`")
+
+// ErrUnauthorized: GitHub refused this machine's login (expired, revoked).
+var ErrUnauthorized = errors.New("GitHub refused the login on this machine — run `gh auth login`")
+
+// ErrRateLimited: this login's GitHub rate limit is used up for now.
+var ErrRateLimited = errors.New("GitHub's rate limit for this login is used up")
+
+// Error is GitHub refusing a request: its HTTP status (0 for a GraphQL
+// error in an answer that otherwise succeeded), the GraphQL error type
+// (NOT_FOUND, FORBIDDEN, RATE_LIMITED, ...) and what it said.
+type Error struct {
+	Status      int
+	Type        string
+	Message     string
+	rateLimited bool
+}
+
+func (e *Error) Error() string { return "GitHub: " + e.Message }
+
+// Is makes a refused login ErrUnauthorized and a spent rate limit
+// ErrRateLimited.
+func (e *Error) Is(target error) bool {
+	switch target {
+	case ErrUnauthorized:
+		return e.Status == http.StatusUnauthorized
+	case ErrRateLimited:
+		return e.rateLimited || e.Type == "RATE_LIMITED" || e.Status == http.StatusTooManyRequests
+	}
+	return false
+}
 
 // Repo names a repository by its canonical origin: host/owner/name.
 type Repo struct{ Host, Owner, Name string }
@@ -138,11 +167,13 @@ func (c *Client) do(ctx context.Context, host, method, url string, body any, out
 		return err
 	}
 	defer resp.Body.Close()
+	spent := false
 	if n, err := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining")); err == nil {
 		reset, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
 		c.mu.Lock()
 		c.limit = RateLimit{Remaining: n, ResetAt: time.Unix(reset, 0)}
 		c.mu.Unlock()
+		spent = n == 0
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
@@ -152,7 +183,7 @@ func (c *Client) do(ctx context.Context, host, method, url string, body any, out
 		c.mu.Lock()
 		delete(c.tokens, host)
 		c.mu.Unlock()
-		return fmt.Errorf("GitHub refused the login on this machine (%s) — run `gh auth login`", resp.Status)
+		return &Error{Status: resp.StatusCode, Message: "refused the login on this machine (" + resp.Status + ") — run `gh auth login`"}
 	}
 	if resp.StatusCode >= 300 {
 		var e struct{ Message string }
@@ -160,7 +191,8 @@ func (c *Client) do(ctx context.Context, host, method, url string, body any, out
 		if e.Message == "" {
 			e.Message = resp.Status
 		}
-		return fmt.Errorf("GitHub: %s", e.Message)
+		return &Error{Status: resp.StatusCode, Message: e.Message,
+			rateLimited: spent && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests)}
 	}
 	if out == nil {
 		return nil
@@ -187,12 +219,12 @@ func (c *Client) graphql(ctx context.Context, host, query string, vars map[strin
 	empty := len(resp.Data) == 0 || string(resp.Data) == "null"
 	switch {
 	case empty && len(resp.Errors) > 0:
-		return fmt.Errorf("GitHub: %s", resp.Errors[0].Message)
+		return &Error{Type: resp.Errors[0].Type, Message: resp.Errors[0].Message}
 	case empty:
-		return errors.New("GitHub: an empty answer")
+		return &Error{Message: "an empty answer"}
 	case len(resp.Errors) > 0 && out == nil:
 		// A mutation that reported errors didn't happen.
-		return fmt.Errorf("GitHub: %s", resp.Errors[0].Message)
+		return &Error{Type: resp.Errors[0].Type, Message: resp.Errors[0].Message}
 	}
 	// A query with partial errors (one branch's lookup failing) still
 	// answers the rest.

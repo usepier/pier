@@ -236,7 +236,7 @@ func (d *Driver) Resume(ctx context.Context, id string) error {
 		// already calls that parked, so resuming right after a park (or
 		// claiming a just-filled pool member) lands here. Wait out the stop
 		// and start again.
-		if !strings.Contains(err.Error(), "IncorrectInstanceState") {
+		if driver.ErrorCode(err) != "IncorrectInstanceState" {
 			return err
 		}
 		if _, werr := d.aws(ctx, "ec2", "wait", "instance-stopped", "--instance-ids", id); werr != nil {

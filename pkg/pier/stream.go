@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -154,8 +155,11 @@ func (c *Client) followAs(ctx context.Context, s Session, topics []string, extra
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64<<10), 16<<20)
 	if !sc.Scan() {
-		cmd.Wait()
-		if strings.Contains(stderr.String(), "no stream socket") || strings.Contains(stderr.String(), "not found") {
+		// The relay exits 3 when there is no socket to relay (an older
+		// supervisor, or one restarting); the shell 127 when there is no
+		// relay at all.
+		var ee *exec.ExitError
+		if errors.As(cmd.Wait(), &ee) && (ee.ExitCode() == 3 || ee.ExitCode() == 127) {
 			return errNoStream
 		}
 		return fmt.Errorf("session stream: %s", strings.TrimSpace(stderr.String()))

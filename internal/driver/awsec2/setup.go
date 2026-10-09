@@ -62,7 +62,7 @@ func (d *Driver) SetupOnce(ctx context.Context) (driver.SetupReport, error) {
 	// Profiles hold at most one role; "LimitExceeded" here means already added.
 	if _, err := d.aws(ctx, "iam", "add-role-to-instance-profile",
 		"--instance-profile-name", ProfileName, "--role-name", RoleName); err != nil &&
-		!strings.Contains(err.Error(), "LimitExceeded") {
+		driver.ErrorCode(err) != "LimitExceeded" {
 		return rep, err
 	}
 
@@ -114,7 +114,7 @@ func (d *Driver) Teardown(ctx context.Context) error {
 	}
 
 	ignoreMissing := func(err error) error {
-		if err == nil || strings.Contains(err.Error(), "NoSuchEntity") {
+		if err == nil || driver.ErrorCode(err) == "NoSuchEntity" {
 			return nil
 		}
 		return err

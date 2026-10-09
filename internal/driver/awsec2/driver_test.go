@@ -131,3 +131,28 @@ esac
 		t.Errorf("images = %+v", imgs)
 	}
 }
+
+func TestCloudErrorCodes(t *testing.T) {
+	cases := []struct{ stderr, code, op string }{
+		{"\nAn error occurred (VcpuLimitExceeded) when calling the RunInstances operation: You have requested more vCPU capacity than your current vCPU limit of 32 allows", "VcpuLimitExceeded", "RunInstances"},
+		{"An error occurred (InvalidPermission.Duplicate) when calling the AuthorizeSecurityGroupIngress operation: the specified rule already exists", "InvalidPermission.Duplicate", "AuthorizeSecurityGroupIngress"},
+		{"An error occurred (NoSuchEntity) when calling the GetRole operation (reached max retries: 2): The role with name pier cannot be found.", "NoSuchEntity", "GetRole"},
+		{"Unknown options: --volume-initialization-rate", "", ""},
+	}
+	for _, c := range cases {
+		err := cloudError(c.stderr, errors.New("aws ec2 x: "+c.stderr))
+		var ce *driver.CloudError
+		if got := driver.ErrorCode(err); got != c.code {
+			t.Errorf("%q: code %q, want %q", c.stderr, got, c.code)
+		}
+		if c.code != "" && (!errors.As(err, &ce) || ce.Op != c.op || ce.Message == "") {
+			t.Errorf("%q: %+v", c.stderr, ce)
+		}
+	}
+	if !errors.Is(cloudError(cases[0].stderr, errors.New("x")), driver.ErrQuota) {
+		t.Error("a vCPU limit is a quota")
+	}
+	if errors.Is(cloudError(cases[1].stderr, errors.New("x")), driver.ErrQuota) {
+		t.Error("a duplicate rule isn't a quota")
+	}
+}

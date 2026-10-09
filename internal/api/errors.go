@@ -6,6 +6,7 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/github"
 	"github.com/usepier/pier/pkg/pier"
 	"github.com/usepier/pier/pkg/pier/wire"
 )
@@ -48,6 +49,10 @@ var kinds = []struct {
 	{pier.ErrHeadMoved, wire.ErrHeadMoved},
 	{pier.ErrNoPR, wire.ErrNotFound},
 	{pier.ErrNoKey, wire.ErrNoKey},
+	{driver.ErrQuota, wire.ErrQuota},
+	{github.ErrNoToken, wire.ErrGitHubAuth},
+	{github.ErrUnauthorized, wire.ErrGitHubAuth},
+	{github.ErrRateLimited, wire.ErrRateLimited},
 	{pier.ErrNotInRepo, wire.ErrNotInRepo},
 	{context.Canceled, wire.ErrCancelled},
 }

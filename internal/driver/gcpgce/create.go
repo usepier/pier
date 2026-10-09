@@ -2,6 +2,7 @@ package gcpgce
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -168,7 +169,7 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, id, pub
 			"--image-project", stockImageProject)
 	}
 	_, err := d.gcloud(ctx, args...)
-	if err != nil && strings.Contains(strings.ToUpper(err.Error()), "QUOTA") {
+	if errors.Is(err, driver.ErrQuota) {
 		return fmt.Errorf("CPU quota exceeded in %s — request a raise in the console (IAM & Admin → Quotas, metric CPUs, region %s)\n(%w)",
 			regionOf(d.Zone), regionOf(d.Zone), err)
 	}

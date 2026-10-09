@@ -110,3 +110,30 @@ func TestParseOrigin(t *testing.T) {
 		t.Error("a name-only origin parsed")
 	}
 }
+
+func TestTypedRefusals(t *testing.T) {
+	repo := Repo{"github.com", "acme", "shop"}
+	refused := &Client{Token: func(string) string { return "stale" }}
+	refused.API = server(t, func(http.ResponseWriter, *http.Request, map[string]any) {}).API
+	if _, err := refused.ForBranches(context.Background(), repo, []string{"x"}); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("a refused login = %v", err)
+	}
+	spent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(403)
+		io.WriteString(w, `{"message":"API rate limit exceeded"}`)
+	}))
+	defer spent.Close()
+	c := &Client{API: spent.URL, Token: func(string) string { return "tok" }}
+	err := c.Rerun(context.Background(), repo, 9)
+	var ge *Error
+	if !errors.Is(err, ErrRateLimited) || !errors.As(err, &ge) || ge.Status != 403 {
+		t.Errorf("a spent limit = %v", err)
+	}
+	notFound := server(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+		io.WriteString(w, `{"data":null,"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`)
+	})
+	if _, err := notFound.ForBranches(context.Background(), repo, []string{"x"}); !errors.As(err, &ge) || ge.Type != "NOT_FOUND" || errors.Is(err, ErrRateLimited) {
+		t.Errorf("not found = %v", err)
+	}
+}

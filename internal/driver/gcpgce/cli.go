@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,9 +40,27 @@ func (d *Driver) gcloud(ctx context.Context, args ...string) (string, error) {
 		if loginExpired(errb.String()) {
 			return "", &driver.LoginError{Login: gcloudLogin, Err: err}
 		}
-		return "", err
+		return "", cloudError(errb.String(), err)
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// quotaError is how gcloud reports a quota refusing a request: in words
+// for a request it sends, by code for an operation that failed.
+var quotaError = regexp.MustCompile(`Quota '([A-Z_0-9]+)' exceeded|\bQUOTA_EXCEEDED\b`)
+
+// cloudError types a gcloud failure the request can't get past: gcloud
+// prints API codes only for some, so the refusals pier acts on are
+// recognized here, once.
+func cloudError(stderr string, err error) error {
+	if m := quotaError.FindStringSubmatch(stderr); m != nil {
+		msg := "a quota was exceeded"
+		if m[1] != "" {
+			msg = "quota " + m[1] + " exceeded"
+		}
+		return &driver.CloudError{Code: "QUOTA_EXCEEDED", Message: msg, Err: err}
+	}
+	return err
 }
 
 // gcloudLogin renews (or makes) the gcloud account login pier runs as.

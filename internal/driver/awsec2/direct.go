@@ -19,6 +19,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/usepier/pier/internal/driver"
 )
 
 // Probe results are trusted only briefly so long-lived processes (the
@@ -248,7 +250,7 @@ func (d *Driver) ensureDirectRule(ctx context.Context, sg string) error {
 		if _, err := d.aws(ctx, "ec2", "authorize-security-group-ingress",
 			"--group-id", sg, "--ip-permissions",
 			fmt.Sprintf("IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=%s,Description=%s}]",
-				cidr, desc)); err != nil && !strings.Contains(err.Error(), "Duplicate") {
+				cidr, desc)); err != nil && driver.ErrorCode(err) != "InvalidPermission.Duplicate" {
 			return err
 		}
 	}

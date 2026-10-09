@@ -3,6 +3,7 @@ package awsec2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -281,11 +282,11 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, ud
 			args[slices.Index(args, "--block-device-mappings")+1] = bdm("")
 			continue
 		}
-		if strings.Contains(err.Error(), "Invalid IAM Instance Profile") {
+		if driver.ErrorCode(err) == "InvalidParameterValue" && strings.Contains(err.Error(), "IAM Instance Profile") {
 			time.Sleep(3 * time.Second) // IAM propagation
 			continue
 		}
-		if strings.Contains(err.Error(), "VcpuLimitExceeded") {
+		if errors.Is(err, driver.ErrQuota) {
 			return "", fmt.Errorf("vCPU quota exceeded — request a raise:\n"+
 				"  aws service-quotas request-service-quota-increase --service-code ec2 --quota-code L-1216C47A --desired-value 32\n(%w)", err)
 		}

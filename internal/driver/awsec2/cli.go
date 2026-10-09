@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/usepier/pier/internal/driver"
@@ -34,9 +35,22 @@ func (d *Driver) aws(ctx context.Context, args ...string) (string, error) {
 		if login := loginFix(stderr, d.Profile); login != nil {
 			return "", &driver.LoginError{Login: login, Err: err}
 		}
-		return "", err
+		return "", cloudError(stderr, err)
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// apiError is how the AWS CLI reports an API's refusal.
+var apiError = regexp.MustCompile(`An error occurred \(([A-Za-z0-9.]+)\) when calling the ([A-Za-z0-9]+) operation(?: \([^)]*\))?: (.*)`)
+
+// cloudError types an AWS CLI failure by the code the API gave; a failure
+// without one (a bad flag, no network) stays as it is.
+func cloudError(stderr string, err error) error {
+	m := apiError.FindStringSubmatch(stderr)
+	if m == nil {
+		return err
+	}
+	return &driver.CloudError{Code: m[1], Op: m[2], Message: strings.TrimSpace(m[3]), Err: err}
 }
 
 // loginFix names the interactive login that renews an expired AWS CLI

@@ -750,7 +750,7 @@ export interface ErrorData {
  * ErrorKind classifies a failed call so the app can react without parsing
  * messages.
  */
-export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "no_checkout" | "head_moved" | "busy" | "no_default_vpc" | "no_billing" | "no_permission";
+export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "no_checkout" | "head_moved" | "busy" | "quota" | "github_auth" | "rate_limited" | "no_default_vpc" | "no_billing" | "no_permission";
 
 /** PRDetail is a session's pull request in full. */
 export interface PRDetail extends PRSummary {

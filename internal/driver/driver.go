@@ -157,6 +157,44 @@ type LoginError struct {
 func (e *LoginError) Error() string { return e.Err.Error() }
 func (e *LoginError) Unwrap() error { return e.Err }
 
+// ErrQuota: a cloud quota (vCPUs, instances) refused the request; the
+// quota needs raising.
+var ErrQuota = errors.New("a cloud quota refused the request")
+
+// CloudError is a cloud API's refusal as its CLI reports it: the code the
+// API gave (VcpuLimitExceeded, NoSuchEntity, QUOTA_EXCEEDED) and the call
+// it refused. Err keeps the whole failure, with the command.
+type CloudError struct {
+	Code    string
+	Op      string
+	Message string
+	Err     error
+}
+
+func (e *CloudError) Error() string { return e.Err.Error() }
+func (e *CloudError) Unwrap() error { return e.Err }
+
+// Is makes a quota refusal ErrQuota.
+func (e *CloudError) Is(target error) bool {
+	if target != ErrQuota {
+		return false
+	}
+	switch e.Code {
+	case "VcpuLimitExceeded", "InstanceLimitExceeded", "MaxSpotInstanceCountExceeded", "QUOTA_EXCEEDED":
+		return true
+	}
+	return false
+}
+
+// ErrorCode is the cloud API's code for err ("" when it carries none).
+func ErrorCode(err error) string {
+	var ce *CloudError
+	if errors.As(err, &ce) {
+		return ce.Code
+	}
+	return ""
+}
+
 // ClaimSpec names the session a warm pool member becomes.
 type ClaimSpec struct {
 	Name   string

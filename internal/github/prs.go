@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -336,7 +337,9 @@ func (c *Client) Merge(ctx context.Context, r Repo, prID, method, expectedHead s
 	q := `mutation($id: ID!, $m: PullRequestMergeMethod!, $head: GitObjectID!) {
   mergePullRequest(input: {pullRequestId: $id, mergeMethod: $m, expectedHeadOid: $head}) { pullRequest { merged } } }`
 	err := c.graphql(ctx, r.Host, q, map[string]any{"id": prID, "m": m, "head": expectedHead}, nil)
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "head branch was modified") {
+	// GitHub types this refusal no more finely than UNPROCESSABLE.
+	var ge *Error
+	if errors.As(err, &ge) && strings.Contains(strings.ToLower(ge.Message), "head branch was modified") {
 		return ErrHeadMoved
 	}
 	return err

@@ -540,3 +540,13 @@ func TestImagesAreOnlyYours(t *testing.T) {
 		t.Errorf("images = %+v", imgs)
 	}
 }
+
+func TestQuotaError(t *testing.T) {
+	stderr := "ERROR: (gcloud.compute.instances.create) Could not fetch resource:\n - Quota 'CPUS' exceeded.  Limit: 24.0 in region us-central1."
+	if err := cloudError(stderr, errors.New("gcloud: x")); !errors.Is(err, driver.ErrQuota) || driver.ErrorCode(err) != "QUOTA_EXCEEDED" {
+		t.Errorf("quota = %v", err)
+	}
+	if err := cloudError("ERROR: (gcloud.compute.instances.describe) not found", errors.New("x")); errors.Is(err, driver.ErrQuota) {
+		t.Error("not found isn't a quota")
+	}
+}
