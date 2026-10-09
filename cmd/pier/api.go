@@ -37,6 +37,8 @@ func cmdAPI(args []string) {
 	opts.Out = nil // meters and bake output have no terminal to go to
 	opts.Mux = true
 	opts.Notify = func(msg string) { fmt.Fprintln(os.Stderr, "pier api: "+msg) }
+	// One GitHub client for every pier client a settings change builds.
+	opts.GitHub = pier.NewGitHub()
 	opts.Log = func(format string, args ...any) { fmt.Fprintf(os.Stderr, "pier api: "+format+"\n", args...) }
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

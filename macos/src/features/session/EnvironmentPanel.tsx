@@ -97,7 +97,7 @@ export function EnvironmentPanel({
                 <IconButton
                   label={`Open port ${p.port}`}
                   className="size-6"
-                  onPress={() => void openPort(s, p.port)}
+                  onPress={() => void openPort(s, p.port, proxy)}
                 >
                   <ExternalLink size={12} />
                 </IconButton>

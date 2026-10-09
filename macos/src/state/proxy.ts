@@ -8,12 +8,8 @@ import { RpcError } from "@/api/rpc";
 import { inTauri } from "@/api/transport";
 import { attempt, toast } from "./toasts";
 
-let latest: ProxyState | undefined;
-
 export function useProxy(): ProxyState | undefined {
-  const st = useWatch("proxy", {}, { graceMs: 600_000 }).data;
-  latest = st;
-  return st;
+  return useWatch("proxy", {}, { graceMs: 600_000 }).data;
 }
 
 export async function startProxy() {
@@ -35,11 +31,11 @@ function open(url: string) {
 }
 
 /**
- * Opens a session's port: at <session>.pier while the proxy serves it,
- * else forwarded to the same port on localhost.
+ * Opens a session's port: at <session>.pier while the proxy (as the caller
+ * sees it) serves it, else forwarded to the same port on localhost.
  */
-export async function openPort(s: Session, port: number) {
-  const p = latest?.running ? latest.sessions.find((x) => x.id === s.id) : undefined;
+export async function openPort(s: Session, port: number, proxy: ProxyState | undefined) {
+  const p = proxy?.running ? proxy.sessions.find((x) => x.id === s.id) : undefined;
   if (p?.ports.includes(port)) return open(`http://${p.host}:${port}`);
   if (p?.localhost.includes(port)) return open(`http://localhost:${port}`);
   const forwarded = await rpc.call("ports.list", {}).catch(() => []);

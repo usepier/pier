@@ -26,6 +26,7 @@ import (
 	"github.com/usepier/pier/internal/driver/awsec2"
 	"github.com/usepier/pier/internal/driver/gcpgce"
 	"github.com/usepier/pier/internal/driver/payload"
+	"github.com/usepier/pier/internal/github"
 	"github.com/usepier/pier/internal/sshmux"
 )
 
@@ -65,6 +66,10 @@ type Options struct {
 	Out io.Writer
 	// Notify receives one-off transport notices ("using the ssm tunnel").
 	Notify func(string)
+	// GitHub is the GitHub client to use; nil makes one (NewGitHub). A
+	// process that builds clients again (after a settings change) passes
+	// one, so its token cache and rate limit carry over.
+	GitHub *github.Client
 	// Log receives diagnostics nobody is waiting on (a copy kept for a
 	// parked session that couldn't be written). nil discards them.
 	Log func(format string, args ...any)
@@ -81,6 +86,7 @@ type Client struct {
 	drv  driver.Driver
 	opts Options
 	mux  *sshmux.Manager // nil unless Options.Mux
+	gh   *github.Client
 
 	openMu  sync.Mutex
 	openers map[openerKey]func() // browser openers forwarded per connection
@@ -102,7 +108,10 @@ func New(cfg config.Config, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{cfg: cfg, drv: drv, opts: opts}
+	c := &Client{cfg: cfg, drv: drv, opts: opts, gh: opts.GitHub}
+	if c.gh == nil {
+		c.gh = NewGitHub()
+	}
 	if opts.Mux {
 		c.mux = sshmux.New(filepath.Join(config.Dir(), "mux"), drv.SSHTarget)
 		c.mux.Invalidate = drv.InvalidateTarget

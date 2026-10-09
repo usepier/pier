@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os/exec"
 	"strings"
-	"sync"
 
 	"github.com/usepier/pier/internal/driver/payload"
 	"github.com/usepier/pier/internal/github"
@@ -27,30 +26,24 @@ var ErrHeadMoved = github.ErrHeadMoved
 // ErrNoPR: the session's branch has no pull request.
 var ErrNoPR = errors.New("this branch has no pull request")
 
-var (
-	ghOnce   sync.Once
-	ghClient *github.Client
-)
-
-// gh is the process's GitHub client: one token cache and one rate limit.
-func gh() *github.Client {
-	ghOnce.Do(func() {
-		ghClient = &github.Client{Token: func(host string) string {
-			if host == "github.com" {
-				return payload.GitHubToken()
-			}
-			out, err := exec.Command("gh", "auth", "token", "--hostname", host).Output()
-			if err != nil {
-				return ""
-			}
-			return strings.TrimSpace(string(out))
-		}}
-	})
-	return ghClient
+// NewGitHub is a GitHub client signed in as this machine's user (gh's
+// login, else git's credential): one token cache and one rate limit, for
+// every pier client a process builds to share (Options.GitHub).
+func NewGitHub() *github.Client {
+	return &github.Client{Token: func(host string) string {
+		if host == "github.com" {
+			return payload.GitHubToken()
+		}
+		out, err := exec.Command("gh", "auth", "token", "--hostname", host).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}}
 }
 
 // GitHubLimit is how much of GitHub's hourly budget is left.
-func (c *Client) GitHubLimit() github.RateLimit { return gh().Limit() }
+func (c *Client) GitHubLimit() github.RateLimit { return c.gh.Limit() }
 
 // PullRequests finds each session's pull request by its branch, one query
 // per repository. Sessions without a GitHub origin are left out.
@@ -77,7 +70,7 @@ func (c *Client) PullRequests(ctx context.Context, sessions []Session) (map[stri
 				branches = append(branches, s.Branch)
 			}
 		}
-		prs, err := gh().ForBranches(ctx, r, branches)
+		prs, err := c.gh.ForBranches(ctx, r, branches)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -108,7 +101,7 @@ func (c *Client) PullRequest(ctx context.Context, s Session, number int) (PRDeta
 	if err != nil {
 		return PRDetail{}, err
 	}
-	return gh().Get(ctx, r, number)
+	return c.gh.Get(ctx, r, number)
 }
 
 // MergePR merges a session's pull request if its head is still
@@ -118,7 +111,7 @@ func (c *Client) MergePR(ctx context.Context, s Session, prID, method, expectedH
 	if err != nil {
 		return err
 	}
-	return gh().Merge(ctx, r, prID, method, expectedHead)
+	return c.gh.Merge(ctx, r, prID, method, expectedHead)
 }
 
 // RerunChecks re-runs a workflow run's failed jobs.
@@ -127,7 +120,7 @@ func (c *Client) RerunChecks(ctx context.Context, s Session, runID int64) error 
 	if err != nil {
 		return err
 	}
-	return gh().Rerun(ctx, r, runID)
+	return c.gh.Rerun(ctx, r, runID)
 }
 
 // CheckLog is the end of a check's job log (GitHub Actions).
@@ -136,5 +129,5 @@ func (c *Client) CheckLog(ctx context.Context, s Session, jobID int64, maxBytes 
 	if err != nil {
 		return "", err
 	}
-	return gh().JobLog(ctx, r, jobID, maxBytes)
+	return c.gh.JobLog(ctx, r, jobID, maxBytes)
 }
