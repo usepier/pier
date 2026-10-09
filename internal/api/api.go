@@ -98,7 +98,7 @@ func Serve(ctx context.Context, o Options) error {
 	}
 	s.overview = newOverviewPoller(s)
 	s.notices = newNotices(s)
-	s.prs = &prCache{s: s, prs: map[string]pier.PR{}}
+	s.prs = newPRCache(s)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.root = ctx

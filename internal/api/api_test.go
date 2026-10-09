@@ -44,6 +44,7 @@ type fake struct {
 	gitStates []pier.GitState
 	kept      []pier.GitState
 	following map[string]int // sessions whose checkout is followed now
+	prReads   int
 }
 
 func (f *fake) Cloud() string         { return "AWS test-1" }
@@ -317,6 +318,9 @@ func (f *fake) Commit(context.Context, pier.Session, string, string) (string, er
 }
 func (f *fake) Push(context.Context, pier.Session, string) error { return nil }
 func (f *fake) PullRequests(_ context.Context, ss []pier.Session) (map[string]pier.PR, error) {
+	f.mu.Lock()
+	f.prReads++
+	f.mu.Unlock()
 	out := map[string]pier.PR{}
 	for _, s := range ss {
 		if s.Branch == "fix" {

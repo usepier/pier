@@ -66,6 +66,7 @@ func (p *overviewPoller) subscribe(fn func(wire.Overview)) func() {
 		ctx, cancel := context.WithCancel(p.s.root)
 		p.cancel, p.done = cancel, make(chan struct{})
 		go p.loop(ctx, p.done)
+		go p.s.prs.run(ctx)
 	}
 	return func() {
 		p.mu.Lock()
@@ -200,12 +201,6 @@ func (p *overviewPoller) refresh(ctx context.Context) {
 	p.s.notices.poll(enriched)
 	p.s.keepSnapshots(be, enriched)
 	p.s.refill(be, enriched)
-	p.s.mu.Lock()
-	focused := p.s.activity.Focused
-	p.s.mu.Unlock()
-	if p.s.prs.refreshIfDue(ctx, be, enriched, focused) {
-		p.publish(be, enriched, true)
-	}
 	if sweep {
 		ids := make([]string, len(enriched))
 		for i, s := range enriched {
@@ -250,6 +245,24 @@ func (p *overviewPoller) publish(be Backend, sessions []pier.Session, enriched b
 	}
 }
 
+// listed is the latest listing, once there is one.
+func (p *overviewPoller) listed() ([]pier.Session, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sessions, p.have && p.lastErr == nil && p.sessions != nil
+}
+
+// republish sends the overview again from the latest listing (its pull
+// requests changed).
+func (p *overviewPoller) republish(be Backend) {
+	p.mu.Lock()
+	sessions, enriched := p.sessions, p.last.Enriched
+	p.mu.Unlock()
+	if sessions != nil {
+		p.publish(be, sessions, enriched)
+	}
+}
+
 // lastError is the error of the last failed refresh, nil after a good one.
 func (p *overviewPoller) lastError() error {
 	p.mu.Lock()
@@ -287,6 +300,12 @@ func (p *overviewPoller) current(ctx context.Context, maxAge time.Duration) wire
 		return o
 	}
 	p.refresh(ctx)
+	// Without a watch no loop reads pull requests: read them once.
+	if sessions, ok := p.listed(); ok && p.s.prs.never() {
+		if be, err := p.s.backend(); err == nil && p.s.prs.refresh(ctx, be, sessions) {
+			p.republish(be)
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.last

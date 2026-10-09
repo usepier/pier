@@ -138,8 +138,12 @@ func init() {
 		})
 	handle("git.push", "Pushes a session's branch to origin, once per opId.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.PushParams) (*wire.Empty, error) {
-			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error {
+			err := s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error {
 				return be.Push(ctx, sess, p.OpID)
 			})
+			if err == nil {
+				s.prs.kick() // its pull request (and checks) moved
+			}
+			return nil, err
 		})
 }

@@ -41,6 +41,29 @@ func TestPullRequests(t *testing.T) {
 	}
 }
 
+// While the overview is watched, pull requests refresh on a loop of their
+// own and an action (a merge) reads them again at once.
+func TestPullRequestsRefreshOnTheirOwn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{sessions: []pier.Session{{ID: "i-1", Name: "fix", Repo: "shop", Branch: "fix", Origin: "github.com/acme/shop", State: pier.StateRunning}}}
+	c := start(t, f)
+	resp, _ := c.call("overview.watch", nil)
+	reads := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.prReads
+	}
+	var w wire.WatchResult[wire.Overview]
+	remarshal(t, resp["result"], &w)
+	for o := w.Snapshot; len(o.Sessions) != 1 || o.Sessions[0].PR == nil; {
+		remarshal(t, c.next("sub.event")["params"].(map[string]any)["data"], &o)
+	}
+	before := reads()
+	c.call("pr.merge", map[string]any{"sessionId": "i-1", "method": "squash", "expectedHeadOid": "abc"})
+	waitFor(t, func() bool { return reads() > before }, func() string { return "a merge didn't read pull requests again" })
+}
+
 func TestAttentionOrder(t *testing.T) {
 	waiting := pier.Session{State: pier.StateRunning, Chats: []wire.ChatSummary{{ID: "c1", State: wire.AgentReady}, {ID: "c2", State: wire.AgentWaiting}}}
 	if a := attention(waiting, &wire.PRSummary{State: "open", Checks: "failing"}); a != "needs_input" {

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/usepier/pier/internal/github"
 	"github.com/usepier/pier/pkg/pier"
 	"github.com/usepier/pier/pkg/pier/wire"
 )
@@ -24,16 +25,22 @@ const (
 	prLogBytes = 64 << 10
 )
 
-// prCache is every session's pull request, refreshed along with the
-// overview on its own cadence.
+// prCache is every session's pull request, refreshed by a loop of its own
+// while the overview is watched, on GitHub's cadence rather than the
+// cloud's.
 type prCache struct {
-	s *Server
+	s     *Server
+	kickc chan struct{}
 
 	mu      sync.Mutex
 	prs     map[string]pier.PR // by session id
 	at      time.Time
 	pending bool
 	lastErr error
+}
+
+func newPRCache(s *Server) *prCache {
+	return &prCache{s: s, prs: map[string]pier.PR{}, kickc: make(chan struct{}, 1)}
 }
 
 func (c *prCache) snapshot() map[string]pier.PR {
@@ -46,20 +53,32 @@ func (c *prCache) snapshot() map[string]pier.PR {
 	return out
 }
 
-// kick makes the next overview round refresh pull requests (after a push,
-// a merge, a re-run).
+// kick refreshes pull requests now (after a push, a merge, a re-run).
 func (c *prCache) kick() {
 	c.mu.Lock()
 	c.at = time.Time{}
 	c.mu.Unlock()
-	c.s.overview.kick(fastAfterAction)
+	select {
+	case c.kickc <- struct{}{}:
+	default:
+	}
 }
 
-func (c *prCache) due(focused bool, limit int, reset time.Time) bool {
+// never reports pull requests not read yet.
+func (c *prCache) never() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if limit > 0 && limit < prReserve && time.Now().Before(reset) {
-		return false
+	return c.at.IsZero()
+}
+
+// wait is how long until the next refresh is due: soon while checks run,
+// less often when they've settled, rarely while nobody looks, and not
+// before the rate limit resets once only its reserve is left.
+func (c *prCache) wait(focused bool, lim github.RateLimit) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if lim.Remaining > 0 && lim.Remaining < prReserve && time.Now().Before(lim.ResetAt) {
+		return time.Until(lim.ResetAt)
 	}
 	every := prHidden
 	switch {
@@ -68,16 +87,43 @@ func (c *prCache) due(focused bool, limit int, reset time.Time) bool {
 	case focused:
 		every = prFocused
 	}
-	return time.Since(c.at) >= every
+	return max(time.Until(c.at.Add(every)), 0)
 }
 
-// refreshIfDue reads the pull requests when it's time; true when they
-// changed.
-func (c *prCache) refreshIfDue(ctx context.Context, be Backend, sessions []pier.Session, focused bool) bool {
-	lim := be.GitHubLimit()
-	if !c.due(focused, lim.Remaining, lim.ResetAt) {
-		return false
+// run refreshes pull requests until ctx ends, republishing the overview
+// when they change.
+func (c *prCache) run(ctx context.Context) {
+	for {
+		c.s.mu.Lock()
+		focused := c.s.activity.Focused
+		c.s.mu.Unlock()
+		be, err := c.s.backend()
+		wait := time.Minute
+		if err == nil {
+			wait = c.wait(focused, be.GitHubLimit())
+		}
+		// Focus coming back is looked at again within a few seconds.
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.kickc:
+		case <-time.After(min(wait, pollFast)):
+			if wait > pollFast {
+				continue
+			}
+		}
+		sessions, ok := c.s.overview.listed()
+		if !ok || err != nil {
+			continue
+		}
+		if c.refresh(ctx, be, sessions) {
+			c.s.overview.republish(be)
+		}
 	}
+}
+
+// refresh reads the pull requests; true when they changed.
+func (c *prCache) refresh(ctx context.Context, be Backend, sessions []pier.Session) bool {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	prs, err := be.PullRequests(ctx, sessions)
