@@ -19,7 +19,7 @@ func replay(t *testing.T, kind, file string) ([]wire.ChatItem, Parser) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	p := NewParser(kind)
+	p := NewParser(kind, "")
 	var items []wire.ChatItem
 	index := map[string]int{}
 	sc := bufio.NewScanner(f)
@@ -70,7 +70,7 @@ func TestClaudeTranscript(t *testing.T) {
 	if denied.Status != wire.ToolDenied {
 		t.Errorf("a rejected call reads denied, got %s", denied.Status)
 	}
-	if items[7].Text != "interrupted" || items[8].Text != "ran /model" || items[9].Images != 1 || items[9].Text != "also check this" {
+	if items[7].Text != "interrupted" || items[8].Text != "ran /model" || len(items[9].Attachments) != 1 || items[9].Text != "also check this" {
 		t.Errorf("status/user items = %+v / %+v / %+v", items[7], items[8], items[9])
 	}
 	if items[10].Text != "conversation compacted" || items[11].Text != "Done — the redirect loop is fixed." {
@@ -136,7 +136,7 @@ func TestAsksAndPlans(t *testing.T) {
 		t.Errorf("plan = %q", plan)
 	}
 
-	p := NewParser("claude")
+	p := NewParser("claude", "")
 	var items []wire.ChatItem
 	for _, line := range []string{
 		`{"type":"assistant","message":{"id":"m","role":"assistant","content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[{"question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}]}]}}]},"uuid":"a","timestamp":"2026-10-09T10:00:00Z"}`,

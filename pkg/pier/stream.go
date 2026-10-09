@@ -19,34 +19,57 @@ import (
 
 // streamProto is the supervisor stream protocol this pier speaks; a
 // supervisor reporting an older one is replaced.
-const streamProto = 2
+const streamProto = 3
 
 // errNoStream: the session's supervisor predates the stream.
 var errNoStream = errors.New("no stream socket")
 
-// errUpgradeLater: replacing an outdated supervisor now would drop the
-// agent's pending request and its turn's idle clock.
-var errUpgradeLater = errors.New("the session runs an older pier supervisor — it is updated once its agent's turn ends")
+// errUpgradeLater: replacing an outdated supervisor now would cut off a
+// chat's turn (its agent runs as the supervisor's child).
+var errUpgradeLater = errors.New("the session runs an older pier supervisor — it is updated once its chats' turns end")
 
-// Follow streams a session's topics ("status", "env", "agent") to fn, one
+// Follow streams a session's topics ("status", "env", "chats") to fn, one
 // message at a time (its event name and JSON data), until ctx ends or the
 // connection drops. An older supervisor is upgraded in place first.
 func (c *Client) Follow(ctx context.Context, s Session, topics []string, fn func(ev string, data json.RawMessage)) error {
 	return c.followUpgrading(ctx, s, topics, nil, fn)
 }
 
-// FollowTranscript is Follow plus the agent's transcript, as "tx" messages
-// (see TranscriptChunk), from where the caller's copy of it ends: the
-// file it is of and its length ("" and 0 for none).
-func (c *Client) FollowTranscript(ctx context.Context, s Session, topics []string, file string, from int64, fn func(ev string, data json.RawMessage)) error {
-	tail := map[string]any{"op": "tail", "args": map[string]any{"file": file, "from": from}}
-	return c.followUpgrading(ctx, s, topics, []any{tail}, fn)
+// Tail is where this machine's copy of a chat's log ends: the log it is
+// of and its length ("" and 0 for none).
+type Tail struct {
+	Chat string
+	File string
+	From int64
+}
+
+// FollowChats is Follow plus chats' logs, as "log" messages (see
+// LogChunk) from where the caller's copies end, the text their agents are
+// writing as "delta" messages, and what is being written as one follows
+// starts ("streaming").
+func (c *Client) FollowChats(ctx context.Context, s Session, topics []string, tails []Tail, fn func(ev string, data json.RawMessage)) error {
+	var extra []any
+	for _, t := range tails {
+		extra = append(extra, map[string]any{"op": "tail", "args": map[string]any{"chat": t.Chat, "file": t.File, "from": t.From}})
+	}
+	return c.followUpgrading(ctx, s, topics, extra, fn)
+}
+
+// busyChats reports a chat mid-turn or waiting on its user.
+func busyChats(s Session) bool {
+	for _, c := range s.Chats {
+		switch c.State {
+		case "working", "waiting", "terminal":
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage)) error {
 	err := c.follow(ctx, s, topics, extra, fn)
 	if errors.Is(err, errNoStream) {
-		if a := s.Agent; a != nil && (a.State == "working" || a.State == "waiting") {
+		if busyChats(s) {
 			return errUpgradeLater
 		}
 		if uerr := c.UpgradeSupervisor(ctx, s); uerr != nil {
@@ -172,7 +195,11 @@ func (c *Client) OpID(ctx context.Context, s Session, id, op string, args any) (
 		return c.exec(ctx, s.ID, "pier-supervisor op "+shellQuote(string(req)))
 	}
 	out, err := run()
-	if err != nil && strings.Contains(err.Error(), "no stream socket") {
+	// No socket, or a supervisor that doesn't know the op: an older one.
+	if err != nil && (strings.Contains(err.Error(), "no stream socket") || strings.Contains(err.Error(), "unknown op")) {
+		if busyChats(s) {
+			return nil, errUpgradeLater
+		}
 		if uerr := c.UpgradeSupervisor(ctx, s); uerr != nil {
 			return nil, uerr
 		}

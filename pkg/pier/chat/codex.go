@@ -15,6 +15,7 @@ import (
 type codex struct {
 	tools   map[string]*wire.ChatItem
 	n       int
+	prefix  string
 	partial bool
 }
 
@@ -39,7 +40,7 @@ func (c *codex) Partial() bool { return c.partial }
 
 func (c *codex) id(prefix string) string {
 	c.n++
-	return fmt.Sprintf("%s%d", prefix, c.n)
+	return fmt.Sprintf("%s%s%d", c.prefix, prefix, c.n)
 }
 
 func (c *codex) Feed(line []byte) []Change {

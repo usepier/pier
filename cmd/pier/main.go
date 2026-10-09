@@ -31,6 +31,7 @@ import (
 	"github.com/usepier/pier/internal/ui"
 	"github.com/usepier/pier/internal/wizard"
 	"github.com/usepier/pier/pkg/pier"
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 //go:embed assets
@@ -265,7 +266,8 @@ func cmdNew(args []string) {
 	// package stops at the first positional).
 	takesValue := map[string]bool{"-idle": true, "--idle": true, "-cap": true, "--cap": true,
 		"-agent": true, "--agent": true, "-model": true, "--model": true, "-p": true, "--prompt": true,
-		"-prompt-file": true, "--prompt-file": true, "-permission-mode": true, "--permission-mode": true}
+		"-prompt-file": true, "--prompt-file": true, "-permission-mode": true, "--permission-mode": true,
+		"-effort": true, "--effort": true}
 	var pos, flagArgs []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -289,6 +291,7 @@ func cmdNew(args []string) {
 	capS := fs.String("cap", "", "")
 	agentS := fs.String("agent", "", "")
 	modelS := fs.String("model", "", "")
+	effortS := fs.String("effort", "", "")
 	permS := fs.String("permission-mode", "", "")
 	var promptS, promptFile string
 	fs.StringVar(&promptS, "p", "", "")
@@ -333,7 +336,10 @@ func cmdNew(args []string) {
 		if kind == "" {
 			kind = "claude"
 		}
-		req.Agent = &pier.AgentRequest{Kind: kind, Model: *modelS, PermissionMode: *permS, Prompt: promptS}
+		req.Chat = &pier.ChatRequest{Agent: kind, Model: *modelS, Effort: *effortS, Mode: *permS}
+		if promptS != "" {
+			req.Chat.Prompt = &wire.ChatPrompt{Text: promptS}
+		}
 	}
 
 	c := open()
@@ -752,13 +758,11 @@ func cmdPark(args []string) {
 	fmt.Println(ui.OK.Render(s.Name+" parking") + ui.Dim.Render(" — disk only from here; attach wakes it with its tmux windows back"))
 }
 
-// cmdDeliver wakes a session if it's parked and queues a prompt for its
-// agent: the background job a frontend starts for a parked session.
+// cmdDeliver wakes a session if it's parked and gives one of its chats a
+// prompt: the background job a frontend starts for a parked session.
 func cmdDeliver(args []string) {
 	fs := flag.NewFlagSet("deliver", flag.ExitOnError)
-	id := fs.String("id", "", "")
-	file := fs.String("prompt-file", "", "")
-	mode := fs.String("mode", "", "")
+	file := fs.String("file", "", "")
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "-") {
@@ -767,10 +771,10 @@ func cmdDeliver(args []string) {
 		}
 		pos = append(pos, args[i])
 	}
-	if len(pos) != 1 || *id == "" || *file == "" {
-		fatal(fmt.Errorf("usage: pier deliver <session> --id <id> --prompt-file <path> [--mode now]"))
+	if len(pos) != 1 || *file == "" {
+		fatal(fmt.Errorf("usage: pier deliver <session> --file <delivery.json>"))
 	}
-	b, err := os.ReadFile(*file)
+	d, err := pier.ReadDelivery(*file)
 	if err != nil {
 		fatal(err)
 	}
@@ -778,11 +782,11 @@ func cmdDeliver(args []string) {
 	s := match(c, pos[0])
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := c.Deliver(ctx, s, *id, string(b), *mode, progress); err != nil {
+	if err := c.Deliver(ctx, s, d, progress); err != nil {
 		fatal(err)
 	}
 	os.Remove(*file)
-	fmt.Println(ui.OK.Render("prompt queued in " + s.Name))
+	fmt.Println(ui.OK.Render("prompt sent to " + s.Name))
 }
 
 func cmdResize(args []string) {

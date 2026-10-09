@@ -1,24 +1,25 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/usepier/pier/pkg/pier"
-	"github.com/usepier/pier/pkg/pier/chat"
 	"github.com/usepier/pier/pkg/pier/wire"
 )
 
-// A chat is a session's agent conversation, read from the transcript its
-// CLI writes. This machine keeps a copy (pier.Mirror), so a parked session
-// still shows its chat and a reconnect fetches only what is new. One
-// follower per session keeps the copy current while anyone watches.
+// A session's chats run in the session (its supervisor hosts the agents);
+// this machine keeps a copy of each chat's log (pier.Mirror) and of the
+// chat list, so a parked session still shows its chats and a reconnect
+// fetches only what is new. One follower per session keeps the copies
+// current while anyone watches one of its chats.
 
 const (
 	chatPage = 300 // items a snapshot or a history page carries
@@ -27,91 +28,81 @@ const (
 	chatReadyWait = 20 * time.Second
 )
 
-// chatFeed is a session's transcript copy, parsed into items.
+// chatFeed is one chat's copy, as items.
 type chatFeed struct {
 	mirror *pier.Mirror
-	parser chat.Parser
 	items  []wire.ChatItem
 	index  map[string]int
+	// caught closes once the session has caught the copy up.
+	caught     chan struct{}
+	caughtOnce sync.Once
 }
 
-func openChatFeed(id string) (*chatFeed, error) {
-	m, err := pier.OpenMirror(id)
+func openChatFeed(sessionID, chatID string) (*chatFeed, error) {
+	m, err := pier.OpenMirror(sessionID, chatID)
 	if err != nil {
 		return nil, err
 	}
-	f := &chatFeed{mirror: m}
-	f.restart(m.Meta().Kind)
-	lines, err := m.Lines()
+	items, err := m.Items()
 	if err != nil {
 		m.Close()
 		return nil, err
 	}
-	for _, l := range lines {
-		f.fold(f.parser.Feed(l))
-	}
+	f := &chatFeed{mirror: m, caught: make(chan struct{})}
+	f.reset(items)
 	return f, nil
 }
 
 func (f *chatFeed) close() { f.mirror.Close() }
 
-func (f *chatFeed) restart(kind string) {
-	f.parser, f.items, f.index = chat.NewParser(kind), nil, map[string]int{}
+func (f *chatFeed) reset(items []wire.ChatItem) {
+	f.items, f.index = items, map[string]int{}
+	for i, it := range items {
+		f.index[it.ID] = i
+	}
 }
 
-func (f *chatFeed) partial() bool { return f.parser.Partial() || f.mirror.Meta().Skipped > 0 }
-
-// fold applies parser changes and returns the items they added and the
-// earlier ones they changed, each with its latest content.
-func (f *chatFeed) fold(cs []chat.Change) (added, updated []wire.ChatItem) {
-	start := len(f.items)
-	changed := map[string]bool{}
-	var order []string
-	for _, c := range cs {
-		if i, ok := f.index[c.Item.ID]; ok {
-			f.items[i] = c.Item
-			if i < start && !changed[c.Item.ID] {
-				changed[c.Item.ID] = true
-				order = append(order, c.Item.ID)
-			}
-			continue
-		}
-		f.index[c.Item.ID] = len(f.items)
-		f.items = append(f.items, c.Item)
-	}
-	for _, id := range order {
-		updated = append(updated, f.items[f.index[id]])
-	}
-	return f.items[start:], updated
-}
-
-// apply adds a chunk of the transcript and returns what the chat's
-// watchers need to hear.
-func (f *chatFeed) apply(ch pier.TranscriptChunk) ([]wire.ChatChange, error) {
+// apply adds a chunk of the log and returns what the chat's watchers need
+// to hear.
+func (f *chatFeed) apply(ch pier.LogChunk) ([]wire.ChatChange, error) {
 	reset := ch.Reset || ch.File != f.mirror.Meta().File
 	if err := f.mirror.Apply(ch); err != nil {
 		return nil, err
 	}
 	if reset {
-		f.restart(ch.Kind)
+		f.reset(nil)
 	}
-	var cs []chat.Change
-	for _, line := range bytes.Split([]byte(ch.Data), []byte{'\n'}) {
-		if len(line) > 0 {
-			cs = append(cs, f.parser.Feed(line)...)
+	start := len(f.items)
+	var updated []wire.ChatItem
+	seen := map[string]bool{}
+	for _, it := range pier.ParseItems(ch.Data) {
+		if i, ok := f.index[it.ID]; ok {
+			f.items[i] = it
+			if i < start && !seen[it.ID] {
+				seen[it.ID] = true
+				updated = append(updated, it)
+			} else if i < start {
+				for j := range updated {
+					if updated[j].ID == it.ID {
+						updated[j] = it
+					}
+				}
+			}
+			continue
 		}
+		f.index[it.ID] = len(f.items)
+		f.items = append(f.items, it)
 	}
-	added, updated := f.fold(cs)
 	if reset {
 		items, more := f.tail()
-		return []wire.ChatChange{{Op: wire.ChatReset, Items: items, More: more, Partial: f.partial()}}, nil
+		return []wire.ChatChange{{Op: wire.ChatReset, Items: items, More: more}}, nil
 	}
 	var out []wire.ChatChange
 	if len(updated) > 0 {
-		out = append(out, wire.ChatChange{Op: wire.ChatUpdate, Items: updated, Partial: f.partial()})
+		out = append(out, wire.ChatChange{Op: wire.ChatUpdate, Items: updated})
 	}
-	if len(added) > 0 {
-		out = append(out, wire.ChatChange{Op: wire.ChatAppend, Items: append([]wire.ChatItem(nil), added...), Partial: f.partial()})
+	if added := f.items[start:]; len(added) > 0 {
+		out = append(out, wire.ChatChange{Op: wire.ChatAppend, Items: append([]wire.ChatItem(nil), added...)})
 	}
 	return out, nil
 }
@@ -119,179 +110,359 @@ func (f *chatFeed) apply(ch pier.TranscriptChunk) ([]wire.ChatChange, error) {
 // tail is the newest page of items.
 func (f *chatFeed) tail() ([]wire.ChatItem, bool) {
 	from := max(len(f.items)-chatPage, 0)
-	return append([]wire.ChatItem{}, f.items[from:]...), from > 0
+	return append([]wire.ChatItem{}, f.items[from:]...), from > 0 || f.mirror.Meta().Dropped
 }
 
 // before pages older items in: up to limit items before the one with id.
-func (f *chatFeed) before(id string, limit int) wire.HistoryPage {
+// more says older ones exist (in the copy, or only in the session).
+func (f *chatFeed) before(id string, limit int) (wire.HistoryPage, bool) {
 	if limit <= 0 || limit > chatPage {
 		limit = chatPage
 	}
 	end, ok := f.index[id]
 	if !ok {
-		return wire.HistoryPage{Items: []wire.ChatItem{}}
+		return wire.HistoryPage{Items: []wire.ChatItem{}}, false
 	}
 	from := max(end-limit, 0)
-	return wire.HistoryPage{Items: append([]wire.ChatItem{}, f.items[from:end]...), More: from > 0}
+	page := wire.HistoryPage{Items: append([]wire.ChatItem{}, f.items[from:end]...), More: from > 0 || f.mirror.Meta().Dropped}
+	// The copy ran out but the session has older ones.
+	return page, from == 0 && f.mirror.Meta().Dropped
 }
 
-// chatSession follows one session's chat for its watchers.
-type chatSession struct {
+// chatsCache is this machine's copy of a session's chat list.
+func chatsCache(sessionID string) string {
+	return filepath.Join(pier.MirrorDir(sessionID), "chats.json")
+}
+
+func loadChats(sessionID string) []wire.ChatInfo {
+	b, err := os.ReadFile(chatsCache(sessionID))
+	if err != nil {
+		return nil
+	}
+	var out []wire.ChatInfo
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+func saveChats(sessionID string, chats []wire.ChatInfo) {
+	b, _ := json.Marshal(chats)
+	_ = os.MkdirAll(pier.MirrorDir(sessionID), 0o700)
+	tmp := chatsCache(sessionID) + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		_ = os.Rename(tmp, chatsCache(sessionID))
+	}
+}
+
+type chatListener struct {
+	chat string
+	fn   func(wire.ChatChange)
+}
+
+// chatFollower follows one session's chats for their watchers.
+type chatFollower struct {
 	s  *Server
 	id string
 
 	mu        sync.Mutex
-	feed      *chatFeed
-	agent     *wire.AgentDetail
+	feeds     map[string]*chatFeed
+	chats     []wire.ChatInfo
+	streaming map[string]map[string]*wire.ChatItem // chat → item id → item
 	live      bool
-	gap       bool // the copy fell out of step: follow again from scratch
-	listeners map[int]func(wire.ChatChange)
+	gap       bool // a copy fell out of step: follow again from scratch
+	listeners map[int]chatListener
+	lists     map[int]func(wire.ChatsChange)
 	nextL     int
 	refs      int
 	cancel    context.CancelFunc
+	// refollow ends the current follow so the next one tails a changed set
+	// of chats; again says it did.
+	refollow func()
+	again    bool
+	// tailed are the chats the current follow tails.
+	tailed map[string]bool
 
 	ready     chan struct{} // closed once the first catch-up is done (or failed)
 	readyOnce sync.Once
 }
 
-// chat returns the session's chat follower, starting it if needed, and a
-// release for when the caller is done with it.
-func (s *Server) chat(id string) (*chatSession, func(), error) {
+// follower returns the session's chat follower, starting it if needed, and
+// a release for when the caller is done with it.
+func (s *Server) follower(id string) (*chatFollower, func(), error) {
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
-	cs := s.chats[id]
-	if cs == nil {
-		feed, err := openChatFeed(id)
-		if err != nil {
-			return nil, nil, err
-		}
+	f := s.chats[id]
+	if f == nil {
 		ctx, cancel := context.WithCancel(s.root)
-		cs = &chatSession{s: s, id: id, feed: feed, listeners: map[int]func(wire.ChatChange){}, cancel: cancel, ready: make(chan struct{})}
-		s.chats[id] = cs
-		go cs.run(ctx)
+		f = &chatFollower{s: s, id: id, feeds: map[string]*chatFeed{}, streaming: map[string]map[string]*wire.ChatItem{},
+			listeners: map[int]chatListener{}, lists: map[int]func(wire.ChatsChange){}, cancel: cancel, ready: make(chan struct{})}
+		f.chats = loadChats(id)
+		for _, c := range f.chats {
+			if err := f.openFeed(c.ID); err != nil {
+				s.logf("chat %s/%s: %v", id, c.ID, err)
+			}
+		}
+		s.chats[id] = f
+		go f.run(ctx)
 	}
-	cs.refs++
+	f.refs++
 	var once sync.Once
-	return cs, func() {
+	return f, func() {
 		once.Do(func() {
 			s.chatMu.Lock()
-			cs.refs--
-			last := cs.refs == 0
+			f.refs--
+			last := f.refs == 0
 			if last {
 				delete(s.chats, id)
 			}
 			s.chatMu.Unlock()
 			if last {
-				cs.cancel()
+				f.cancel()
 			}
 		})
 	}, nil
 }
 
-func (cs *chatSession) markReady() { cs.readyOnce.Do(func() { close(cs.ready) }) }
-
-// emit sends a change to every watcher. Called with mu held, so a watcher
-// sees changes in order and never one its snapshot already holds.
-func (cs *chatSession) emit(c wire.ChatChange) {
-	for _, fn := range cs.listeners {
-		fn(c)
+// openFeed opens a chat's copy if it isn't open. Called with mu held (or
+// before the follower is shared).
+func (f *chatFollower) openFeed(chatID string) error {
+	if f.feeds[chatID] != nil {
+		return nil
 	}
+	feed, err := openChatFeed(f.id, chatID)
+	if err != nil {
+		return err
+	}
+	f.feeds[chatID] = feed
+	return nil
 }
 
-// subscribe takes a snapshot and adds a watcher in one step.
-func (cs *chatSession) subscribe(fn func(wire.ChatChange)) (wire.ChatSnapshot, func()) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	items, more := cs.feed.tail()
-	snap := wire.ChatSnapshot{Items: items, More: more, Agent: cs.agent, Live: cs.live, Partial: cs.feed.partial()}
-	if !cs.live {
-		snap.AsOf = cs.asOf()
+// caughtCh is closed once a live chat's copy is caught up; nil when the
+// session has no stream (its copy is all there is).
+func (f *chatFollower) caughtCh(chatID string) <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.live {
+		return nil
 	}
-	cs.nextL++
-	id := cs.nextL
-	cs.listeners[id] = fn
-	return snap, func() {
-		cs.mu.Lock()
-		delete(cs.listeners, id)
-		cs.mu.Unlock()
+	if err := f.openFeed(chatID); err != nil {
+		return nil
 	}
+	if f.info(chatID) != nil && f.refollow != nil && !f.tailed[chatID] {
+		f.again = true
+		f.refollow()
+	}
+	return f.feeds[chatID].caught
 }
 
-func (cs *chatSession) asOf() *time.Time {
-	if t := cs.feed.mirror.Meta().Synced; !t.IsZero() {
-		return &t
+func (f *chatFollower) markReady() { f.readyOnce.Do(func() { close(f.ready) }) }
+
+func (f *chatFollower) asOf(chatID string) *time.Time {
+	if feed := f.feeds[chatID]; feed != nil {
+		if t := feed.mirror.Meta().Synced; !t.IsZero() {
+			return &t
+		}
 	}
 	return nil
 }
 
-func (cs *chatSession) setLive(live bool) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	if cs.live == live {
+func (f *chatFollower) info(chatID string) *wire.ChatInfo {
+	for i := range f.chats {
+		if f.chats[i].ID == chatID {
+			c := f.chats[i]
+			return &c
+		}
+	}
+	return nil
+}
+
+func (f *chatFollower) streamingOf(chatID string) []wire.ChatItem {
+	out := []wire.ChatItem{}
+	for _, it := range f.streaming[chatID] {
+		out = append(out, *it)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
+	return out
+}
+
+// emit sends a change to a chat's watchers. Called with mu held, so a
+// watcher sees changes in order and never one its snapshot already holds.
+func (f *chatFollower) emit(chatID string, c wire.ChatChange) {
+	for _, l := range f.listeners {
+		if l.chat == chatID {
+			l.fn(c)
+		}
+	}
+}
+
+func (f *chatFollower) emitList() {
+	c := wire.ChatsChange{Chats: append([]wire.ChatInfo{}, f.chats...), Live: f.live}
+	for _, fn := range f.lists {
+		fn(c)
+	}
+}
+
+// subscribe takes a chat's snapshot and adds a watcher in one step.
+func (f *chatFollower) subscribe(chatID string, fn func(wire.ChatChange)) (wire.ChatSnapshot, func(), error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.openFeed(chatID); err != nil {
+		return wire.ChatSnapshot{}, nil, err
+	}
+	items, more := f.feeds[chatID].tail()
+	snap := wire.ChatSnapshot{Items: items, More: more, Chat: f.info(chatID), Live: f.live}
+	if f.live {
+		snap.Streaming = f.streamingOf(chatID)
+	} else {
+		snap.AsOf = f.asOf(chatID)
+	}
+	f.nextL++
+	id := f.nextL
+	f.listeners[id] = chatListener{chat: chatID, fn: fn}
+	return snap, func() {
+		f.mu.Lock()
+		delete(f.listeners, id)
+		f.mu.Unlock()
+	}, nil
+}
+
+func (f *chatFollower) subscribeList(fn func(wire.ChatsChange)) (wire.ChatsSnapshot, func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	snap := wire.ChatsSnapshot{Chats: append([]wire.ChatInfo{}, f.chats...), Live: f.live}
+	f.nextL++
+	id := f.nextL
+	f.lists[id] = fn
+	return snap, func() {
+		f.mu.Lock()
+		delete(f.lists, id)
+		f.mu.Unlock()
+	}
+}
+
+func (f *chatFollower) setLive(live bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.live == live {
 		return
 	}
-	cs.live = live
-	c := wire.ChatChange{Op: wire.ChatAgent, Agent: cs.agent, Live: &live}
+	f.live = live
 	if !live {
-		c.AsOf = cs.asOf()
+		f.streaming = map[string]map[string]*wire.ChatItem{}
 	}
-	cs.emit(c)
+	for chatID := range f.feeds {
+		c := wire.ChatChange{Op: wire.ChatState, Chat: f.info(chatID), Live: &live}
+		if !live {
+			c.AsOf = f.asOf(chatID)
+		}
+		f.emit(chatID, c)
+	}
+	f.emitList()
 }
 
-func (cs *chatSession) setAgent(a *wire.AgentDetail) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	if reflect.DeepEqual(cs.agent, a) {
-		return
+// setChats takes a new chat list: from the stream, or (parked) the beacon.
+func (f *chatFollower) setChats(sess pier.Session, chats []wire.ChatInfo, fromStream bool) {
+	f.mu.Lock()
+	old := map[string]wire.ChatInfo{}
+	for _, c := range f.chats {
+		old[c.ID] = c
 	}
-	cs.agent = a
-	cs.emit(wire.ChatChange{Op: wire.ChatAgent, Agent: a})
+	f.chats = chats
+	added := false
+	keep := map[string]bool{}
+	for _, c := range chats {
+		keep[c.ID] = true
+		if f.feeds[c.ID] == nil {
+			if err := f.openFeed(c.ID); err == nil {
+				added = true
+			}
+		}
+		if prev, ok := old[c.ID]; !ok || !reflect.DeepEqual(prev, c) {
+			info := c
+			f.emit(c.ID, wire.ChatChange{Op: wire.ChatState, Chat: &info})
+		}
+		if c.State != wire.AgentWorking && c.State != wire.AgentWaiting {
+			delete(f.streaming, c.ID)
+		}
+	}
+	if fromStream {
+		// Chats gone from the session were closed there.
+		for id, feed := range f.feeds {
+			if !keep[id] {
+				feed.close()
+				delete(f.feeds, id)
+				os.RemoveAll(pier.ChatMirrorDir(f.id, id))
+			}
+		}
+	}
+	f.emitList()
+	refollow := f.refollow
+	if added && fromStream && refollow != nil {
+		f.again = true
+	}
+	f.mu.Unlock()
+	saveChats(f.id, chats)
+	for _, c := range chats {
+		f.s.notices.chat(sess, c)
+	}
+	if added && fromStream && refollow != nil {
+		refollow()
+	}
 }
 
-// run keeps the copy current while the session runs, and waits for it to
-// run while it doesn't.
-func (cs *chatSession) run(ctx context.Context) {
+// run keeps the copies current while the session runs, and waits for it
+// to run while it doesn't.
+func (f *chatFollower) run(ctx context.Context) {
 	defer func() {
-		cs.mu.Lock()
-		cs.feed.close()
-		cs.mu.Unlock()
+		f.mu.Lock()
+		for _, feed := range f.feeds {
+			feed.close()
+		}
+		f.mu.Unlock()
 	}()
 	for attempt := 0; ctx.Err() == nil; {
-		be, sess, err := cs.s.sessionFor(ctx, cs.id)
+		be, sess, err := f.s.sessionFor(ctx, f.id)
 		if err != nil || !running(sess) || !be.HasKey(sess) {
-			if err == nil && !cs.isLive() {
-				cs.setAgent(agentFromStatus(sess.Agent))
+			if err == nil && !f.isLive() {
+				f.fromBeacon(sess)
 			}
-			cs.setLive(false)
-			cs.markReady()
+			f.setLive(false)
+			f.markReady()
 			if !sleepCtx(ctx, chatRecheck) {
 				return
 			}
 			continue
 		}
 		fctx, cancel := context.WithCancel(ctx)
-		cs.mu.Lock()
-		meta := cs.feed.mirror.Meta()
-		cs.mu.Unlock()
+		f.mu.Lock()
+		var tails []pier.Tail
+		f.tailed = map[string]bool{}
+		for id, feed := range f.feeds {
+			meta := feed.mirror.Meta()
+			tails = append(tails, pier.Tail{Chat: id, File: meta.File, From: meta.Next})
+			f.tailed[id] = true
+		}
+		f.refollow = cancel
+		f.mu.Unlock()
 		started := time.Now()
-		err = be.FollowTranscript(fctx, sess, cs.s.agentTopics(), meta.File, meta.Next, func(ev string, data json.RawMessage) {
-			cs.onEvent(sess, ev, data, cancel)
+		err = be.FollowChats(fctx, sess, []string{"chats"}, tails, func(ev string, data json.RawMessage) {
+			f.onEvent(sess, ev, data, cancel)
 		})
 		cancel()
-		cs.setLive(false)
-		cs.markReady() // a first connect that failed still lets watchers see the copy
-		cs.mu.Lock()
-		gap := cs.gap
-		cs.gap = false
-		cs.mu.Unlock()
-		if gap {
-			continue
-		}
+		f.mu.Lock()
+		f.refollow = nil
+		again := f.gap || f.again
+		f.gap, f.again = false, false
+		f.mu.Unlock()
 		if ctx.Err() != nil {
 			return
 		}
+		if again {
+			continue // a new chat to tail, or a copy to start over
+		}
+		f.setLive(false)
+		f.markReady() // a first connect that failed still lets watchers see the copy
 		if err != nil {
-			cs.s.logf("chat %s: %v", sess.Name, err)
+			f.s.logf("chats of %s: %v", sess.Name, err)
 		}
 		if time.Since(started) > time.Minute {
 			attempt = 0
@@ -300,6 +471,34 @@ func (cs *chatSession) run(ctx context.Context) {
 		if !sleepCtx(ctx, time.Duration(min(attempt, 6))*5*time.Second) {
 			return
 		}
+	}
+}
+
+// fromBeacon fills the list of a session with no stream from what its last
+// beacon said, for the chats this machine has no record of.
+func (f *chatFollower) fromBeacon(sess pier.Session) {
+	f.mu.Lock()
+	have := map[string]bool{}
+	for _, c := range f.chats {
+		have[c.ID] = true
+	}
+	chats := append([]wire.ChatInfo{}, f.chats...)
+	changed := false
+	for _, c := range sess.Chats {
+		if have[c.ID] {
+			for i := range chats {
+				if chats[i].ID == c.ID {
+					chats[i].ChatSummary = c
+				}
+			}
+			continue
+		}
+		chats = append(chats, wire.ChatInfo{ChatSummary: c, Queue: []wire.QueuedPrompt{}})
+		changed = true
+	}
+	f.mu.Unlock()
+	if changed || len(sess.Chats) > 0 {
+		f.setChats(sess, chats, false)
 	}
 }
 
@@ -315,48 +514,105 @@ func running(s pier.Session) bool {
 // chatRecheck is how often a chat whose session isn't running looks again.
 var chatRecheck = 5 * time.Second
 
-func (cs *chatSession) isLive() bool {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	return cs.live
+func (f *chatFollower) isLive() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.live
 }
 
-func (cs *chatSession) onEvent(sess pier.Session, ev string, data json.RawMessage, stop func()) {
+func (f *chatFollower) onEvent(sess pier.Session, ev string, data json.RawMessage, stop func()) {
 	switch ev {
-	case "tx":
-		var ch pier.TranscriptChunk
+	case "chats":
+		chats, err := pier.ParseChats(data)
+		if err != nil {
+			return
+		}
+		f.setLive(true)
+		f.setChats(sess, chats, true)
+		f.markReady()
+	case "log":
+		var ch pier.LogChunk
 		if json.Unmarshal(data, &ch) != nil {
 			return
 		}
-		cs.setLive(true)
-		cs.mu.Lock()
-		changes, err := cs.feed.apply(ch)
+		f.mu.Lock()
+		feed := f.feeds[ch.Chat]
+		if feed == nil {
+			f.mu.Unlock()
+			return
+		}
+		changes, err := feed.apply(ch)
 		if err != nil {
 			// Start the copy over: the next follow sends it all.
-			cs.s.logf("chat %s: %v — reading the transcript again", sess.Name, err)
-			cs.feed.mirror.Reset()
-			cs.feed.restart("")
-			cs.gap = true
-			cs.mu.Unlock()
+			f.s.logf("chat %s/%s: %v — reading its log again", sess.Name, ch.Chat, err)
+			feed.mirror.Reset()
+			feed.reset(nil)
+			f.gap = true
+			f.mu.Unlock()
 			stop()
 			return
 		}
 		for _, c := range changes {
-			cs.emit(c)
+			for _, it := range c.Items {
+				delete(f.streaming[ch.Chat], it.ID)
+			}
+			f.emit(ch.Chat, c)
 		}
-		cs.mu.Unlock()
 		if ch.EOF {
-			cs.markReady()
+			feed.caughtOnce.Do(func() { close(feed.caught) })
 		}
-	case "agent":
-		d, err := pier.ParseAgent(data)
-		if err != nil {
+		f.mu.Unlock()
+	case "streaming":
+		var m struct {
+			Chat  string          `json:"chat"`
+			Items []wire.ChatItem `json:"items"`
+		}
+		if json.Unmarshal(data, &m) != nil {
 			return
 		}
-		cs.setLive(true)
-		w := wireAgentDetail(d)
-		cs.setAgent(w)
-		cs.s.notices.agent(sess, w)
+		f.mu.Lock()
+		set := map[string]*wire.ChatItem{}
+		for i := range m.Items {
+			it := m.Items[i]
+			set[it.ID] = &it
+		}
+		f.streaming[m.Chat] = set
+		f.emit(m.Chat, wire.ChatChange{Op: wire.ChatStreaming, Items: f.streamingOf(m.Chat)})
+		f.mu.Unlock()
+	case "delta":
+		var m struct {
+			Chat   string           `json:"chat"`
+			Deltas []wire.ChatDelta `json:"deltas"`
+		}
+		if json.Unmarshal(data, &m) != nil {
+			return
+		}
+		f.mu.Lock()
+		set := f.streaming[m.Chat]
+		if set == nil {
+			set = map[string]*wire.ChatItem{}
+			f.streaming[m.Chat] = set
+		}
+		var keep []wire.ChatDelta
+		feed := f.feeds[m.Chat]
+		for _, d := range m.Deltas {
+			if feed != nil {
+				if _, done := feed.index[d.ID]; done {
+					continue // its finished item is here already
+				}
+			}
+			it := set[d.ID]
+			if it == nil {
+				it = &wire.ChatItem{ID: d.ID, Kind: d.Kind, Time: time.Now().UTC()}
+				set[d.ID] = it
+			}
+			it.Text += d.Text
+			keep = append(keep, d)
+		}
+		if len(keep) > 0 {
+			f.emit(m.Chat, wire.ChatChange{Op: wire.ChatDeltas, Deltas: keep})
+		}
+		f.mu.Unlock()
 	}
 }
 
@@ -369,68 +625,64 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func wireAgentDetail(d *pier.AgentDetail) *wire.AgentDetail {
-	if d == nil {
-		return nil
+// staged is where a parked session's attachments wait on this Mac.
+func stagedDir() string { return filepath.Join(os.TempDir(), "pier-staged") }
+
+const stagedPrefix = "staged:"
+
+// splitAttachments separates attachments already in the session from
+// those still on this Mac.
+func splitAttachments(as []wire.Attachment) (inSession []wire.Attachment, local []string) {
+	for _, a := range as {
+		if p, ok := cutPrefix(a.Path, stagedPrefix); ok {
+			local = append(local, p)
+			continue
+		}
+		inSession = append(inSession, a)
 	}
-	w := &wire.AgentDetail{
-		AgentStatus: wire.AgentStatus{Kind: d.Kind, State: wire.AgentState(d.State), Waiting: d.Waiting, Since: d.Since.UTC(), Last: d.Last, Queued: d.Queued},
-		Model:       d.Model,
-		Queue:       []wire.QueuedPrompt{},
-	}
-	if p := d.Pending; p != nil {
-		w.Pending = &wire.PermissionRequest{ID: p.ID, Tool: p.Tool, Summary: chat.Summarize(p.Tool, p.Input), Input: string(p.Input), At: p.At.UTC()}
-		w.Pending.Title, w.Pending.Questions, w.Pending.Plan = chat.Asks(p.Tool, p.Input)
-	}
-	for _, q := range d.Queue {
-		w.Queue = append(w.Queue, wire.QueuedPrompt{ID: q.ID, Text: q.Text, At: q.At.UTC()})
-	}
-	return w
+	return inSession, local
 }
 
-// agentFromStatus is what a session's last status says about its agent,
-// for a chat with no stream.
-func agentFromStatus(a *pier.AgentStatus) *wire.AgentDetail {
-	if a == nil {
-		return nil
+func cutPrefix(s, prefix string) (string, bool) {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+		return s[len(prefix):], true
 	}
-	return &wire.AgentDetail{
-		AgentStatus: wire.AgentStatus{Kind: a.Kind, State: wire.AgentState(a.State), Waiting: a.Waiting, Since: a.Since.UTC(), Last: a.Last, Queued: a.Queued},
-		Queue:       []wire.QueuedPrompt{},
-	}
+	return s, false
 }
 
-// agentTopics are the stream topics a chat (or the approvals keeper)
-// follows: the agent, and its permission requests when the client answers
-// them.
-func (s *Server) agentTopics() []string {
-	if s.approvals() {
-		return []string{"agent", "approvals"}
+// uploadStaged puts a running session's staged files in it.
+func uploadStaged(ctx context.Context, be Backend, sess pier.Session, local []string) ([]wire.Attachment, error) {
+	var out []wire.Attachment
+	for _, p := range local {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		path, err := be.Upload(ctx, sess, filepath.Base(p), data)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, wire.Attachment{Name: filepath.Base(p), Path: path})
+		os.Remove(p)
 	}
-	return []string{"agent"}
-}
-
-func (s *Server) approvals() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.client.Approvals
+	return out, nil
 }
 
 func init() {
-	watchChanges("chat", "A session's agent conversation: the newest items, then changes as the agent writes them. Parked sessions answer from this machine's copy.",
-		func(ctx context.Context, s *Server, p wire.SessionRef, sub *Sub[wire.ChatChange]) (wire.ChatSnapshot, error) {
-			cs, release, err := s.chat(p.ID)
+	watchChanges("chats", "A session's chats: their state, what they wait on, their queues. Parked sessions answer from this machine's copy.",
+		func(ctx context.Context, s *Server, p wire.SessionRef, sub *Sub[wire.ChatsChange]) (wire.ChatsSnapshot, error) {
+			f, release, err := s.follower(p.ID)
 			if err != nil {
-				return wire.ChatSnapshot{}, err
+				return wire.ChatsSnapshot{}, err
 			}
 			select {
-			case <-cs.ready:
+			case <-f.ready:
 			case <-time.After(chatReadyWait):
 			case <-ctx.Done():
 				release()
-				return wire.ChatSnapshot{}, ctx.Err()
+				return wire.ChatsSnapshot{}, ctx.Err()
 			}
-			snap, unsubscribe := cs.subscribe(sub.Emit)
+			snap, unsubscribe := f.subscribeList(sub.Emit)
 			go func() {
 				<-sub.Done()
 				unsubscribe()
@@ -438,36 +690,151 @@ func init() {
 			}()
 			return snap, nil
 		})
-	handle("chat.history", "Older items of a session's chat, before the oldest one the client has.",
+	watchChanges("chat", "A chat's conversation: the newest items, then changes as the agent writes them (text streams in as deltas). Parked sessions answer from this machine's copy.",
+		func(ctx context.Context, s *Server, p wire.ChatRef, sub *Sub[wire.ChatChange]) (wire.ChatSnapshot, error) {
+			f, release, err := s.follower(p.SessionID)
+			if err != nil {
+				return wire.ChatSnapshot{}, err
+			}
+			select {
+			case <-f.ready:
+			case <-time.After(chatReadyWait):
+			case <-ctx.Done():
+				release()
+				return wire.ChatSnapshot{}, ctx.Err()
+			}
+			// A live chat answers once its copy is caught up.
+			if caught := f.caughtCh(p.ChatID); caught != nil {
+				select {
+				case <-caught:
+				case <-time.After(chatReadyWait):
+				case <-ctx.Done():
+					release()
+					return wire.ChatSnapshot{}, ctx.Err()
+				}
+			}
+			snap, unsubscribe, err := f.subscribe(p.ChatID, sub.Emit)
+			if err != nil {
+				release()
+				return wire.ChatSnapshot{}, err
+			}
+			go func() {
+				<-sub.Done()
+				unsubscribe()
+				release()
+			}()
+			return snap, nil
+		})
+	handle("chat.history", "Older items of a chat, before the oldest one the client has.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.HistoryParams) (wire.HistoryPage, error) {
 			s.chatMu.Lock()
-			cs := s.chats[p.SessionID]
+			f := s.chats[p.SessionID]
 			s.chatMu.Unlock()
-			if cs != nil {
-				cs.mu.Lock()
-				defer cs.mu.Unlock()
-				return cs.feed.before(p.Before, p.Limit), nil
+			var page wire.HistoryPage
+			var fromSession bool
+			if f != nil {
+				f.mu.Lock()
+				if err := f.openFeed(p.ChatID); err != nil {
+					f.mu.Unlock()
+					return wire.HistoryPage{}, err
+				}
+				page, fromSession = f.feeds[p.ChatID].before(p.Before, p.Limit)
+				f.mu.Unlock()
+			} else {
+				feed, err := openChatFeed(p.SessionID, p.ChatID)
+				if err != nil {
+					return wire.HistoryPage{}, err
+				}
+				page, fromSession = feed.before(p.Before, p.Limit)
+				feed.close()
 			}
-			f, err := openChatFeed(p.SessionID)
-			if err != nil {
-				return wire.HistoryPage{}, err
+			if !fromSession || len(page.Items) > 0 {
+				return page, nil
 			}
-			defer f.close()
-			return f.before(p.Before, p.Limit), nil
+			// Older than this Mac keeps: ask the session, when it runs.
+			var items []wire.ChatItem
+			var more bool
+			err := s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) (err error) {
+				if !running(sess) {
+					return nil
+				}
+				items, more, err = be.ChatPage(ctx, sess, p.ChatID, p.Before, p.Limit)
+				return err
+			})
+			if items == nil {
+				items = []wire.ChatItem{}
+			}
+			return wire.HistoryPage{Items: items, More: more}, err
 		})
-	handle("chat.send", "Sends a prompt to a session's agent, once per promptId. A parked session is woken by a background job that delivers it.",
+	handle("chat.create", "Starts a chat in a session, once per chatId. A parked session is woken by a background job that starts it.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.ChatCreateParams) (wire.ChatCreated, error) {
+			be, sess, err := s.sessionFor(ctx, p.SessionID)
+			if err != nil {
+				return wire.ChatCreated{}, err
+			}
+			req := pier.ChatRequest{ID: p.ChatID, Agent: p.Agent, Model: p.Model, Effort: p.Effort, Mode: p.Mode, Title: p.Title}
+			var local []string
+			if p.Prompt != nil {
+				prompt := *p.Prompt
+				prompt.Attachments, local = splitAttachments(prompt.Attachments)
+				req.Prompt = &prompt
+			}
+			if sess.State != pier.StateParked {
+				if len(local) > 0 {
+					up, err := uploadStaged(ctx, be, sess, local)
+					if err != nil {
+						return wire.ChatCreated{}, err
+					}
+					req.Prompt.Attachments = append(req.Prompt.Attachments, up...)
+					local = nil
+				}
+				id, err := be.CreateChat(ctx, sess, req)
+				if err == nil {
+					s.overview.kick(fastAfterAction)
+					return wire.ChatCreated{ChatID: id}, nil
+				}
+				if err != pier.ErrParked {
+					return wire.ChatCreated{}, err
+				}
+			}
+			if req.Prompt == nil {
+				req.Prompt = &wire.ChatPrompt{}
+			}
+			if req.ID == "" || req.Prompt.ID == "" {
+				return wire.ChatCreated{}, invalidParams("a parked session's new chat needs chatId and a prompt with an id")
+			}
+			job, err := be.StartDeliver(sess, pier.Delivery{Chat: req, Prompt: *req.Prompt, Files: local})
+			if err != nil {
+				return wire.ChatCreated{}, err
+			}
+			s.overview.kick(fastAfterAction)
+			w := wireJob(job)
+			return wire.ChatCreated{ChatID: req.ID, Job: &w}, nil
+		})
+	handle("chat.send", "Sends a prompt to a chat, once per prompt id. A parked session is woken by a background job that delivers it.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.ChatSendParams) (wire.ChatSendResult, error) {
 			be, sess, err := s.sessionFor(ctx, p.SessionID)
 			if err != nil {
 				return wire.ChatSendResult{}, err
 			}
+			prompt := p.Prompt
+			var local []string
+			prompt.Attachments, local = splitAttachments(prompt.Attachments)
 			if sess.State != pier.StateParked {
-				err = be.SendPrompt(ctx, sess, p.PromptID, p.Text, p.Mode)
-				if !errors.Is(err, pier.ErrParked) {
+				if len(local) > 0 {
+					up, err := uploadStaged(ctx, be, sess, local)
+					if err != nil {
+						return wire.ChatSendResult{}, err
+					}
+					prompt.Attachments = append(prompt.Attachments, up...)
+					local = nil
+				}
+				err = be.SendPrompt(ctx, sess, p.ChatID, prompt, p.Mode)
+				if err != pier.ErrParked {
 					return wire.ChatSendResult{}, err
 				}
 			}
-			job, err := be.StartDeliver(sess, p.PromptID, p.Text, p.Mode)
+			job, err := be.StartDeliver(sess, pier.Delivery{Chat: pier.ChatRequest{ID: p.ChatID}, Prompt: prompt, Files: local, Mode: p.Mode})
 			if err != nil {
 				return wire.ChatSendResult{}, err
 			}
@@ -475,39 +842,73 @@ func init() {
 			w := wireJob(job)
 			return wire.ChatSendResult{Job: &w}, nil
 		})
-	handle("chat.interrupt", "Stops the agent's turn, as Esc does at its prompt.",
-		func(ctx context.Context, s *Server, _ *Call, p wire.SessionRef) (*wire.Empty, error) {
-			return nil, s.withSession(ctx, p.ID, func(be Backend, sess pier.Session) error { return be.Interrupt(ctx, sess) })
+	handle("chat.dequeue", "Takes back a prompt still waiting in a chat's queue.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.DequeueParams) (*wire.Empty, error) {
+			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error { return be.Dequeue(ctx, sess, p.ChatID, p.PromptID) })
 		})
-	handle("chat.decide", "Answers the agent's permission request: allow or deny.",
+	handle("chat.interrupt", "Stops a chat's turn.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.ChatRef) (*wire.Empty, error) {
+			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error { return be.Interrupt(ctx, sess, p.ChatID) })
+		})
+	handle("chat.decide", "Answers what a chat waits on: a tool use, its questions, its plan.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.DecideParams) (*wire.Empty, error) {
 			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error {
-				return be.Decide(ctx, sess, p.RequestID, pier.Decision{
+				return be.Decide(ctx, sess, p.ChatID, p.RequestID, pier.Decision{
 					Behavior: p.Behavior, Message: p.Message, Answers: p.Answers, Notes: p.Notes, Mode: p.Mode,
 				})
 			})
 		})
-	handle("chat.peek", "The bottom of the agent's pane as text: what it is doing, without attaching.",
-		func(ctx context.Context, s *Server, _ *Call, p wire.PeekParams) (wire.Peek, error) {
-			var out wire.Peek
-			err := s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) (err error) {
-				out.Text, err = be.PeekAgent(ctx, sess, p.Lines)
-				return err
+	handle("chat.configure", "Changes a chat's model, effort, permission mode or title as it goes on.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.ChatConfigureParams) (*wire.Empty, error) {
+			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error {
+				return be.ConfigureChat(ctx, sess, p.ChatID, pier.ChatConfig{Model: p.Model, Effort: p.Effort, Mode: p.Mode, Title: p.Title})
 			})
-			return out, err
 		})
-	handle("files.upload", "Puts a file (an image pasted into the chat) into a session; the result is its path there.",
-		func(ctx context.Context, s *Server, _ *Call, p wire.UploadParams) (wire.Uploaded, error) {
+	handle("chat.close", "Stops a chat and puts it away.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.ChatRef) (*wire.Empty, error) {
+			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error { return be.CloseChat(ctx, sess, p.ChatID) })
+		})
+	handle("agents.models", "What an agent offers — models with their efforts, permission modes — as a running session's agent says, else as last heard.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.ModelsParams) (wire.AgentModels, error) {
+			be, err := s.backend()
+			if err != nil {
+				return wire.AgentModels{}, err
+			}
+			if p.Agent != "claude" && p.Agent != "codex" {
+				return wire.AgentModels{}, invalidParams("agent is claude or codex")
+			}
+			var sess *pier.Session
+			if p.SessionID != "" {
+				if got, err := s.overview.session(ctx, p.SessionID); err == nil && running(got) {
+					sess = &got
+				}
+			}
+			return be.Models(ctx, sess, p.Agent)
+		})
+	handle("files.upload", "Puts a file attached to a prompt into a session; a parked session's waits on this Mac until the prompt wakes it.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.UploadParams) (wire.Attachment, error) {
 			data, err := base64.StdEncoding.DecodeString(p.Data)
 			if err != nil {
-				return wire.Uploaded{}, invalidParams("data isn't base64")
+				return wire.Attachment{}, invalidParams("data isn't base64")
 			}
-			var path string
-			err = s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) (err error) {
-				path, err = be.Upload(ctx, sess, p.Name, data)
-				return err
-			})
-			return wire.Uploaded{Path: path}, err
+			be, sess, err := s.sessionFor(ctx, p.SessionID)
+			if err != nil {
+				return wire.Attachment{}, err
+			}
+			name := filepath.Base(p.Name)
+			if !running(sess) {
+				dir := filepath.Join(stagedDir(), pier.NewID())
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					return wire.Attachment{}, err
+				}
+				local := filepath.Join(dir, name)
+				if err := os.WriteFile(local, data, 0o600); err != nil {
+					return wire.Attachment{}, err
+				}
+				return wire.Attachment{Name: name, Path: stagedPrefix + local, Mime: p.Mime}, nil
+			}
+			path, err := be.Upload(ctx, sess, name, data)
+			return wire.Attachment{Name: name, Path: path, Mime: p.Mime}, err
 		})
 	handle("files.list", "The paths in a session's checkout, tracked and untracked (ignored ones left out).",
 		func(ctx context.Context, s *Server, _ *Call, p wire.FileListParams) (wire.FileList, error) {

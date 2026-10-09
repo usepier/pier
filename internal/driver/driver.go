@@ -16,6 +16,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 type State string
@@ -70,19 +72,8 @@ type Session struct {
 	Ports  []Port
 	ParkAt time.Time
 	CapAt  time.Time
-	// Agent is the agent pier launched in the session; nil when none, or
-	// before the supervisor has said.
-	Agent *AgentStatus
-}
-
-// AgentStatus is a session's agent as its supervisor reports it.
-type AgentStatus struct {
-	Kind    string    // claude | codex
-	State   string    // starting | ready | working | waiting | ended
-	Waiting string    // while waiting: permission | input
-	Since   time.Time // in this state since
-	Last    string    // the agent's last message, trimmed
-	Queued  int       // prompts waiting to be typed in
+	// Chats are the session's agent chats, as its supervisor last said.
+	Chats []wire.ChatSummary
 }
 
 // Resources is a session's load. Sizes are bytes; CPU is % of all CPUs.
@@ -124,23 +115,21 @@ type CreateSpec struct {
 	IdleTimeout   time.Duration // 0 = never auto-park
 	UnattendedCap time.Duration // 0 = no runaway cap
 	PoolGen       string        // non-empty: create a warm pool member (drivers add the pool tag/label; Name is the placeholder)
-	Agent         *AgentSpec    // the agent to start in the session, with its first prompt; nil = none
+	Chat          *ChatSpec     // the chat to start the session with; nil = none
 	Progress      func(step string)
 }
 
-// AgentSpec is the agent a session starts with: which one, how, and the
-// prompt it begins on. The supervisor launches it in a tmux window of its
-// own once the session is up, and types the prompt in when setup is done.
-type AgentSpec struct {
-	Kind           string // claude | codex
-	Model          string
-	PermissionMode string // claude's --permission-mode; "" = its default
-	// Conversation is claude's session id, chosen here so the transcript's
-	// path is known before the agent starts.
-	Conversation string
-	Prompt       string
-	PromptID     string // makes the prompt's delivery happen once
-	LaunchID     string // makes the launch happen once
+// ChatSpec is the chat a session starts with: its agent, how it runs,
+// and the prompt it begins on (delivered once the repo's setup is done).
+type ChatSpec struct {
+	ID     string
+	Agent  string // claude | codex
+	Model  string
+	Effort string
+	Mode   string // permission mode
+	Prompt string
+	// PromptID makes the prompt's delivery happen once.
+	PromptID string
 }
 
 // ClaimWindow bounds how long a claimed-but-not-ready session lists as

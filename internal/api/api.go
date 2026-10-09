@@ -76,7 +76,7 @@ type Server struct {
 	client   wire.InitializeParams // what the client said it handles
 
 	chatMu sync.Mutex
-	chats  map[string]*chatSession // followed chats by session id
+	chats  map[string]*chatFollower // followed chats by session id
 }
 
 // Serve runs a server until its input closes or ctx ends.
@@ -88,7 +88,7 @@ func Serve(ctx context.Context, o Options) error {
 		subs:  map[string]*subscription{},
 		// Until the client says otherwise it is looking.
 		activity: wire.ClientActivity{Focused: true},
-		chats:    map[string]*chatSession{},
+		chats:    map[string]*chatFollower{},
 	}
 	s.overview = newOverviewPoller(s)
 	s.notices = newNotices(s)
@@ -124,7 +124,6 @@ func Serve(ctx context.Context, o Options) error {
 	// that ignores cancellation must not keep the process alive.
 	cancel()
 	s.closeTerminals()
-	s.notices.stop()
 	s.stopProxy()
 	settled := make(chan struct{})
 	go func() {

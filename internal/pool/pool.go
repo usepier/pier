@@ -56,7 +56,7 @@ type Params struct {
 	Manifest   []string          // $HOME-relative files, same as the driver gets
 	SessionEnv map[string]string // ~/.config/pier/env content, same as the driver gets
 	// Agent is the agent a claimed session starts with; nil = none.
-	Agent    *driver.AgentSpec
+	Chat     *driver.ChatSpec
 	Progress func(string)
 	Out      io.Writer // scp meters during a claim; nil discards
 	// Mine says whether this machine made a member. Only its own members

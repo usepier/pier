@@ -78,6 +78,9 @@ func jobsDir() string { return filepath.Join(config.Dir(), "jobs") }
 // jobKeep is how long finished jobs stay listed.
 const jobKeep = 24 * time.Hour
 
+// NewID is a fresh random id (for prompts, chats, staged files).
+func NewID() string { return newJobID() }
+
 func newJobID() string {
 	b := make([]byte, 6)
 	rand.Read(b)
@@ -125,22 +128,25 @@ func (c *Client) StartCreate(req CreateRequest) (Job, error) {
 	if req.NoPool {
 		args = append(args, "--no-pool")
 	}
-	if a := req.Agent; a != nil {
-		args = append(args, "--agent", a.Kind)
+	if a := req.Chat; a != nil {
+		args = append(args, "--agent", a.Agent)
 		if a.Model != "" {
 			args = append(args, "--model", a.Model)
 		}
-		if a.PermissionMode != "" {
-			args = append(args, "--permission-mode", a.PermissionMode)
+		if a.Effort != "" {
+			args = append(args, "--effort", a.Effort)
 		}
-		if a.Prompt != "" {
+		if a.Mode != "" {
+			args = append(args, "--permission-mode", a.Mode)
+		}
+		if a.Prompt != nil && a.Prompt.Text != "" {
 			// The prompt rides a private file, not argv: process lists are
 			// readable by every user of the machine.
 			if err := os.MkdirAll(jobsDir(), 0o700); err != nil {
 				return Job{}, err
 			}
 			pf := filepath.Join(jobsDir(), "prompt-"+newJobID())
-			if err := os.WriteFile(pf, []byte(a.Prompt), 0o600); err != nil {
+			if err := os.WriteFile(pf, []byte(a.Prompt.Text), 0o600); err != nil {
 				return Job{}, err
 			}
 			args = append(args, "--prompt-file", pf)

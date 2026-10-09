@@ -2,6 +2,7 @@ package payload
 
 import (
 	"archive/tar"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/usepier/pier/internal/chatfile"
 	"github.com/usepier/pier/internal/driver"
 )
 
@@ -682,33 +684,35 @@ func TestSSHDAllowsMultiplexing(t *testing.T) {
 	}
 }
 
-// A session made with an agent carries its launch spec and first prompt to
-// the supervisor; one without carries neither.
-func TestAgentEntries(t *testing.T) {
-	none, err := agentEntries(nil)
+// A session made with a chat carries its record and first prompt to the
+// supervisor, in the layout it reads; one without carries neither.
+func TestChatEntries(t *testing.T) {
+	none, err := chatEntries(nil)
 	if err != nil || none != nil {
-		t.Fatalf("no agent = %v %v", none, err)
+		t.Fatalf("no chat = %v %v", none, err)
 	}
-	es, err := agentEntries(&driver.AgentSpec{Kind: "claude", Conversation: "c-1", Prompt: "fix the login bug", PromptID: "p1", LaunchID: "l1"})
+	es, err := chatEntries(&driver.ChatSpec{ID: "c1", Agent: "claude", Mode: "plan", Prompt: "fix the login bug\nthe one on /login", PromptID: "p1"})
 	if err != nil || len(es) != 2 {
 		t.Fatalf("entries = %+v %v", es, err)
 	}
-	if es[0].Name != "home/.pier/agent/spec.json" || !strings.Contains(string(es[0].Data), `"conversation":"c-1"`) || es[0].Mode != 0o600 {
-		t.Errorf("spec = %s %s", es[0].Name, es[0].Data)
+	var rec chatfile.Record
+	if json.Unmarshal(es[0].Data, &rec) != nil || es[0].Name != "home/.pier/chats/c1/chat.json" || rec.Agent != "claude" || rec.Mode != "plan" || rec.Title != "fix the login bug" || es[0].Mode != 0o600 {
+		t.Errorf("record = %s %s", es[0].Name, es[0].Data)
 	}
-	if es[1].Name != "home/.pier/agent/queue/p1.json" || !strings.Contains(string(es[1].Data), `"first":true`) {
+	var p chatfile.Prompt
+	if json.Unmarshal(es[1].Data, &p) != nil || es[1].Name != "home/.pier/chats/c1/queue/p1.json" || !p.First || p.ID != "p1" {
 		t.Errorf("prompt = %s %s", es[1].Name, es[1].Data)
 	}
-	if es, _ := agentEntries(&driver.AgentSpec{Kind: "codex", LaunchID: "l2"}); len(es) != 1 {
+	if es, _ := chatEntries(&driver.ChatSpec{ID: "c2", Agent: "codex"}); len(es) != 1 {
 		t.Error("no prompt, no queue entry")
 	}
 }
 
-func TestScriptsLaunchTheAgentAndInstallHooks(t *testing.T) {
-	if !strings.Contains(sessionUp(true), "pier-supervisor agent launch") || !strings.Contains(sessionUp(false), "pier-supervisor agent launch") {
-		t.Error("creates and claims launch the agent once the session is up")
+func TestScriptsLeaveAgentsToTheSupervisor(t *testing.T) {
+	if strings.Contains(sessionUp(true), "agent launch") || strings.Contains(installSupervisor, "install-hooks") {
+		t.Error("agents run headless under the supervisor: nothing launches them in tmux")
 	}
-	if !strings.Contains(installSupervisor, "pier-supervisor install-hooks") {
-		t.Error("every supervisor install writes the hooks file")
+	if !strings.Contains(installSupervisor, "rm -f /etc/pier/claude-hooks.json") {
+		t.Error("an upgraded session drops the old hooks file")
 	}
 }

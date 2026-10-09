@@ -10,12 +10,14 @@ import (
 	"github.com/usepier/pier/pkg/pier/wire"
 )
 
-// claude reads Claude Code's session transcripts
-// (~/.claude/projects/<project>/<session>.jsonl): one JSON object per line,
-// "user" and "assistant" lines carrying API-style messages, tool results
-// arriving as user lines with a structured toolUseResult beside them.
+// claude reads Claude Code's messages: its session transcripts
+// (~/.claude/projects/<project>/<session>.jsonl) and the stream it writes
+// running headless (stream-json), which share their shape: one JSON object
+// per line, "user" and "assistant" lines carrying API-style messages, tool
+// results arriving as user lines with a structured result beside them.
 type claude struct {
 	tools   map[string]*wire.ChatItem
+	blocks  map[string]int // blocks seen per message id
 	bad     int
 	partial bool
 }
@@ -30,6 +32,19 @@ type claudeLine struct {
 	Content       string          `json:"content"`
 	Message       json.RawMessage `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	// The stream's spellings: the structured result, and the subagent
+	// call a line belongs to.
+	StreamResult json.RawMessage `json:"tool_use_result"`
+	Parent       *string         `json:"parent_tool_use_id"`
+}
+
+func (l claudeLine) sidechain() bool { return l.IsSidechain || (l.Parent != nil && *l.Parent != "") }
+
+func (l claudeLine) structured() json.RawMessage {
+	if len(l.ToolUseResult) > 0 {
+		return l.ToolUseResult
+	}
+	return l.StreamResult
 }
 
 type claudeMessage struct {
@@ -63,6 +78,9 @@ func (c *claude) Feed(line []byte) []Change {
 		return nil
 	}
 	at := parseTime(l.Timestamp)
+	if at.IsZero() {
+		at = now()
+	}
 	switch l.Type {
 	case "user":
 		return c.user(l, at)
@@ -101,7 +119,7 @@ func (c *claude) user(l claudeLine, at time.Time) []Change {
 		case "image":
 			images++
 		case "tool_result":
-			if ch := c.toolResult(b, l.ToolUseResult); ch != nil {
+			if ch := c.toolResult(b, l.structured()); ch != nil {
 				out = append(out, *ch)
 			}
 		}
@@ -140,7 +158,11 @@ func (c *claude) userText(l claudeLine, at time.Time, text string, images int) [
 		return nil
 	}
 	t, _ = clip(t, maxText)
-	return []Change{{Op: wire.ChatAppend, Item: wire.ChatItem{ID: l.UUID, Kind: wire.ChatUser, Time: at, Text: t, Images: images, Sidechain: l.IsSidechain}}}
+	var files []wire.Attachment
+	for range images {
+		files = append(files, wire.Attachment{Name: "image", Mime: "image/*"})
+	}
+	return []Change{{Op: wire.ChatAppend, Item: wire.ChatItem{ID: l.UUID, Kind: wire.ChatUser, Time: at, Text: t, Attachments: files, Sidechain: l.sidechain()}}}
 }
 
 func (c *claude) assistant(l claudeLine, at time.Time) []Change {
@@ -154,10 +176,9 @@ func (c *claude) assistant(l claudeLine, at time.Time) []Change {
 		return nil
 	}
 	var out []Change
+	side := l.sidechain()
 	for i, b := range blocks {
-		// A message's blocks arrive one line each; the uuid keeps a block's
-		// id unique even when lines repeat a message id.
-		id := fmt.Sprintf("%s:%d", l.UUID, i)
+		id := c.blockID(l, m, i)
 		switch b.Type {
 		case "text":
 			if strings.TrimSpace(b.Text) == "" {
@@ -168,20 +189,35 @@ func (c *claude) assistant(l claudeLine, at time.Time) []Change {
 				out = append(out, Change{Op: wire.ChatAppend, Item: wire.ChatItem{ID: id, Kind: wire.ChatError, Time: at, Text: t}})
 				continue
 			}
-			out = append(out, Change{Op: wire.ChatAppend, Item: wire.ChatItem{ID: id, Kind: wire.ChatAssistant, Time: at, Text: t, Model: m.Model, Sidechain: l.IsSidechain}})
+			out = append(out, Change{Op: wire.ChatAppend, Item: wire.ChatItem{ID: id, Kind: wire.ChatAssistant, Time: at, Text: t, Model: m.Model, Sidechain: side}})
 		case "thinking":
 			if strings.TrimSpace(b.Thinking) == "" {
 				continue
 			}
 			t, _ := clip(b.Thinking, maxText)
-			out = append(out, Change{Op: wire.ChatAppend, Item: wire.ChatItem{ID: id, Kind: wire.ChatThinking, Time: at, Text: t, Sidechain: l.IsSidechain}})
+			out = append(out, Change{Op: wire.ChatAppend, Item: wire.ChatItem{ID: id, Kind: wire.ChatThinking, Time: at, Text: t, Sidechain: side}})
 		case "tool_use":
-			it := &wire.ChatItem{ID: b.ID, Kind: wire.ChatTool, Time: at, Sidechain: l.IsSidechain, Tool: claudeTool(b)}
+			it := &wire.ChatItem{ID: b.ID, Kind: wire.ChatTool, Time: at, Sidechain: side, Tool: claudeTool(b)}
 			c.tools[b.ID] = it
 			out = append(out, Change{Op: wire.ChatAppend, Item: *it})
 		}
 	}
 	return out
+}
+
+// blockID names a message block: by the message's id and the block's place
+// in it, the names its streamed deltas carry. A message's blocks arrive one
+// line each, so the place counts across lines.
+func (c *claude) blockID(l claudeLine, m claudeMessage, i int) string {
+	if m.ID == "" {
+		return fmt.Sprintf("%s:%d", l.UUID, i)
+	}
+	if c.blocks == nil {
+		c.blocks = map[string]int{}
+	}
+	n := c.blocks[m.ID]
+	c.blocks[m.ID] = n + 1
+	return fmt.Sprintf("%s:%d", m.ID, n)
 }
 
 func inputMap(raw json.RawMessage) map[string]any {
@@ -211,11 +247,14 @@ func claudeTool(b claudeBlock) *wire.ToolCall {
 			p = str(in, "notebook_path")
 		}
 		t.Summary = p
-		t.Edit = &wire.EditView{Path: p}
+		t.Edit = &wire.EditView{Path: p, Hunks: proposedHunks(in)}
 	case "Write":
 		t.View = wire.ToolWrite
 		t.Summary = str(in, "file_path")
 		t.Edit = &wire.EditView{Path: t.Summary, Created: true}
+		if content := str(in, "content"); content != "" {
+			t.Edit.Hunks = []wire.Hunk{newFileHunk(content)}
+		}
 	case "Read":
 		t.View = wire.ToolRead
 		t.Summary = str(in, "file_path")
@@ -252,6 +291,49 @@ func claudeTool(b claudeBlock) *wire.ToolCall {
 		t.Summary = b.Name
 	}
 	return t
+}
+
+// ClaudeCall describes a claude tool call from its name and input, as the
+// chat shows it before it runs: an edit's proposed change included.
+func ClaudeCall(id, name string, input json.RawMessage) *wire.ToolCall {
+	return claudeTool(claudeBlock{ID: id, Name: name, Input: input})
+}
+
+// proposedHunks is an edit as asked: the old text out, the new text in
+// (line numbers unknown until it applies).
+func proposedHunks(in map[string]any) []wire.Hunk {
+	type edit struct{ old, new string }
+	var edits []edit
+	if o, n := str(in, "old_string"), str(in, "new_string"); o != "" || n != "" {
+		edits = append(edits, edit{o, n})
+	}
+	list, _ := in["edits"].([]any)
+	for _, x := range list {
+		if m, _ := x.(map[string]any); m != nil {
+			edits = append(edits, edit{str(m, "old_string"), str(m, "new_string")})
+		}
+	}
+	var out []wire.Hunk
+	for _, e := range edits {
+		var h wire.Hunk
+		if e.old != "" {
+			for _, l := range strings.Split(e.old, "\n") {
+				h.Lines = append(h.Lines, "-"+l)
+				h.OldLines++
+			}
+		}
+		if e.new != "" {
+			for _, l := range strings.Split(e.new, "\n") {
+				h.Lines = append(h.Lines, "+"+l)
+				h.NewLines++
+			}
+		}
+		if len(h.Lines) > 400 {
+			h.Lines = h.Lines[:400]
+		}
+		out = append(out, h)
+	}
+	return out
 }
 
 func todos(v any) []wire.TodoItem {

@@ -504,7 +504,7 @@ func TestRestoreKeepsTheAgentWindow(t *testing.T) {
 	st := tmuxState{Sessions: []savedSession{{Name: "main", Windows: []savedWindow{{
 		Index: 1, Name: "agent", Role: "agent", Layout: "aaaa,80x24,0,0,1",
 		Panes: []savedPane{{Index: 0, Path: "/home/agent/work/shop", Kind: kindClaude, Resume: "11111111-2222-3333-4444-555555555555",
-			Argv: []string{"claude", "--session-id", "00000000-0000-0000-0000-000000000000", "--settings", hooksPath, "fix the bug"}}},
+			Argv: []string{"claude", "--session-id", "00000000-0000-0000-0000-000000000000", "--settings", "/etc/pier/claude-hooks.json", "fix the bug"}}},
 	}}}}}
 	plan := buildRestorePlan(st, "/home/agent")
 	var role, run string

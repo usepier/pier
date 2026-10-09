@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 // The supervisor serves a local socket so a frontend can follow a session
@@ -32,7 +34,7 @@ var sockPath = "/run/pier/supervisor.sock"
 const (
 	// streamProto goes up with every change to the stream protocol; a
 	// frontend that needs newer replaces the supervisor.
-	streamProto = 2
+	streamProto = 3
 )
 
 type message struct {
@@ -55,17 +57,15 @@ type hub struct {
 	subs    map[*client]bool
 	status  json.RawMessage
 	env     json.RawMessage
+	chats   json.RawMessage
 	results []result // recent op results, oldest first: a replayed id gets its answer
 	running map[string]chan struct{}
 	boot    string
-	agent   json.RawMessage
-	// onLastApprover runs when the last frontend able to answer
-	// permission requests disconnects.
-	onLastApprover func()
-	// findTranscript names the agent's transcript and its kind, for tail.
-	findTranscript func() (path, kind string)
-	tailEvery      time.Duration
-	tailChunk      int
+	// host runs the chats a client can tail.
+	host *chatHost
+	// deltaMu orders the text being written against the snapshot of it a
+	// client gets when it starts following a chat.
+	deltaMu sync.Mutex
 }
 
 type result struct {
@@ -75,10 +75,11 @@ type result struct {
 }
 
 type client struct {
-	mu       sync.Mutex
-	w        *bufio.Writer
-	topics   map[string]bool
-	stopTail chan struct{} // closes the running tail, if any
+	mu     sync.Mutex
+	w      *bufio.Writer
+	topics map[string]bool
+	// tails are the chats it follows: each closes to stop its tail.
+	tails map[string]chan struct{}
 }
 
 func (c *client) send(m message) error {
@@ -94,7 +95,13 @@ func (c *client) send(m message) error {
 }
 
 func newHub() *hub {
-	return &hub{subs: map[*client]bool{}, running: map[string]chan struct{}{}, boot: bootID(), tailEvery: tailEvery, tailChunk: tailChunk}
+	return &hub{subs: map[*client]bool{}, running: map[string]chan struct{}{}, boot: bootID()}
+}
+
+// bootID names this boot of the machine; a var so tests can reboot.
+var bootID = func() string {
+	b, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	return strings.TrimSpace(string(b))
 }
 
 // serve accepts frontends on the socket until the process ends.
@@ -116,7 +123,7 @@ func (h *hub) serve() error {
 
 func (h *hub) handle(conn net.Conn) {
 	defer conn.Close()
-	c := &client{w: bufio.NewWriter(conn), topics: map[string]bool{}}
+	c := &client{w: bufio.NewWriter(conn), topics: map[string]bool{}, tails: map[string]chan struct{}{}}
 	hello, _ := json.Marshal(map[string]any{"proto": streamProto, "boot": h.boot})
 	if c.send(message{Ev: "hello", Data: hello}) != nil {
 		return
@@ -125,13 +132,10 @@ func (h *hub) handle(conn net.Conn) {
 	h.subs[c] = true
 	h.mu.Unlock()
 	defer func() {
-		c.untail()
+		c.untailAll()
 		h.mu.Lock()
 		delete(h.subs, c)
 		h.mu.Unlock()
-		if c.wants("approvals") && !h.answerable() && h.onLastApprover != nil {
-			h.onLastApprover()
-		}
 	}()
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 64<<10), 8<<20)
@@ -148,13 +152,13 @@ func (h *hub) handle(conn net.Conn) {
 			}
 			c.mu.Unlock()
 			h.mu.Lock()
-			status, env, agent := h.status, h.env, h.agent
+			status, env, chats := h.status, h.env, h.chats
 			h.mu.Unlock()
 			if c.wants("status") && status != nil {
 				c.send(message{Ev: "status", Data: status})
 			}
-			if c.wants("agent") && agent != nil {
-				c.send(message{Ev: "agent", Data: agent})
+			if c.wants("chats") && chats != nil {
+				c.send(message{Ev: "chats", Data: chats})
 			}
 			if c.wants("env") {
 				if env == nil {
@@ -165,21 +169,36 @@ func (h *hub) handle(conn net.Conn) {
 		case "ping":
 			c.send(message{Ev: "pong", ID: r.ID})
 		case "tail":
-			// Send the agent's transcript from where the client's copy
-			// ends: {"file": its path, "from": its length}.
+			// Send a chat's log from where the client's copy ends:
+			// {"chat": id, "file": the log's name, "from": its length},
+			// then the text being written as it streams.
 			var a struct {
+				Chat string `json:"chat"`
 				File string `json:"file"`
 				From int64  `json:"from"`
 			}
 			json.Unmarshal(r.Args, &a)
-			c.untail()
+			var l *chatLog
+			if h.host != nil {
+				l = h.host.logOf(a.Chat)
+			}
+			if l == nil {
+				c.send(message{Ev: "log", Data: mustJSON(logChunk{Chat: a.Chat, EOF: true, Reset: true})})
+				continue
+			}
+			c.untail(a.Chat)
 			stop := make(chan struct{})
 			c.mu.Lock()
-			c.stopTail = stop
+			c.tails[a.Chat] = stop
 			c.mu.Unlock()
-			go h.tail(c, a.File, max(a.From, 0), stop)
+			chatID := a.Chat
+			go tailLog(c, chatID, l, a.File, max(a.From, 0), stop, func() { h.sendStreaming(c, chatID) })
 		case "untail":
-			c.untail()
+			var a struct {
+				Chat string `json:"chat"`
+			}
+			json.Unmarshal(r.Args, &a)
+			c.untail(a.Chat)
 		default:
 			go func() {
 				data, err := h.op(r)
@@ -194,12 +213,57 @@ func (h *hub) handle(conn net.Conn) {
 	}
 }
 
-func (c *client) untail() {
+func (c *client) untail(chatID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopTail != nil {
-		close(c.stopTail)
-		c.stopTail = nil
+	if stop := c.tails[chatID]; stop != nil {
+		close(stop)
+		delete(c.tails, chatID)
+	}
+}
+
+func (c *client) untailAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, stop := range c.tails {
+		close(stop)
+		delete(c.tails, id)
+	}
+}
+
+func (c *client) tailing(chatID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tails[chatID] != nil
+}
+
+// sendStreaming tells a client that caught up on a chat's log what the
+// agent is writing right now.
+func (h *hub) sendStreaming(c *client, chatID string) {
+	h.deltaMu.Lock()
+	defer h.deltaMu.Unlock()
+	items := h.host.streamingItems(chatID)
+	c.send(message{Ev: "streaming", Data: mustJSON(map[string]any{"chat": chatID, "items": items})})
+}
+
+// deltas sends text the agent wrote to the clients following its chat.
+func (h *hub) deltas(chatID string, ds []wire.ChatDelta) {
+	h.deltaMu.Lock()
+	defer h.deltaMu.Unlock()
+	h.mu.Lock()
+	var to []*client
+	for c := range h.subs {
+		if c.tailing(chatID) {
+			to = append(to, c)
+		}
+	}
+	h.mu.Unlock()
+	if len(to) == 0 {
+		return
+	}
+	data := mustJSON(map[string]any{"chat": chatID, "deltas": ds})
+	for _, c := range to {
+		c.send(message{Ev: "delta", Data: data})
 	}
 }
 
@@ -240,8 +304,8 @@ func (h *hub) publish(topic string, data any) {
 		h.status = b
 	case "env":
 		h.env = b
-	case "agent":
-		h.agent = b
+	case "chats":
+		h.chats = b
 	}
 	var to []*client
 	for c := range h.subs {
@@ -298,15 +362,11 @@ func (h *hub) op(r request) (json.RawMessage, error) {
 	}
 }
 
-// ops are the changes frontends (and the agent's hooks) can ask for, by
-// name. Agent ops are added when the supervisor's agent tracker starts.
+// ops are the changes frontends can ask for, by name. Chat ops are added
+// when the supervisor's chat host starts.
 var ops = map[string]func(args json.RawMessage) (any, error){
 	"container": containerOp,
 }
-
-// answerable reports whether a connected frontend can answer permission
-// requests (it subscribed to "approvals").
-func (h *hub) answerable() bool { return h.watching("approvals") }
 
 func runOp(name string, args json.RawMessage) (json.RawMessage, error) {
 	f, ok := ops[name]

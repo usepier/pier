@@ -15,9 +15,6 @@ type ClientInfo struct {
 type InitializeParams struct {
 	Protocol int        `json:"protocol"`
 	Client   ClientInfo `json:"client"`
-	// Approvals says the client shows the agents' permission requests and
-	// answers them (chat.decide): while it runs, agents ask it first.
-	Approvals bool `json:"approvals,omitempty"`
 }
 
 // InitializeResult tells the client what it is talking to.
@@ -147,17 +144,17 @@ type CreateParams struct {
 	IdleMs *int64 `json:"idleMs,omitempty"`
 	CapMs  *int64 `json:"capMs,omitempty"`
 	NoPool bool   `json:"noPool,omitempty"`
-	// Agent starts an agent in the session, with its first prompt.
-	Agent *AgentParams `json:"agent,omitempty"`
+	// Chat starts the session with a chat; its prompt goes in once setup
+	// has finished.
+	Chat *NewChat `json:"chat,omitempty"`
 }
 
-// AgentParams is the agent a new session starts with.
-type AgentParams struct {
-	Kind  string `json:"kind"` // claude | codex
-	Model string `json:"model,omitempty"`
-	// PermissionMode is claude's --permission-mode; "" keeps its default.
-	PermissionMode string `json:"permissionMode,omitempty"`
-	// Prompt is the first prompt, typed in once setup has finished.
+// NewChat is the chat a new session starts with.
+type NewChat struct {
+	Agent  string `json:"agent"` // claude | codex
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	Mode   string `json:"mode,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
 }
 

@@ -173,10 +173,10 @@ derives:
   connection; a forgotten tab keeping it awake is deliberately the user's
   problem. App→app loopback traffic (dev server holding a DB pool) doesn't
   count — only sshd's forward dials do.
-- `busy` — an agent turn running (from the hooks of an agent pier
-  launched), agent process-tree CPU above threshold in window, or recent pty
-  output. Waiting on the human is not busy: a session parked mid-question
-  resumes the conversation on wake.
+- `busy` — a chat's turn running, agent process-tree CPU above threshold
+  in window (agents started by hand in a terminal), or recent pty output.
+  Waiting on the human is not busy: a session parked mid-question says so
+  in its chat and goes on with the conversation on the next prompt.
 
 Rules: attached or busy resets the idle clock; detached+quiet past
 `idle_timeout` → park; detached+busy past `unattended_cap` → park (runaway
@@ -196,32 +196,43 @@ can't leave one half done, and each carries an id that makes a retry a
 no-op. A session whose supervisor predates the stream gets this pier's on
 first contact, the same install a create or claim does.
 
-A session can start with an agent (`--agent claude|codex`, `-p` for its
-first prompt). The supervisor launches it in a tmux window of its own
-(`@pier-role=agent`) and follows it through hooks: claude reads them from
-`/etc/pier/claude-hooks.json` (`--settings`, added to the user's own),
-codex reports finished turns through its notify program. Prompts — the
-first one, and any a frontend sends — wait in a queue on the session's
-disk and are typed into the agent's pane when it is ready, each once by
-id; a prompt for a parked session wakes it from a background job on the
-laptop. A permission request waits on a frontend only while one that can
-answer is connected, and falls back to the agent's own prompt when none
-is, when someone attaches to its window, or just before the hook's own
-limit (about fourteen minutes). Its questions (AskUserQuestion) are
-answered the same way — the answers go back in the tool's input — and its
-plans (ExitPlanMode) approved, optionally switching it to accepting edits,
-or sent back with feedback. Restore keeps the agent window's role and
-relaunches it on the conversation its hooks last reported, hooks included.
+A session holds any number of **chats**, each a conversation with claude
+or codex that the supervisor runs headless as its own child, speaking the
+programs' protocols: claude in print mode with stream-json in and out
+(`--permission-prompt-tool stdio`, one process per chat), codex as one app
+server per session (`codex app-server`, a thread per chat). The programs
+are pinned — the versions this pier was built against, downloaded once per
+session or image and checked against their published checksums — so a chat
+never depends on an agent updating itself into a protocol the supervisor
+doesn't speak; what the user runs in a terminal is whatever they installed.
+A chat lives in `~/.pier/chats/<id>`: its record (agent, model, effort,
+permission mode, the agent's own conversation id), its log of items, and
+its prompt queue. The supervisor turns what the agent streams into chat
+items (`pkg/pier/chat`), appends them to the log, and streams the text the
+agent is writing as deltas. Everything the agent would ask in its terminal
+— a tool approval, its questions, its plan — waits on a frontend for as
+long as it takes; approving a plan can switch the permission mode, sending
+it back carries feedback. A prompt sent mid-turn either joins the running
+turn (steer) or waits in the queue for the turn to end, each once by id;
+the first prompt of a session's first chat travels in the create's files
+and waits for setup. Idle programs are stopped after 20 minutes and resume
+their conversation on the next prompt; one that keeps failing puts its chat
+in an error state instead of restarting forever. A chat cut off by a park
+or a supervisor restart says so and goes on with the next prompt.
+Agents started by hand in a terminal stay plain terminal programs: pier
+doesn't follow or drive them.
 
-The stream also tails the agent's transcript — the JSON lines claude and
-codex write as they go — in complete lines from the offset a frontend
-already has, following the agent onto a new file when its conversation
-changes. The laptop keeps a copy of it (under the user cache directory,
-one writer at a time), so a chat reads while its session is parked and a
-reconnect fetches only what is new; `pkg/pier/chat` turns the lines into
-chat items. The agent's state, its pending permission request and its
-prompt queue go out on the stream's `agent` topic. The agents' state
-survives a supervisor restart (an upgrade) but not a boot.
+The stream carries the chats' state (`chats` topic: what each waits on,
+its queue) and, per chat a frontend follows, its log from the offset the
+frontend already has (`tail`, pushed as items are appended — no polling)
+plus the deltas being written. The laptop keeps a copy of each chat's log
+and of the chat list (under the user cache directory, one writer at a
+time, capped to its newest items), so chats read while their session is
+parked and a reconnect fetches only what is new. The status beacon carries
+a summary of each chat — enough for notifications without holding a stream
+open to every working session. Replacing the supervisor would end the
+chats' programs, so an older one is replaced only while no chat is mid-turn
+or waiting.
 
 `pier park <match>` parks a session on demand: a cloud stop, like any other.
 A stop from outside reaches the supervisor as systemd's SIGTERM, and it takes

@@ -32,13 +32,14 @@ type fake struct {
 	created    []pier.CreateRequest
 	termScript string
 	block      chan struct{} // Resume waits on it when set
-	// tx is the transcript FollowTranscript sends, a chunk per entry;
-	// more feeds later chunks.
-	tx      []pier.TranscriptChunk
-	more    chan pier.TranscriptChunk
-	agent   string // the agent topic's data
+	// logs are the chat log chunks FollowChats sends, a chunk per entry;
+	// more feeds later messages (event name, data).
+	logs    []pier.LogChunk
+	more    chan [2]string
+	chats   string // the chats topic's data
 	prompts []string
 	decided []string
+	follows int
 }
 
 func (f *fake) Cloud() string         { return "AWS test-1" }
@@ -154,44 +155,73 @@ func (f *fake) Follow(ctx context.Context, s pier.Session, topics []string, fn f
 	<-ctx.Done()
 	return ctx.Err()
 }
-func (f *fake) FollowTranscript(ctx context.Context, s pier.Session, topics []string, file string, from int64, fn func(string, json.RawMessage)) error {
+func (f *fake) FollowChats(ctx context.Context, s pier.Session, topics []string, tails []pier.Tail, fn func(string, json.RawMessage)) error {
 	f.mu.Lock()
-	tx, agent, more := f.tx, f.agent, f.more
+	logs, chats, more := f.logs, f.chats, f.more
+	f.follows++
 	f.mu.Unlock()
-	if agent != "" {
-		fn("agent", json.RawMessage(agent))
+	if chats != "" {
+		fn("chats", json.RawMessage(chats))
 	}
-	for _, ch := range tx {
-		if ch.File == file && ch.Next <= from {
+	from := map[string]pier.Tail{}
+	for _, t := range tails {
+		from[t.Chat] = t
+	}
+	for _, ch := range logs {
+		t, ok := from[ch.Chat]
+		if !ok {
+			continue
+		}
+		if ch.File == t.File && ch.Next <= t.From {
 			continue // the caller has it
 		}
 		b, _ := json.Marshal(ch)
-		fn("tx", b)
+		fn("log", b)
 	}
 	for {
 		select {
-		case ch := <-more:
-			b, _ := json.Marshal(ch)
-			fn("tx", b)
+		case m := <-more:
+			fn(m[0], json.RawMessage(m[1]))
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
 }
-func (f *fake) SendPrompt(_ context.Context, s pier.Session, id, text, mode string) error {
+func (f *fake) CreateChat(_ context.Context, s pier.Session, r pier.ChatRequest) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.prompts = append(f.prompts, s.ID+":"+id+":"+text)
+	text := ""
+	if r.Prompt != nil {
+		text = r.Prompt.Text
+	}
+	f.prompts = append(f.prompts, s.ID+":new "+r.Agent+":"+text)
+	return r.ID, nil
+}
+func (f *fake) SendPrompt(_ context.Context, s pier.Session, chatID string, p wire.ChatPrompt, mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	note := s.ID + ":" + chatID + ":" + p.ID + ":" + p.Text
+	for _, a := range p.Attachments {
+		note += ":" + a.Path
+	}
+	if mode != "" {
+		note += ":" + mode
+	}
+	f.prompts = append(f.prompts, note)
 	return nil
 }
-func (f *fake) StartDeliver(s pier.Session, id, text, mode string) (pier.Job, error) {
-	return pier.Job{ID: "j-deliver", Kind: pier.JobDeliver, Session: s.Name, PID: 1}, nil
-}
-func (f *fake) Interrupt(context.Context, pier.Session) error { return nil }
-func (f *fake) Decide(_ context.Context, _ pier.Session, id string, d pier.Decision) error {
+func (f *fake) StartDeliver(s pier.Session, d pier.Delivery) (pier.Job, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	note := id + ":" + d.Behavior
+	f.prompts = append(f.prompts, fmt.Sprintf("deliver %s:%s:%s:%d files", s.ID, d.Chat.ID, d.Prompt.Text, len(d.Files)))
+	return pier.Job{ID: "j-deliver", Kind: pier.JobDeliver, Session: s.Name, PID: 1}, nil
+}
+func (f *fake) Dequeue(context.Context, pier.Session, string, string) error { return nil }
+func (f *fake) Interrupt(context.Context, pier.Session, string) error       { return nil }
+func (f *fake) Decide(_ context.Context, _ pier.Session, chatID, id string, d pier.Decision) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	note := chatID + ":" + id + ":" + d.Behavior
 	for q, a := range d.Answers {
 		note += ":" + q + "=" + a
 	}
@@ -200,6 +230,14 @@ func (f *fake) Decide(_ context.Context, _ pier.Session, id string, d pier.Decis
 	}
 	f.decided = append(f.decided, note)
 	return nil
+}
+func (f *fake) ConfigureChat(context.Context, pier.Session, string, pier.ChatConfig) error { return nil }
+func (f *fake) CloseChat(context.Context, pier.Session, string) error                     { return nil }
+func (f *fake) ChatPage(context.Context, pier.Session, string, string, int) ([]wire.ChatItem, bool, error) {
+	return []wire.ChatItem{{ID: "old", Kind: wire.ChatUser, Text: "from the session"}}, false, nil
+}
+func (f *fake) Models(_ context.Context, s *pier.Session, agent string) (wire.AgentModels, error) {
+	return wire.AgentModels{Agent: agent, Models: []wire.ModelInfo{{ID: "opus", Name: "Opus"}}, Modes: pier.AgentModes(agent)}, nil
 }
 func (f *fake) Upload(_ context.Context, _ pier.Session, name string, data []byte) (string, error) {
 	return "/home/agent/.pier/uploads/x-" + name, nil
@@ -264,9 +302,6 @@ func (f *fake) RunProxy(ctx context.Context, _ func(string) error, onChange func
 }
 func (f *fake) ForwardPort(context.Context, pier.Session, int, int) error { return nil }
 func (f *fake) UnforwardPort(pier.Session, int, int) error                { return nil }
-func (f *fake) PeekAgent(context.Context, pier.Session, int) (string, error) {
-	return "● Running tests…", nil
-}
 func (f *fake) ContainerAction(_ context.Context, _ pier.Session, c, action string) error {
 	if action != "restart" {
 		return errors.New("no")

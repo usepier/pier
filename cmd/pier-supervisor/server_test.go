@@ -6,10 +6,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 func dialHub(t *testing.T) (*hub, net.Conn, *bufio.Scanner) {
@@ -104,72 +107,54 @@ func TestOpsRunOncePerID(t *testing.T) {
 	}
 }
 
-func readTx(t *testing.T, conn net.Conn, sc *bufio.Scanner) txChunk {
+func readLog(t *testing.T, conn net.Conn, sc *bufio.Scanner) logChunk {
 	t.Helper()
-	var ch txChunk
-	if err := json.Unmarshal(next(t, conn, sc, "tx").Data, &ch); err != nil {
+	var ch logChunk
+	if err := json.Unmarshal(next(t, conn, sc, "log").Data, &ch); err != nil {
 		t.Fatal(err)
 	}
 	return ch
 }
 
-// The transcript goes out in complete lines from the client's offset, a
-// line still being written waits, and a new conversation starts over.
-func TestStreamTailsTheTranscript(t *testing.T) {
+// A chat's log goes out in complete lines from the client's offset, what
+// is appended follows at once, and a compacted log starts over.
+func TestStreamTailsAChatLog(t *testing.T) {
 	h, conn, sc := dialHub(t)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	dir := t.TempDir()
-	first := filepath.Join(dir, "a.jsonl")
-	os.WriteFile(first, []byte("{\"n\":1}\n{\"n\":2}\n{\"n\":"), 0o600)
-	var path atomic.Value
-	path.Store(first)
-	h.mu.Lock()
-	h.findTranscript = func() (string, string) { return path.Load().(string), "claude" }
-	h.tailEvery, h.tailChunk = 20*time.Millisecond, 16
-	h.mu.Unlock()
+	home := t.TempDir()
+	host := newChatHost(home)
+	h.host = host
+	if err := writeChat(home, createArgs{ID: "c1", Agent: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	host.load()
+	l := host.logOf("c1")
+	l.put(wire.ChatItem{ID: "a", Kind: wire.ChatUser, Text: "one"}, wire.ChatItem{ID: "b", Kind: wire.ChatAssistant, Text: "two"})
+	first, _ := os.ReadFile(l.path())
+	cut := int64(strings.IndexByte(string(first), '\n') + 1)
 
 	next(t, conn, sc, "hello")
-	conn.Write([]byte(`{"op":"tail","args":{"file":"` + first + `","from":8}}` + "\n"))
-	ch := readTx(t, conn, sc)
-	if ch.Reset || ch.Off != 8 || ch.Data != "{\"n\":2}\n" || ch.Next != 16 || !ch.EOF {
+	conn.Write([]byte(`{"op":"tail","args":{"chat":"c1","file":"log-1.jsonl","from":` + strconv.FormatInt(cut, 10) + `}}` + "\n"))
+	ch := readLog(t, conn, sc)
+	if ch.Chat != "c1" || ch.Reset || ch.Off != cut || !strings.Contains(ch.Data, `"id":"b"`) || !ch.EOF {
 		t.Fatalf("resume = %+v", ch)
 	}
-	f, _ := os.OpenFile(first, os.O_APPEND|os.O_WRONLY, 0)
-	f.WriteString("3}\n" + `{"long":"` + strings.Repeat("x", 40) + "\"}\n")
-	f.Close()
-	if ch = readTx(t, conn, sc); ch.Data != "{\"n\":3}\n" || ch.EOF {
-		t.Fatalf("completed line = %+v", ch)
+	streaming := next(t, conn, sc, "streaming")
+	if !strings.Contains(string(streaming.Data), `"chat":"c1"`) {
+		t.Errorf("streaming = %s", streaming.Data)
 	}
-	if ch = readTx(t, conn, sc); !strings.HasPrefix(ch.Data, `{"long"`) || !ch.EOF {
-		t.Fatalf("a line longer than a chunk goes whole: %+v", ch)
+	l.put(wire.ChatItem{ID: "c", Kind: wire.ChatAssistant, Text: "three"})
+	if ch = readLog(t, conn, sc); !strings.Contains(ch.Data, `"id":"c"`) {
+		t.Fatalf("appended = %+v", ch)
+	}
+	host.deltas = h.deltas
+	h.deltas("c1", []wire.ChatDelta{{ID: "d", Kind: wire.ChatAssistant, Text: "fo"}})
+	if d := next(t, conn, sc, "delta"); !strings.Contains(string(d.Data), `"text":"fo"`) {
+		t.Errorf("delta = %s", d.Data)
 	}
 
-	second := filepath.Join(dir, "b.jsonl")
-	os.WriteFile(second, []byte("{\"n\":9}\n"), 0o600)
-	path.Store(second)
-	if ch = readTx(t, conn, sc); !ch.Reset || ch.File != second || ch.Off != 0 || ch.Data != "{\"n\":9}\n" {
-		t.Fatalf("new conversation = %+v", ch)
-	}
-}
-
-func TestFindTranscript(t *testing.T) {
-	home := t.TempDir()
-	claude := filepath.Join(home, ".claude", "projects", "-home-agent-work-shop", "c-1.jsonl")
-	codex := filepath.Join(home, ".codex", "sessions", "2026", "10", "08", "rollout-2026-10-08T10-00-00-t-1.jsonl")
-	for _, p := range []string{claude, codex} {
-		os.MkdirAll(filepath.Dir(p), 0o700)
-		os.WriteFile(p, []byte("{}\n"), 0o600)
-	}
-	if got := findTranscript(home, agentState{Kind: "claude", Conversation: "c-1"}); got != claude {
-		t.Errorf("claude by conversation = %q", got)
-	}
-	if got := findTranscript(home, agentState{Kind: "codex", Conversation: "t-1"}); got != codex {
-		t.Errorf("codex by thread = %q", got)
-	}
-	if got := findTranscript(home, agentState{Kind: "codex", Since: time.Now()}); got != codex {
-		t.Errorf("codex, newest since it started = %q", got)
-	}
-	if got := findTranscript(home, agentState{Kind: "claude", Transcript: "/etc/passwd"}); got != "" {
-		t.Errorf("a path outside home is never read: %q", got)
+	conn.Write([]byte(`{"op":"tail","args":{"chat":"c1","file":"log-0.jsonl","from":5}}` + "\n"))
+	if ch = readLog(t, conn, sc); !ch.Reset || ch.File != "log-1.jsonl" || ch.Off != 0 {
+		t.Fatalf("a copy of another log starts over: %+v", ch)
 	}
 }

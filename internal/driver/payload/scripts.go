@@ -188,9 +188,9 @@ grep -q 'BROWSER=/usr/local/bin/xdg-open' "$HOME/.bashrc" 2>/dev/null || echo 'e
 	if runSetup {
 		s += setupWindow
 	}
-	// The agent the session was made with, in a window of its own; its
-	// first prompt waits in the supervisor's queue until setup is done.
-	s += "\npier-supervisor agent launch || true\n"
+	// The session's first chat, if it was made with one, came in the files
+	// tar; the supervisor picks it up and gives it its prompt once setup is
+	// done.
 	return s
 }
 
@@ -251,7 +251,9 @@ KillMode=process
 [Install]
 WantedBy=multi-user.target
 UNIT
-sudo /usr/local/bin/pier-supervisor install-hooks || true
+# Agents run headless under the supervisor now; the hooks file earlier
+# supervisors installed for agents in tmux is no longer read.
+sudo rm -f /etc/pier/claude-hooks.json
 sudo systemctl daemon-reload
 # restart, not enable --now: a baked image boots its own (older) supervisor
 # before this runs, and --now leaves a running unit alone — the session

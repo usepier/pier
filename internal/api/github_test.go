@@ -42,7 +42,7 @@ func TestPullRequests(t *testing.T) {
 }
 
 func TestAttentionOrder(t *testing.T) {
-	waiting := pier.Session{State: pier.StateRunning, Agent: &pier.AgentStatus{State: "waiting"}}
+	waiting := pier.Session{State: pier.StateRunning, Chats: []wire.ChatSummary{{ID: "c1", State: wire.AgentReady}, {ID: "c2", State: wire.AgentWaiting}}}
 	if a := attention(waiting, &wire.PRSummary{State: "open", Checks: "failing"}); a != "needs_input" {
 		t.Errorf("an agent waiting comes first: %s", a)
 	}

@@ -39,7 +39,7 @@ func questionsOf(v any) []wire.Question {
 			continue
 		}
 		q := wire.Question{
-			Question: str(m, "question"), Header: str(m, "header"), Helper: str(m, "helper"),
+			ID: str(m, "question"), Question: str(m, "question"), Header: str(m, "header"), Helper: str(m, "helper"),
 			Kind: str(m, "kind"), Placeholder: str(m, "placeholder"), Unit: str(m, "unit"),
 			Min: num(m, "min"), Max: num(m, "max"), Step: num(m, "step"), Default: num(m, "defaultValue"),
 		}

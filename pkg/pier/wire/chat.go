@@ -2,9 +2,10 @@ package wire
 
 import "time"
 
-// The chat is an agent's conversation, read from the transcript the agent
-// CLI itself writes, as a list of items. Items arrive as the agent writes
-// them — per finished message or tool step, not per token.
+// A session holds any number of chats, each a conversation with an agent
+// (claude or codex) that the session's supervisor runs headless. A chat is
+// a list of items: they arrive as the agent finishes them, and the text of
+// the one it is writing streams in as deltas.
 
 // ChatKind is what an item is.
 type ChatKind string
@@ -14,9 +15,9 @@ const (
 	ChatAssistant ChatKind = "assistant" // the agent's text
 	ChatThinking  ChatKind = "thinking"  // the agent's reasoning, when it shows it
 	ChatTool      ChatKind = "tool"      // a tool call and its result
+	ChatPlan      ChatKind = "plan"      // a plan the agent proposed
 	ChatStatus    ChatKind = "status"    // something about the conversation: interrupted, compacted, a command ran
 	ChatError     ChatKind = "error"     // the agent hit an error
-	ChatUnknown   ChatKind = "unknown"   // a line this pier can't read yet
 )
 
 // ChatItem is one entry of the conversation.
@@ -25,12 +26,20 @@ type ChatItem struct {
 	Kind ChatKind  `json:"kind"`
 	Time time.Time `json:"time"`
 	Text string    `json:"text,omitempty"`
-	// Images counts images attached to a prompt.
-	Images int       `json:"images,omitempty"`
-	Model  string    `json:"model,omitempty"`
-	Tool   *ToolCall `json:"tool,omitempty"`
+	// Attachments are the files that came with a prompt.
+	Attachments []Attachment `json:"attachments,omitempty"`
+	Model       string       `json:"model,omitempty"`
+	Tool        *ToolCall    `json:"tool,omitempty"`
 	// Sidechain marks a subagent's item.
 	Sidechain bool `json:"sidechain,omitempty"`
+}
+
+// Attachment is a file that came with a prompt: its name, and where it is
+// in the session.
+type Attachment struct {
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
+	Mime string `json:"mime,omitempty"`
 }
 
 // ToolView is how a tool call is best shown.
@@ -113,40 +122,58 @@ type TodoItem struct {
 	Status  string `json:"status"` // pending | in_progress | completed
 }
 
-// AgentDetail is the agent's full state for a chat: what AgentStatus says,
-// the permission request waiting on you, and the prompts the session holds
-// for it.
-type AgentDetail struct {
-	AgentStatus
-	Model   string             `json:"model,omitempty"`
+// ChatInfo is a chat's full state.
+type ChatInfo struct {
+	ChatSummary
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	// Mode is its permission mode: default, acceptEdits, plan,
+	// bypassPermissions (codex: readOnly, default, plan, bypassPermissions).
+	Mode    string    `json:"mode,omitempty"`
+	Created time.Time `json:"created"`
+	// Pending is what it waits on you for.
 	Pending *PermissionRequest `json:"pending,omitempty"`
-	Queue   []QueuedPrompt     `json:"queue"`
+	// Queue is the prompts waiting for its turn to end, oldest first.
+	Queue []QueuedPrompt `json:"queue"`
+	// Error says why its program keeps failing (State error), or what went
+	// wrong last.
+	Error string `json:"error,omitempty"`
 }
 
 // QueuedPrompt is a prompt the session holds until its agent can take it.
 type QueuedPrompt struct {
-	ID   string    `json:"id"`
-	Text string    `json:"text"`
-	At   time.Time `json:"at"`
+	ID          string       `json:"id"`
+	Text        string       `json:"text"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	At          time.Time    `json:"at"`
 }
 
-// PermissionRequest is the agent waiting on you: to use a tool, to answer
-// its questions (Questions), or to approve its plan (Plan).
+// PermissionRequest is the agent waiting on you: to use a tool (Kind
+// tool), to answer its questions (question), or to approve its plan
+// (plan).
 type PermissionRequest struct {
 	ID      string    `json:"id"`
+	Kind    string    `json:"kind"` // tool | question | plan
 	Tool    string    `json:"tool"`
 	Summary string    `json:"summary"` // the call in one line
-	Input   string    `json:"input,omitempty"`
 	At      time.Time `json:"at"`
-	// Questions are what the agent asks (AskUserQuestion), under Title.
+	// Call is the tool call as the chat shows it: the command, the edit.
+	Call *ToolCall `json:"call,omitempty"`
+	// Reason is why the agent asks, when it says.
+	Reason string `json:"reason,omitempty"`
+	// AllowSession: the request can be allowed for the rest of the chat.
+	AllowSession bool `json:"allowSession,omitempty"`
+	// Questions are what the agent asks, under Title.
 	Questions []Question `json:"questions,omitempty"`
 	Title     string     `json:"title,omitempty"`
-	// Plan is the plan to approve (ExitPlanMode), markdown.
+	// Plan is the plan to approve, markdown.
 	Plan string `json:"plan,omitempty"`
 }
 
 // Question is one question the agent asks.
 type Question struct {
+	// ID keys the question's answer (the question itself, for claude).
+	ID       string `json:"id"`
 	Question string `json:"question"`
 	Header   string `json:"header,omitempty"` // a short chip: "Auth method"
 	Helper   string `json:"helper,omitempty"`
@@ -161,6 +188,10 @@ type Question struct {
 	Step    *float64 `json:"step,omitempty"`
 	Default *float64 `json:"default,omitempty"`
 	Unit    string   `json:"unit,omitempty"`
+	// Other lets an answer be typed instead of picked; Secret hides it as
+	// it is typed.
+	Other  bool `json:"other,omitempty"`
+	Secret bool `json:"secret,omitempty"`
 }
 
 // QuestionOption is one choice of a question.
@@ -177,15 +208,15 @@ type QuestionOption struct {
 type ChatSnapshot struct {
 	Items []ChatItem `json:"items"`
 	// More says older items exist (chat.history pages them in).
-	More  bool         `json:"more"`
-	Agent *AgentDetail `json:"agent,omitempty"`
+	More bool      `json:"more"`
+	Chat *ChatInfo `json:"chat,omitempty"`
+	// Streaming are the items the agent is writing right now, as far as it
+	// got: deltas add to them until the finished item replaces them.
+	Streaming []ChatItem `json:"streaming,omitempty"`
 	// Live is false for a session that isn't running: the items are what
 	// this Mac last saw, as of AsOf.
 	Live bool       `json:"live"`
 	AsOf *time.Time `json:"asOf,omitempty"`
-	// Partial says some of the transcript couldn't be read: the terminal
-	// view shows the whole conversation.
-	Partial bool `json:"partial,omitempty"`
 }
 
 // ChatOp says how an update applies.
@@ -195,7 +226,9 @@ const (
 	ChatAppend ChatOp = "append" // new items at the end
 	ChatUpdate ChatOp = "update" // items replacing ones with the same id
 	ChatReset  ChatOp = "reset"  // the conversation started over: replace everything
-	ChatAgent  ChatOp = "agent"  // only the agent's state changed
+	ChatState     ChatOp = "chat"      // only the chat's state changed
+	ChatDeltas    ChatOp = "delta"     // text the agent is writing
+	ChatStreaming ChatOp = "streaming" // Items replace what is being written
 )
 
 // ChatChange is one update of a chat watch.
@@ -203,24 +236,88 @@ type ChatChange struct {
 	Op    ChatOp     `json:"op"`
 	Items []ChatItem `json:"items,omitempty"`
 	// More goes with a reset: older items exist.
-	More    bool         `json:"more,omitempty"`
-	Agent   *AgentDetail `json:"agent,omitempty"`
-	Partial bool         `json:"partial,omitempty"`
-	// Live and AsOf come with an agent change when the session's stream
+	More   bool        `json:"more,omitempty"`
+	Chat   *ChatInfo   `json:"chat,omitempty"`
+	Deltas []ChatDelta `json:"deltas,omitempty"`
+	// Live and AsOf come with a chat change when the session's stream
 	// comes or goes.
 	Live *bool      `json:"live,omitempty"`
 	AsOf *time.Time `json:"asOf,omitempty"`
 }
 
-// ChatSendParams sends a prompt to a session's agent.
-type ChatSendParams struct {
+// ChatDelta is text the agent wrote into a streaming item: Text goes at
+// its end (the item starts, of Kind, if it is new).
+type ChatDelta struct {
+	ID   string   `json:"id"`
+	Kind ChatKind `json:"kind"`
+	Text string   `json:"text"`
+}
+
+// ChatRef names one chat.
+type ChatRef struct {
 	SessionID string `json:"sessionId"`
-	// PromptID makes the send happen once: retry with the same id.
-	PromptID string `json:"promptId"`
-	Text     string `json:"text"`
-	// Mode "now" types it in at once, even mid-turn; otherwise it waits for
-	// the agent to be free.
+	ChatID    string `json:"chatId"`
+}
+
+// ChatsSnapshot is a session's chats as a watch begins, oldest first.
+type ChatsSnapshot struct {
+	Chats []ChatInfo `json:"chats"`
+	Live  bool       `json:"live"`
+}
+
+// ChatsChange is one update of a chats watch: Chats replaces the list.
+type ChatsChange struct {
+	Chats []ChatInfo `json:"chats"`
+	Live  bool       `json:"live"`
+}
+
+// ChatCreateParams starts a chat in a session. ChatID, chosen by the
+// client, makes the create happen once.
+type ChatCreateParams struct {
+	SessionID string `json:"sessionId"`
+	ChatID    string `json:"chatId"`
+	Agent     string `json:"agent"` // claude | codex
+	Model     string `json:"model,omitempty"`
+	Effort    string `json:"effort,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Title     string `json:"title,omitempty"`
+	// Prompt starts it, when given.
+	Prompt *ChatPrompt `json:"prompt,omitempty"`
+}
+
+// ChatPrompt is a prompt with the files that go with it.
+type ChatPrompt struct {
+	// ID makes the send happen once: retry with the same id.
+	ID   string `json:"id"`
+	Text string `json:"text"`
+	// Attachments are files already in the session (files.upload put
+	// them there).
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// ChatSendParams sends a prompt to a chat.
+type ChatSendParams struct {
+	SessionID string     `json:"sessionId"`
+	ChatID    string     `json:"chatId"`
+	Prompt    ChatPrompt `json:"prompt"`
+	// Mode "steer" puts it into the turn that is running; otherwise
+	// ("queue") it waits for the turn to end.
 	Mode string `json:"mode,omitempty"`
+}
+
+// ChatCreated is a chat started (or, for a parked session, on its way).
+type ChatCreated struct {
+	ChatID string `json:"chatId"`
+	// Job is set when the session was parked: a background job wakes it and
+	// starts the chat.
+	Job *Job `json:"job,omitempty"`
+}
+
+// DequeueParams takes back a prompt still waiting in a chat's queue.
+type DequeueParams struct {
+	SessionID string `json:"sessionId"`
+	ChatID    string `json:"chatId"`
+	PromptID  string `json:"promptId"`
 }
 
 // ChatSendResult says how a prompt is on its way.
@@ -230,25 +327,71 @@ type ChatSendResult struct {
 	Job *Job `json:"job,omitempty"`
 }
 
-// DecideParams answers what the agent waits on: allow or deny a tool use;
-// answer its questions (allow with Answers); approve its plan (allow, Mode
-// "acceptEdits" to let it edit without asking) or send it back (deny with
-// Message, the feedback).
+// ChatConfigureParams changes a chat as it goes on: its model, effort,
+// permission mode or title. Empty fields stay as they are.
+type ChatConfigureParams struct {
+	SessionID string `json:"sessionId"`
+	ChatID    string `json:"chatId"`
+	Model     string `json:"model,omitempty"`
+	Effort    string `json:"effort,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Title     string `json:"title,omitempty"`
+}
+
+// DecideParams answers what a chat waits on: allow or deny a tool use
+// (allowSession: for the rest of the chat); answer its questions (allow
+// with Answers); approve its plan (allow, Mode to switch to) or send it
+// back (deny with Message, the feedback).
 type DecideParams struct {
 	SessionID string `json:"sessionId"`
+	ChatID    string `json:"chatId"`
 	RequestID string `json:"requestId"`
-	Behavior  string `json:"behavior"` // allow | deny
+	Behavior  string `json:"behavior"` // allow | allowSession | deny
 	Message   string `json:"message,omitempty"`
-	// Answers by question text; several choices joined with ", ".
+	// Answers by question id; several choices joined with ", ".
 	Answers map[string]string `json:"answers,omitempty"`
-	// Notes the user added to an answer, by question text.
+	// Notes the user added to an answer, by question id.
 	Notes map[string]string `json:"notes,omitempty"`
-	Mode  string            `json:"mode,omitempty"` // default | acceptEdits
+	Mode  string            `json:"mode,omitempty"`
+}
+
+// ModelsParams asks what an agent offers.
+type ModelsParams struct {
+	Agent string `json:"agent"` // claude | codex
+	// SessionID, when set, asks that session's agent; otherwise the last
+	// answer this Mac saw.
+	SessionID string `json:"sessionId,omitempty"`
+}
+
+// AgentModels is what an agent offers: models, efforts, permission modes.
+type AgentModels struct {
+	Agent  string      `json:"agent"`
+	Models []ModelInfo `json:"models"`
+	Modes  []ModeInfo  `json:"modes"`
+}
+
+// ModelInfo is one model an agent can run.
+type ModelInfo struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Efforts     []string `json:"efforts,omitempty"`
+	// DefaultEffort is the effort it runs at unless told otherwise.
+	DefaultEffort string `json:"defaultEffort,omitempty"`
+	Default       bool   `json:"default,omitempty"`
+}
+
+// ModeInfo is one permission mode.
+type ModeInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // HistoryParams pages older chat items in.
 type HistoryParams struct {
 	SessionID string `json:"sessionId"`
+	ChatID    string `json:"chatId"`
 	Before    string `json:"before"` // the oldest item id the client has
 	Limit     int    `json:"limit,omitempty"`
 }
@@ -259,16 +402,14 @@ type HistoryPage struct {
 	More  bool       `json:"more"`
 }
 
-// UploadParams puts a file into a session (an image pasted into the chat).
+// UploadParams puts a file attached to a prompt into a session. A parked
+// session's files wait on this Mac (the attachment's path starts with
+// "staged:") until the prompt wakes it.
 type UploadParams struct {
 	SessionID string `json:"sessionId"`
-	Name      string `json:"name"` // its name, for the extension
+	Name      string `json:"name"`
+	Mime      string `json:"mime,omitempty"`
 	Data      string `json:"data"` // base64
-}
-
-// Uploaded is where an upload landed in the session.
-type Uploaded struct {
-	Path string `json:"path"`
 }
 
 // FileListParams lists a session's files.
@@ -289,17 +430,7 @@ type Notice struct {
 	ID        string `json:"id"`
 	Kind      string `json:"kind"` // finished | needs_input | setup_failed | create_failed | ci_failed
 	SessionID string `json:"sessionId"`
+	ChatID    string `json:"chatId,omitempty"`
 	Title     string `json:"title"`
 	Body      string `json:"body"`
-}
-
-// PeekParams asks for the bottom of the agent's pane.
-type PeekParams struct {
-	SessionID string `json:"sessionId"`
-	Lines     int    `json:"lines,omitempty"`
-}
-
-// Peek is the bottom of the agent's pane as plain text.
-type Peek struct {
-	Text string `json:"text"`
 }

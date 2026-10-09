@@ -40,6 +40,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 const (
@@ -85,8 +87,8 @@ type status struct {
 	// IdleTimeout and Cap are the configured limits, in seconds (0 = never).
 	IdleTimeout int64 `json:"idle_timeout,omitempty"`
 	Cap         int64 `json:"cap,omitempty"`
-	// Agent is the session's agent, when pier launched one.
-	Agent *agentSummary `json:"agent,omitempty"`
+	// Chats are the session's agent chats.
+	Chats []wire.ChatSummary `json:"chats,omitempty"`
 }
 
 // port is a listening port and who holds it.
@@ -109,17 +111,14 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "stream" {
 		os.Exit(streamMain())
 	}
+	if len(os.Args) > 1 && os.Args[1] == "install-agents" {
+		// The pinned agent programs, now (a bake keeps them in its image).
+		home, _ := os.UserHomeDir()
+		newPinned(home).installAll()
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "op" {
 		os.Exit(opMain(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "hook" {
-		os.Exit(hookMain(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "install-hooks" {
-		os.Exit(installHooksMain())
-	}
-	if len(os.Args) > 2 && os.Args[1] == "agent" && os.Args[2] == "launch" {
-		os.Exit(launchMain())
 	}
 
 	// A stop from outside (the cloud stopping the instance, a resize) shuts
@@ -156,22 +155,26 @@ func main() {
 	var procs procSampler
 	h := newHub()
 	home, _ := os.UserHomeDir()
-	ag := newAgents(home, func() {})
-	theAgents = ag
+	host := newChatHost(home)
+	h.host = host
 	var touchedAt atomic.Int64
-	registerAgentOps(ag, h, home, func() { touchedAt.Store(time.Now().UnixNano()) })
-	ag.notify = func() { h.publish("agent", ag.topic()) }
-	h.findTranscript = ag.transcript
+	registerChatOps(host, func() { touchedAt.Store(time.Now().UnixNano()) })
+	host.notify = func() { h.publish("chats", host.topic()) }
+	host.deltas = h.deltas
+	host.setupRunning = func() bool { return setupState() == "running" }
+	host.load()
+	h.publish("chats", host.topic())
+	go host.pins.installAll()
 	go func() {
 		if err := h.serve(); err != nil {
 			fmt.Println("pier-supervisor: stream socket:", err)
 		}
 	}()
-	// Prompts go in as soon as the agent can take them, not on the slower
-	// status tick.
+	// Prompts go in as soon as their chat is free, not on the slower status
+	// tick.
 	go func() {
 		for {
-			ag.deliver(home, setupState() == "running")
+			host.deliverAll()
 			time.Sleep(time.Second)
 		}
 	}()
@@ -182,9 +185,11 @@ func main() {
 		listening, ports, tunnels := netSnapshot()
 		setup := setupState()
 		attached := tmuxAttached() || tunnels > 0
-		busy := setup == "running" || ag.turnOpen() || agentBusy() || ptyActive()
-		// Someone acting on the agent from a frontend (a prompt, an
-		// answer) is a human in the loop: the runaway clock starts over.
+		host.load()
+		host.reap()
+		busy := setup == "running" || host.turnOpen() || agentBusy() || ptyActive()
+		// Someone acting on a chat from a frontend (a prompt, an answer)
+		// is a human in the loop: the runaway clock starts over.
 		if t := touchedAt.Load(); t != lastTouch {
 			lastTouch = t
 			detachedBusySince = time.Time{}
@@ -227,8 +232,7 @@ func main() {
 			at := detachedBusySince.Add(cap_)
 			last.CapAt = &at
 		}
-		last.Agent = ag.summary(home)
-		ag.releaseAttached(attachedWindows())
+		last.Chats = host.summaries()
 		writeStatus(last)
 		h.publish("status", last)
 		if h.watching("env") {
@@ -275,22 +279,6 @@ func readConf() (idle, cap_ time.Duration) {
 		return 0
 	}
 	return get("idle_timeout"), get("unattended_cap")
-}
-
-// theAgents is the supervisor's agent tracker, for the tmux snapshot.
-var theAgents *agents
-
-// attachedWindows are the tmux windows a client is looking at.
-func attachedWindows() map[string]bool {
-	out, err := exec.Command("tmux", "list-clients", "-F", "#{window_id}").Output()
-	ws := map[string]bool{}
-	if err != nil {
-		return ws
-	}
-	for _, w := range strings.Fields(string(out)) {
-		ws[w] = true
-	}
-	return ws
 }
 
 func tmuxAttached() bool {

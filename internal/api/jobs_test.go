@@ -34,14 +34,14 @@ func TestCreateStartsAJob(t *testing.T) {
 		t.Errorf("a blank branch must be rejected: %v", resp)
 	}
 	c.call("sessions.create", map[string]any{"path": repo, "branch": "feat/y",
-		"agent": map[string]any{"kind": "claude", "model": "opus", "prompt": "fix the login"}})
+		"chat": map[string]any{"agent": "claude", "model": "opus", "effort": "high", "mode": "plan", "prompt": "fix the login"}})
 	f.mu.Lock()
-	a := f.created[len(f.created)-1].Agent
+	a := f.created[len(f.created)-1].Chat
 	f.mu.Unlock()
-	if a == nil || a.Kind != "claude" || a.Model != "opus" || a.Prompt != "fix the login" {
-		t.Errorf("agent = %+v", a)
+	if a == nil || a.Agent != "claude" || a.Model != "opus" || a.Effort != "high" || a.Mode != "plan" || a.Prompt == nil || a.Prompt.Text != "fix the login" {
+		t.Errorf("chat = %+v", a)
 	}
-	resp, _ = c.call("sessions.create", map[string]any{"path": repo, "branch": "feat/z", "agent": map[string]any{"kind": "vim"}})
+	resp, _ = c.call("sessions.create", map[string]any{"path": repo, "branch": "feat/z", "chat": map[string]any{"agent": "vim"}})
 	if errKind(resp) != "invalid_params" {
 		t.Errorf("an unknown agent must be rejected: %v", resp)
 	}

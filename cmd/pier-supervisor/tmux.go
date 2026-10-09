@@ -195,14 +195,6 @@ func snapshotTmux(run tmuxRunner, dir string, fg func(pid int) []string) error {
 				p := &w.Panes[pi]
 				p.Argv = fg(p.pid)
 				p.Kind, p.Resume = classifyPane(w.Name, p.Argv)
-				// The conversation the agent is on now, as its hooks reported
-				// it, beats the one its command line started with: a /clear
-				// moves claude to a new one.
-				if p.Kind == kindClaude && theAgents != nil {
-					if c := theAgents.conversation(p.id); uuidRe.MatchString(c) {
-						p.Resume = c
-					}
-				}
 				if p.Kind == kindOther {
 					p.Command = commandLine(prettyArgv(p.Argv, exec.LookPath))
 				}

@@ -1,8 +1,9 @@
-// Package chat reads an agent's transcript — the JSON lines the claude and
-// codex CLIs write as they go — into chat items. The formats are the
-// tools' own and change with their releases, so parsing is tolerant: lines
-// of a kind it doesn't know are skipped, and a line it can't read at all
-// marks the chat partial (the terminal view still shows everything).
+// Package chat reads what agents say into chat items: the stream claude
+// writes running headless, the notifications of codex's app server, and
+// the transcripts both CLIs keep (read when a chat was continued in a
+// terminal). The formats are the tools' own and change with their
+// releases, so reading is tolerant: messages of a kind it doesn't know are
+// skipped, and one it can't read at all is counted.
 package chat
 
 import (
@@ -26,13 +27,18 @@ type Parser interface {
 	Partial() bool
 }
 
-// NewParser returns the parser for an agent kind ("claude", "codex").
-func NewParser(kind string) Parser {
+// NewParser returns the transcript parser for an agent kind ("claude",
+// "codex"). prefix goes before the ids of items with none of their own, so
+// two readings of one transcript (from different offsets) never collide.
+func NewParser(kind, prefix string) Parser {
 	if kind == "codex" {
-		return &codex{tools: map[string]*wire.ChatItem{}}
+		return &codex{tools: map[string]*wire.ChatItem{}, prefix: prefix}
 	}
 	return &claude{tools: map[string]*wire.ChatItem{}}
 }
+
+// now is the time of items whose message has none; a var for tests.
+var now = time.Now
 
 // Limits on what an item carries: the chat summarizes, the terminal and
 // the files hold the rest.

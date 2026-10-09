@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/usepier/pier/internal/chatfile"
 	"github.com/usepier/pier/internal/driver"
 )
 
@@ -135,11 +136,11 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 	}
 	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(spec.Repo))
 	filesTar := filepath.Join(dir, "pier-files.tar")
-	agentFiles, err := agentEntries(spec.Agent)
+	chatFiles, err := chatEntries(spec.Chat)
 	if err != nil {
 		return nil, "", "", "", err
 	}
-	if err := buildFilesTar(filesTar, manifest, spec.Repo, repoFiles, env, setupSrc, agentFiles...); err != nil {
+	if err := buildFilesTar(filesTar, manifest, spec.Repo, repoFiles, env, setupSrc, chatFiles...); err != nil {
 		return nil, "", "", "", err
 	}
 	if miss := envFilesNotCarried(spec.Repo, repoFiles); len(miss) > 0 {
@@ -256,26 +257,38 @@ func Sanitize(name string) string {
 	return s
 }
 
-// agentEntries are the files that start a session's agent: the launch
-// spec the supervisor reads, and the first prompt in its queue.
-func agentEntries(a *driver.AgentSpec) ([]tarEntry, error) {
-	if a == nil {
+// chatEntries are the files that start a session's first chat: its
+// record, and its first prompt in its queue (the supervisor delivers it
+// once setup is done).
+func chatEntries(c *driver.ChatSpec) ([]tarEntry, error) {
+	if c == nil {
 		return nil, nil
 	}
-	spec, err := json.Marshal(map[string]string{
-		"id": a.LaunchID, "kind": a.Kind, "model": a.Model,
-		"permission_mode": a.PermissionMode, "conversation": a.Conversation,
-	})
+	rec := chatfile.Record{ID: c.ID, Agent: c.Agent, Model: c.Model, Effort: c.Effort, Mode: c.Mode, Created: time.Now().UTC(), Title: titleOf(c.Prompt)}
+	b, err := json.Marshal(rec)
 	if err != nil {
 		return nil, err
 	}
-	out := []tarEntry{{Name: "home/.pier/agent/spec.json", Data: spec, Mode: 0o600}}
-	if strings.TrimSpace(a.Prompt) != "" {
-		p, err := json.Marshal(map[string]any{"id": a.PromptID, "text": a.Prompt, "at": time.Now().UTC(), "first": true})
+	dir := "home/" + chatfile.Dir(c.ID)
+	out := []tarEntry{{Name: dir + "/chat.json", Data: b, Mode: 0o600}}
+	if strings.TrimSpace(c.Prompt) != "" {
+		p, err := json.Marshal(chatfile.Prompt{ID: c.PromptID, Text: c.Prompt, At: time.Now().UTC(), First: true})
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, tarEntry{Name: "home/.pier/agent/queue/" + a.PromptID + ".json", Data: p, Mode: 0o600})
+		out = append(out, tarEntry{Name: dir + "/queue/" + c.PromptID + ".json", Data: p, Mode: 0o600})
 	}
 	return out, nil
+}
+
+// titleOf names a chat after its first prompt.
+func titleOf(text string) string {
+	t := strings.TrimSpace(text)
+	if i := strings.IndexByte(t, '\n'); i >= 0 {
+		t = t[:i]
+	}
+	if r := []rune(t); len(r) > 48 {
+		t = strings.TrimSpace(string(r[:47])) + "…"
+	}
+	return t
 }

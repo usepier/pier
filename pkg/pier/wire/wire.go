@@ -60,8 +60,8 @@ type Session struct {
 	Ports     []Port     `json:"ports,omitempty"`
 	ParkAt    *time.Time `json:"parkAt,omitempty"`
 	CapAt     *time.Time `json:"capAt,omitempty"`
-	// Agent is the agent pier launched in the session, as last reported.
-	Agent *AgentStatus `json:"agent,omitempty"`
+	// Chats are the session's agent chats, as last reported.
+	Chats []ChatSummary `json:"chats,omitempty"`
 	// PR is the branch's pull request, when it has one.
 	PR *PRSummary `json:"pr,omitempty"`
 	// Attention says why the session needs the user, if it does:
@@ -70,25 +70,31 @@ type Session struct {
 	Attention string `json:"attention,omitempty"`
 }
 
-// AgentState is where a session's agent is.
+// AgentState is where a chat's agent is.
 type AgentState string
 
 const (
-	AgentStarting AgentState = "starting" // launched, not ready yet
-	AgentReady    AgentState = "ready"    // at its prompt
+	AgentStarting AgentState = "starting" // its program is starting
+	AgentReady    AgentState = "ready"    // waiting for a prompt
 	AgentWorking  AgentState = "working"  // a turn is running
-	AgentWaiting  AgentState = "waiting"  // stopped on you: a permission, a question
-	AgentEnded    AgentState = "ended"    // the program exited
+	AgentWaiting  AgentState = "waiting"  // stopped on you: a permission, a question, a plan
+	AgentTerminal AgentState = "terminal" // continued in a terminal; the chat resumes when it exits
+	AgentError    AgentState = "error"    // its program keeps failing: see the chat's error
 )
 
-// AgentStatus is a session's agent in a list view.
-type AgentStatus struct {
-	Kind    string     `json:"kind"` // claude | codex
-	State   AgentState `json:"state"`
-	Waiting string     `json:"waiting,omitempty"` // permission | input
-	Since   time.Time  `json:"since"`
-	Last    string     `json:"last,omitempty"` // its last message, trimmed
-	Queued  int        `json:"queued,omitempty"`
+// ChatSummary is one of a session's chats in a list view.
+type ChatSummary struct {
+	ID    string     `json:"id"`
+	Agent string     `json:"agent"` // claude | codex
+	Title string     `json:"title"`
+	State AgentState `json:"state"`
+	// Waiting says what it waits on: permission, question or plan.
+	Waiting string    `json:"waiting,omitempty"`
+	Since   time.Time `json:"since"`
+	// Last is its last message, trimmed; Ask what it asks, in one line.
+	Last   string `json:"last,omitempty"`
+	Ask    string `json:"ask,omitempty"`
+	Queued int    `json:"queued,omitempty"`
 }
 
 // Resources is a session's load. Sizes are bytes.

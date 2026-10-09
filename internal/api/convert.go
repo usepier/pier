@@ -43,8 +43,9 @@ func wireSession(be Backend, s pier.Session, pr *pier.PR) wire.Session {
 	for _, p := range s.Ports {
 		w.Ports = append(w.Ports, wire.Port{Port: p.Port, Process: p.Process, PID: p.PID})
 	}
-	if a := s.Agent; a != nil {
-		w.Agent = &wire.AgentStatus{Kind: a.Kind, State: wire.AgentState(a.State), Waiting: a.Waiting, Since: a.Since.UTC(), Last: a.Last, Queued: a.Queued}
+	for _, c := range s.Chats {
+		c.Since = c.Since.UTC()
+		w.Chats = append(w.Chats, c)
 	}
 	if pr != nil {
 		w.PR = wirePR(*pr)
@@ -53,12 +54,22 @@ func wireSession(be Backend, s pier.Session, pr *pier.PR) wire.Session {
 	return w
 }
 
+// waitingChat is a chat of the session waiting on its user, if any.
+func waitingChat(s pier.Session) *wire.ChatSummary {
+	for i := range s.Chats {
+		if s.Chats[i].State == wire.AgentWaiting {
+			return &s.Chats[i]
+		}
+	}
+	return nil
+}
+
 // attention is the most pressing reason a session needs the user.
 func attention(s pier.Session, pr *wire.PRSummary) string {
 	switch {
 	case s.State == pier.StateFailed:
 		return "create_failed"
-	case s.Agent != nil && s.Agent.State == "waiting" && s.State != pier.StateParked:
+	case waitingChat(s) != nil && s.State != pier.StateParked:
 		return "needs_input"
 	case s.Setup == "failed":
 		return "setup_failed"

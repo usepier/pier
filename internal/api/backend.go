@@ -9,6 +9,7 @@ import (
 	"github.com/usepier/pier/internal/github"
 	"github.com/usepier/pier/pkg/pier"
 	"github.com/usepier/pier/pkg/pier/gitview"
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 // Backend is what the server needs from pier: *pier.Client satisfies it,
@@ -52,15 +53,20 @@ type Backend interface {
 	KillWindow(ctx context.Context, s pier.Session, window string) error
 	RenameWindow(ctx context.Context, s pier.Session, window, name string) error
 	Follow(ctx context.Context, s pier.Session, topics []string, fn func(ev string, data json.RawMessage)) error
-	FollowTranscript(ctx context.Context, s pier.Session, topics []string, file string, from int64, fn func(ev string, data json.RawMessage)) error
+	FollowChats(ctx context.Context, s pier.Session, topics []string, tails []pier.Tail, fn func(ev string, data json.RawMessage)) error
 	ContainerAction(ctx context.Context, s pier.Session, container, action string) error
-	SendPrompt(ctx context.Context, s pier.Session, id, text, mode string) error
-	StartDeliver(s pier.Session, id, text, mode string) (pier.Job, error)
-	Interrupt(ctx context.Context, s pier.Session) error
-	Decide(ctx context.Context, s pier.Session, requestID string, d pier.Decision) error
+	CreateChat(ctx context.Context, s pier.Session, r pier.ChatRequest) (string, error)
+	SendPrompt(ctx context.Context, s pier.Session, chatID string, p wire.ChatPrompt, mode string) error
+	StartDeliver(s pier.Session, d pier.Delivery) (pier.Job, error)
+	Dequeue(ctx context.Context, s pier.Session, chatID, promptID string) error
+	Interrupt(ctx context.Context, s pier.Session, chatID string) error
+	Decide(ctx context.Context, s pier.Session, chatID, requestID string, d pier.Decision) error
+	ConfigureChat(ctx context.Context, s pier.Session, chatID string, cfg pier.ChatConfig) error
+	CloseChat(ctx context.Context, s pier.Session, chatID string) error
+	ChatPage(ctx context.Context, s pier.Session, chatID, before string, limit int) ([]wire.ChatItem, bool, error)
+	Models(ctx context.Context, s *pier.Session, agent string) (wire.AgentModels, error)
 	Upload(ctx context.Context, s pier.Session, name string, data []byte) (string, error)
 	ListFiles(ctx context.Context, s pier.Session) ([]string, bool, error)
-	PeekAgent(ctx context.Context, s pier.Session, lines int) (string, error)
 	Changes(ctx context.Context, s pier.Session) (gitview.Changes, error)
 	Diff(ctx context.Context, s pier.Session, f gitview.File, context int) (string, bool, error)
 	ReadFile(ctx context.Context, s pier.Session, path string) (pier.FileContent, error)

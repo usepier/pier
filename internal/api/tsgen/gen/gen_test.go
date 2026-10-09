@@ -21,7 +21,7 @@ func TestGenerate(t *testing.T) {
 		"export interface CheckoutInfo extends Checkout {",
 		`"overview.watch": { params: Empty; result: WatchResult<Overview> };`,
 		`"overview": { params: Empty; snapshot: Overview; data: Overview };`,
-		`"chat": { params: SessionRef; snapshot: ChatSnapshot; data: ChatChange };`,
+		`"chat": { params: ChatRef; snapshot: ChatSnapshot; data: ChatChange };`,
 		`"sessions.resume": { params: SessionRef; result: null };`,
 		"export interface ServerNotifications {",
 		`"$/progress": ProgressParams;`,

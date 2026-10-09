@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/internal/tombstone"
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 // A failed create used to vanish without trace: the instance rolled itself
@@ -146,31 +146,31 @@ func TestBeaconCarriesLoadAndCountdown(t *testing.T) {
 	}
 }
 
-func TestAgentSpecIDs(t *testing.T) {
-	sp, err := agentSpec(&AgentRequest{Kind: "claude", Prompt: "hi"})
+func TestChatSpec(t *testing.T) {
+	sp, err := chatSpec(&ChatRequest{Agent: "claude", Mode: "plan", Prompt: &wire.ChatPrompt{Text: "hi"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(sp.Conversation) {
-		t.Errorf("claude's conversation id must be a v4 UUID: %q", sp.Conversation)
+	if sp.ID == "" || sp.PromptID == "" || sp.ID == sp.PromptID || sp.Prompt != "hi" || sp.Mode != "plan" {
+		t.Errorf("spec = %+v", sp)
 	}
-	if sp.PromptID == "" || sp.LaunchID == "" || sp.PromptID == sp.LaunchID {
-		t.Errorf("ids = %+v", sp)
+	if sp, _ := chatSpec(&ChatRequest{Agent: "codex"}); sp.Prompt != "" || sp.PromptID != "" {
+		t.Error("no prompt, no prompt id")
 	}
-	if sp, _ := agentSpec(&AgentRequest{Kind: "codex"}); sp.Conversation != "" {
-		t.Error("codex picks its own conversation")
-	}
-	if _, err := agentSpec(&AgentRequest{Kind: "other"}); err == nil {
+	if _, err := chatSpec(&ChatRequest{Agent: "other"}); err == nil {
 		t.Error("unknown agents are refused")
+	}
+	if _, err := chatSpec(&ChatRequest{Agent: "codex", Mode: "acceptEdits"}); err == nil {
+		t.Error("a mode the agent doesn't have is refused")
 	}
 }
 
-func TestBeaconCarriesTheAgent(t *testing.T) {
+func TestBeaconCarriesTheChats(t *testing.T) {
 	var b beacon
-	json.Unmarshal([]byte(`{"state":"working","agent":{"kind":"claude","state":"waiting","waiting":"permission","last":"Shall I run the migration?","queued":1}}`), &b)
+	json.Unmarshal([]byte(`{"state":"working","chats":[{"id":"c1","agent":"claude","title":"Fix login","state":"waiting","waiting":"permission","ask":"rm -rf build","queued":1}]}`), &b)
 	var s Session
 	b.apply(&s)
-	if s.Agent == nil || s.Agent.State != "waiting" || s.Agent.Waiting != "permission" || s.Agent.Queued != 1 {
-		t.Errorf("agent = %+v", s.Agent)
+	if len(s.Chats) != 1 || s.Chats[0].State != "waiting" || s.Chats[0].Waiting != "permission" || s.Chats[0].Queued != 1 || s.Chats[0].Ask != "rm -rf build" {
+		t.Errorf("chats = %+v", s.Chats)
 	}
 }

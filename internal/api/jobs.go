@@ -48,11 +48,14 @@ func init() {
 				RepoRoot: root, Branch: p.Branch, Base: p.Base,
 				Idle: msPtr(p.IdleMs), Cap: msPtr(p.CapMs), NoPool: p.NoPool,
 			}
-			if a := p.Agent; a != nil {
-				if a.Kind != "claude" && a.Kind != "codex" {
+			if a := p.Chat; a != nil {
+				if a.Agent != "claude" && a.Agent != "codex" {
 					return wire.Job{}, invalidParams("agent is claude or codex")
 				}
-				req.Agent = &pier.AgentRequest{Kind: a.Kind, Model: a.Model, PermissionMode: a.PermissionMode, Prompt: a.Prompt}
+				req.Chat = &pier.ChatRequest{Agent: a.Agent, Model: a.Model, Effort: a.Effort, Mode: a.Mode}
+				if a.Prompt != "" {
+					req.Chat.Prompt = &wire.ChatPrompt{Text: a.Prompt}
+				}
 			}
 			j, err := be.StartCreate(req)
 			if err != nil {
