@@ -91,6 +91,9 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 	}
 	image := c.cfg.BakedImage(repo)
 
+	if req.Chat != nil {
+		c.withDefaults(req.Chat)
+	}
 	chat, err := chatSpec(req.Chat)
 	if err != nil {
 		return CreateResult{}, err

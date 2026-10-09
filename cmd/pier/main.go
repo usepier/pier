@@ -333,11 +333,8 @@ func cmdNew(args []string) {
 		req.Cap = &d
 	}
 	if *agentS != "" || promptS != "" {
-		kind := *agentS
-		if kind == "" {
-			kind = "claude"
-		}
-		req.Chat = &pier.ChatRequest{Agent: kind, Model: *modelS, Effort: *effortS, Mode: *permS}
+		// Unset: the agent settings (pier settings → Agents) decide.
+		req.Chat = &pier.ChatRequest{Agent: *agentS, Model: *modelS, Effort: *effortS, Mode: *permS}
 		if promptS != "" {
 			req.Chat.Prompt = &wire.ChatPrompt{Text: promptS}
 		}

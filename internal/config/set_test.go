@@ -72,11 +72,35 @@ func TestSet(t *testing.T) {
 	}
 
 	// Every advertised setting must round-trip through Get. Keys with no
-	// sensible default (credentials, org-specific ids) are empty until setup.
-	emptyOK := map[string]bool{"aws.profile": true, "aws.region": true, "aws.subnet": true, "gcp.project": true}
+	// sensible default (credentials, org-specific ids) are empty until setup;
+	// agent models and efforts are empty for "what the agent defaults to".
+	emptyOK := map[string]bool{"aws.profile": true, "aws.region": true, "aws.subnet": true, "gcp.project": true,
+		"agents.claude_model": true, "agents.claude_effort": true, "agents.codex_model": true, "agents.codex_effort": true}
 	for _, s := range Settings {
 		if Get(cfg, s.Key) == "" && !emptyOK[s.Key] {
 			t.Errorf("Get(%q) is empty on a default config", s.Key)
+		}
+	}
+}
+
+func TestAgentSettings(t *testing.T) {
+	cfg := Default()
+	for k, v := range map[string]string{"agents.default": "codex", "agents.claude_model": "opus", "agents.claude_effort": "max",
+		"agents.claude_mode": "acceptEdits", "agents.codex_effort": "minimal", "agents.codex_mode": "readOnly"} {
+		if err := Set(&cfg, k, v); err != nil {
+			t.Fatalf("%s=%s: %v", k, v, err)
+		}
+	}
+	if cfg.Agents.Agent() != "codex" {
+		t.Error("default agent")
+	}
+	if m, e, mode := cfg.Agents.For("claude"); m != "opus" || e != "max" || mode != "acceptEdits" {
+		t.Errorf("claude defaults = %s %s %s", m, e, mode)
+	}
+	for k, v := range map[string]string{"agents.default": "gemini", "agents.codex_mode": "acceptEdits", "agents.claude_mode": "readOnly",
+		"agents.codex_effort": "max", "agents.claude_model": "opus; rm -rf /"} {
+		if err := Set(&cfg, k, v); err == nil {
+			t.Errorf("%s=%s was accepted", k, v)
 		}
 	}
 }

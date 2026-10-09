@@ -472,13 +472,14 @@ func TestAccentColorSetting(t *testing.T) {
 	f := newFake()
 	m := loaded(t, f, 120, 40)
 	m, _ = press(t, m, "s")
-	if !strings.Contains(m.View(), "Appearance") {
-		t.Fatal("settings must have the Appearance group")
-	}
 	for i, s := range m.settings {
 		if s.Key == "theme" {
 			m.setIdx = i
 		}
+	}
+	// The list scrolls to the selected setting.
+	if !strings.Contains(m.View(), "Appearance") {
+		t.Fatal("settings must have the Appearance group")
 	}
 	m, _ = press(t, m, "enter")
 	if m.ov != ovPick || len(m.pickOpts) != len(ui.ThemeNames) {

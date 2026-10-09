@@ -57,6 +57,23 @@ func (r *ChatRequest) check() error {
 	return nil
 }
 
+// withDefaults fills what a new chat leaves open from the agent settings.
+func (c *Client) withDefaults(r *ChatRequest) {
+	if r.Agent == "" {
+		r.Agent = c.cfg.Agents.Agent()
+	}
+	model, effort, mode := c.cfg.Agents.For(r.Agent)
+	if r.Model == "" {
+		r.Model = model
+	}
+	if r.Effort == "" {
+		r.Effort = effort
+	}
+	if r.Mode == "" {
+		r.Mode = mode
+	}
+}
+
 // chatSpec is the first chat of a new session, as the create carries it.
 func chatSpec(r *ChatRequest) (*driver.ChatSpec, error) {
 	if r == nil {
@@ -95,6 +112,7 @@ func (c *Client) CreateChat(ctx context.Context, s Session, r ChatRequest) (stri
 	if s.State == driver.StateParked {
 		return "", ErrParked
 	}
+	c.withDefaults(&r)
 	if err := r.check(); err != nil {
 		return "", err
 	}

@@ -23,6 +23,7 @@ type Config struct {
 	GCP           GCP     `toml:"gcp"`
 	Pool          Pool    `toml:"pool"`
 	Speed         Speed   `toml:"speed"`
+	Agents        Agents  `toml:"agents"`
 	Theme         string  `toml:"theme,omitempty"` // accent color; see Themes
 	Secrets       Secrets `toml:"secrets"`
 	// Images records what each repo's session image was baked from — when,
@@ -51,6 +52,33 @@ func (c *Config) UnlinkCheckout(root string) { delete(c.Checkouts, root) }
 // Speed holds the two settings a speed profile presets (pool size and bake
 // reminders), plus how images
 // are built and when pier suggests rebuilding them.
+// Agents are how new chats start unless told otherwise.
+type Agents struct {
+	Default      string `toml:"default,omitempty"` // claude | codex
+	ClaudeModel  string `toml:"claude_model,omitempty"`
+	ClaudeEffort string `toml:"claude_effort,omitempty"`
+	ClaudeMode   string `toml:"claude_mode,omitempty"`
+	CodexModel   string `toml:"codex_model,omitempty"`
+	CodexEffort  string `toml:"codex_effort,omitempty"`
+	CodexMode    string `toml:"codex_mode,omitempty"`
+}
+
+// For is an agent's defaults: model, effort, permission mode.
+func (a Agents) For(agent string) (model, effort, mode string) {
+	if agent == "codex" {
+		return a.CodexModel, a.CodexEffort, a.CodexMode
+	}
+	return a.ClaudeModel, a.ClaudeEffort, a.ClaudeMode
+}
+
+// Agent is the agent new chats use.
+func (a Agents) Agent() string {
+	if a.Default == "codex" {
+		return "codex"
+	}
+	return "claude"
+}
+
 type Speed struct {
 	// PoolSize is how many parked, setup-complete sessions pier keeps in each
 	// baked repo's pool (a repo's own entry in pool.sizes overrides it).
@@ -558,6 +586,7 @@ var Groups = []struct{ Key, Title string }{
 	{"cloud", "Cloud"},
 	{"sessions", "New sessions"},
 	{"idle", "Idle & cost"},
+	{"agents", "Agents"},
 	{"speed", "Speed"},
 	{"app", "Appearance"},
 }
@@ -657,6 +686,69 @@ var Settings = []Field{
 		Key: "unattended_cap", Group: "idle", Label: "runaway cap", Hint: "park even while the agent keeps working",
 		Kind: KindChoice, Options: capOpts, Default: "8h",
 		Detail: "Parks a session even while the agent is busy, once you've been detached this long — a looping agent can't burn compute for days.\n--cap overrides one create.",
+	},
+	{
+		Key: "agents.default", Group: "agents", Label: "agent", Hint: "who new chats talk to",
+		Kind: KindChoice, NoCustom: true, Default: "claude",
+		Options: []Option{
+			{Value: "claude", Label: "Claude", Desc: "Claude Code"},
+			{Value: "codex", Label: "Codex", Desc: "OpenAI Codex"},
+		},
+		Detail: "New chats — in the app, and `pier <branch> -p` on the command line — start with this agent unless you pick another.",
+	},
+	{
+		Key: "agents.claude_model", Group: "agents", Label: "Claude model", Hint: "model new Claude chats run",
+		Kind: KindChoice, Empty: "account default",
+		Options: []Option{
+			{Value: "opus", Label: "Opus", Desc: "for complex work"},
+			{Value: "sonnet", Label: "Sonnet", Desc: "efficient for most tasks"},
+			{Value: "haiku", Label: "Haiku", Desc: "fastest"},
+		},
+		Detail: "Any model name claude takes (--model). Empty: what your account defaults to. A chat can switch models as it goes.",
+	},
+	{
+		Key: "agents.claude_effort", Group: "agents", Label: "Claude effort", Hint: "how hard it thinks",
+		Kind: KindChoice, NoCustom: true, Empty: "model default",
+		Options: []Option{
+			{Value: "", Label: "model default"},
+			{Value: "low"}, {Value: "medium"}, {Value: "high"}, {Value: "xhigh"}, {Value: "max"},
+		},
+		Detail: "More effort thinks longer before acting: slower and costlier, better on hard problems.",
+	},
+	{
+		Key: "agents.claude_mode", Group: "agents", Label: "Claude permissions", Hint: "what it does without asking",
+		Kind: KindChoice, NoCustom: true, Default: "default",
+		Options: []Option{
+			{Value: "default", Label: "ask", Desc: "asks before edits and commands it isn't sure are safe"},
+			{Value: "acceptEdits", Label: "accept edits", Desc: "edits without asking, asks before commands"},
+			{Value: "plan", Label: "plan", Desc: "plans first, changes nothing until you approve"},
+			{Value: "bypassPermissions", Label: "bypass", Desc: "runs everything without asking"},
+		},
+		Detail: "Sessions are machines of their own, so a careless command can't reach your laptop — but it can still push, publish or delete within the session.",
+	},
+	{
+		Key: "agents.codex_model", Group: "agents", Label: "Codex model", Hint: "model new Codex chats run",
+		Kind: KindText, Empty: "account default",
+		Detail: "Any model name codex takes (-m). Empty: what your account defaults to.",
+	},
+	{
+		Key: "agents.codex_effort", Group: "agents", Label: "Codex effort", Hint: "how hard it reasons",
+		Kind: KindChoice, NoCustom: true, Empty: "model default",
+		Options: []Option{
+			{Value: "", Label: "model default"},
+			{Value: "minimal"}, {Value: "low"}, {Value: "medium"}, {Value: "high"}, {Value: "xhigh"},
+		},
+		Detail: "More effort reasons longer before acting.",
+	},
+	{
+		Key: "agents.codex_mode", Group: "agents", Label: "Codex permissions", Hint: "what it does without asking",
+		Kind: KindChoice, NoCustom: true, Default: "default",
+		Options: []Option{
+			{Value: "readOnly", Label: "read only", Desc: "reads and answers, asks before changing anything"},
+			{Value: "default", Label: "auto", Desc: "works in the repo and the network, asks before anything else"},
+			{Value: "plan", Label: "plan", Desc: "plans first, changes nothing until you approve"},
+			{Value: "bypassPermissions", Label: "full access", Desc: "runs everything without asking"},
+		},
 	},
 	{
 		Key: "speed.profile", Group: "speed", Label: "profile", Hint: "preset for the two rows below",
@@ -766,6 +858,26 @@ func Get(c Config, key string) string {
 		return strconv.FormatBool(c.Speed.AutoRefill)
 	case "speed.reminder_age":
 		return c.Speed.ReminderAge
+	case "agents.default":
+		return c.Agents.Agent()
+	case "agents.claude_model":
+		return c.Agents.ClaudeModel
+	case "agents.claude_effort":
+		return c.Agents.ClaudeEffort
+	case "agents.claude_mode":
+		if c.Agents.ClaudeMode == "" {
+			return "default"
+		}
+		return c.Agents.ClaudeMode
+	case "agents.codex_model":
+		return c.Agents.CodexModel
+	case "agents.codex_effort":
+		return c.Agents.CodexEffort
+	case "agents.codex_mode":
+		if c.Agents.CodexMode == "" {
+			return "default"
+		}
+		return c.Agents.CodexMode
 	}
 	return ""
 }
@@ -907,6 +1019,45 @@ func Set(c *Config, key, val string) error {
 			return fmt.Errorf("speed.reminder_age: %v, or never", err)
 		}
 		c.Speed.ReminderAge = val
+	case "agents.default":
+		switch val = strings.ToLower(strings.TrimSpace(val)); val {
+		case "claude", "codex":
+			c.Agents.Default = val
+		default:
+			return fmt.Errorf("agents.default: want claude or codex (got %q)", val)
+		}
+	case "agents.claude_model", "agents.codex_model":
+		val = strings.TrimSpace(val)
+		if strings.ContainsAny(val, " \t\n'\"`$;|&") {
+			return fmt.Errorf("%s: a model name has no spaces or shell characters (got %q)", key, val)
+		}
+		if key == "agents.claude_model" {
+			c.Agents.ClaudeModel = val
+		} else {
+			c.Agents.CodexModel = val
+		}
+	case "agents.claude_effort", "agents.codex_effort":
+		val = strings.TrimSpace(val)
+		ok := map[string]bool{"": true, "minimal": key == "agents.codex_effort", "low": true, "medium": true, "high": true, "xhigh": true, "max": key == "agents.claude_effort"}
+		if !ok[val] {
+			return fmt.Errorf("%s: not an effort this agent has (got %q)", key, val)
+		}
+		if key == "agents.claude_effort" {
+			c.Agents.ClaudeEffort = val
+		} else {
+			c.Agents.CodexEffort = val
+		}
+	case "agents.claude_mode", "agents.codex_mode":
+		val = strings.TrimSpace(val)
+		modes := map[string]bool{"default": true, "plan": true, "bypassPermissions": true, "acceptEdits": key == "agents.claude_mode", "readOnly": key == "agents.codex_mode"}
+		if !modes[val] {
+			return fmt.Errorf("%s: not a permission mode this agent has (got %q)", key, val)
+		}
+		if key == "agents.claude_mode" {
+			c.Agents.ClaudeMode = val
+		} else {
+			c.Agents.CodexMode = val
+		}
 	default:
 		keys := make([]string, len(Settings))
 		for i, s := range Settings {
