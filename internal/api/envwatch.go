@@ -44,6 +44,7 @@ func init() {
 						}
 						e, err := pier.ParseEnv(data)
 						if err != nil {
+							s.logf("environment of %s: %v", sess.Name, err)
 							return
 						}
 						if !sent {

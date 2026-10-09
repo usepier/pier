@@ -246,7 +246,9 @@ func (h *chatHost) reapTakeovers() {
 	}
 	h.mu.Unlock()
 	for _, id := range ended {
-		h.endTakeover(id)
+		if err := h.endTakeover(id); err != nil {
+			fmt.Println("pier-supervisor: chat", id, "back from the terminal:", err)
+		}
 	}
 }
 

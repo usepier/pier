@@ -29,7 +29,7 @@ type codexServer struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	in      io.WriteCloser
-	done    chan struct{}
+	done    <-chan struct{}
 	next    int64
 	calls   map[int64]chan rpcResult
 	threads map[string]*codexThread // by thread id
@@ -108,29 +108,24 @@ func (s *codexServer) start() error {
 	if err != nil {
 		return err
 	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
 	stderr := newTailBuffer(filepath.Join(s.h.home, ".pier", "codex-app-server.log"))
 	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	done := make(chan struct{})
+	// Held until the server is recorded, so its exit is never handled
+	// before it is.
 	s.mu.Lock()
-	s.cmd, s.in, s.done, s.stderr, s.active = cmd, in, done, stderr, time.Now()
-	s.mu.Unlock()
-	go s.read(out)
-	go func() {
-		err := cmd.Wait()
-		close(done)
+	done, err := startPiped(cmd, s.read, func(err error) {
 		why := stderr.tail()
 		if err != nil && why == "" {
 			why = err.Error()
 		}
 		s.exited(why)
-	}()
+	})
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.cmd, s.in, s.done, s.stderr, s.active = cmd, in, done, stderr, time.Now()
+	s.mu.Unlock()
 	if _, err := s.call("initialize", map[string]any{
 		"clientInfo":   map[string]any{"name": "pier", "title": "pier", "version": "1"},
 		"capabilities": map[string]any{"experimentalApi": true},

@@ -65,6 +65,9 @@ type Options struct {
 	Out io.Writer
 	// Notify receives one-off transport notices ("using the ssm tunnel").
 	Notify func(string)
+	// Log receives diagnostics nobody is waiting on (a copy kept for a
+	// parked session that couldn't be written). nil discards them.
+	Log func(format string, args ...any)
 	// Mux keeps one multiplexed ssh connection per session for long-lived
 	// frontends (the api, the app): terminals and streams open one, and
 	// status reads ride whatever is open. Close the client when done.
@@ -146,6 +149,13 @@ func (c *Client) exec(ctx context.Context, id, script string) (string, error) {
 		}
 	}
 	return c.drv.Exec(ctx, id, script)
+}
+
+// logf reports a diagnostic, if anyone listens.
+func (c *Client) logf(format string, args ...any) {
+	if c.opts.Log != nil {
+		c.opts.Log(format, args...)
+	}
 }
 
 // Forget closes a session's connection (it parked or was removed).

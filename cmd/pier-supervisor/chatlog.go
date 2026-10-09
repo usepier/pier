@@ -79,24 +79,28 @@ func (l *chatLog) changed() {
 }
 
 // put appends items.
-func (l *chatLog) put(items ...wire.ChatItem) error {
+// put appends items to the log. A write that fails (a full disk) is said
+// in the supervisor's log: the chat goes on, missing what didn't land.
+func (l *chatLog) put(items ...wire.ChatItem) {
 	if len(items) == 0 {
-		return nil
+		return
 	}
 	var b bytes.Buffer
 	for _, it := range items {
 		line, err := json.Marshal(it)
 		if err != nil {
-			return err
+			fmt.Println("pier-supervisor: chat log", l.dir+":", err)
+			continue
 		}
 		b.Write(line)
 		b.WriteByte('\n')
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, err := l.f.Write(b.Bytes())
+	if _, err := l.f.Write(b.Bytes()); err != nil {
+		fmt.Println("pier-supervisor: chat log", l.dir+":", err)
+	}
 	l.changed()
-	return err
 }
 
 func (l *chatLog) close() {

@@ -8,12 +8,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // checkoutDir is the session's checkout (~/work/<repo>); home when there is
@@ -150,4 +152,47 @@ func killGroup(cmd *exec.Cmd) {
 		return
 	}
 	killTree(cmd.Process.Pid)
+}
+
+// drainWait is how long an agent's output may stay open after it exits
+// (a process it left behind holding it) before it is closed.
+const drainWait = 5 * time.Second
+
+// startPiped starts an agent program whose stdout read consumes, and once
+// it has exited and everything it wrote has been read, calls exited with
+// how it ended, then closes the channel it returns: a closed channel means
+// the exit is fully handled.
+func startPiped(cmd *exec.Cmd, read func(io.Reader), exited func(error)) (<-chan struct{}, error) {
+	// A pipe of our own, not StdoutPipe: Wait would close that one under a
+	// reader still draining it.
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stdout = w
+	if err := cmd.Start(); err != nil {
+		r.Close()
+		w.Close()
+		return nil, err
+	}
+	w.Close()
+	drained := make(chan struct{})
+	go func() {
+		read(r)
+		close(drained)
+	}()
+	done := make(chan struct{})
+	go func() {
+		err := cmd.Wait()
+		select {
+		case <-drained:
+		case <-time.After(drainWait):
+			r.Close()
+			<-drained
+		}
+		r.Close()
+		exited(err)
+		close(done)
+	}()
+	return done, nil
 }

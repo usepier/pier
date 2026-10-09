@@ -247,18 +247,26 @@ func (c *Client) Models(ctx context.Context, s *Session, agent string) (wire.Age
 	out := wire.AgentModels{Agent: agent, Modes: AgentModes(agent)}
 	if s != nil && s.State != driver.StateParked {
 		raw, err := c.Op(ctx, *s, "models", map[string]string{"agent": agent})
+		var r struct {
+			Models []wire.ModelInfo `json:"models"`
+		}
 		if err == nil {
-			var r struct {
-				Models []wire.ModelInfo `json:"models"`
+			err = json.Unmarshal(raw, &r)
+		}
+		if err == nil && len(r.Models) > 0 {
+			out.Models = r.Models
+			b, _ := json.Marshal(r.Models)
+			err := os.MkdirAll(filepath.Dir(modelsPath(agent)), 0o700)
+			if err == nil {
+				err = writeFileAtomic(modelsPath(agent), b)
 			}
-			if json.Unmarshal(raw, &r) == nil && len(r.Models) > 0 {
-				out.Models = r.Models
-				if b, err := json.Marshal(r.Models); err == nil {
-					_ = os.MkdirAll(filepath.Dir(modelsPath(agent)), 0o700)
-					_ = writeFileAtomic(modelsPath(agent), b)
-				}
-				return out, nil
+			if err != nil {
+				c.logf("keeping %s's models: %v", agent, err)
 			}
+			return out, nil
+		}
+		if err != nil {
+			c.logf("%s's models from %s: %v — using the last known", agent, s.Name, err)
 		}
 	}
 	if b, err := os.ReadFile(modelsPath(agent)); err == nil {

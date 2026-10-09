@@ -162,7 +162,9 @@ func init() {
 	})
 	clientNote("term.resize", "A terminal's new size.", func(s *Server, p wire.TermSize) {
 		if tm := s.terminal(p.TermID); tm != nil {
-			tm.t.Resize(p.Cols, p.Rows)
+			if err := tm.t.Resize(p.Cols, p.Rows); err != nil {
+				s.logf("resizing terminal %s: %v", p.TermID, err)
+			}
 		}
 	})
 	clientNote("term.ack", "How much terminal output the client has rendered.", func(s *Server, p wire.TermAck) {

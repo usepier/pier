@@ -530,11 +530,7 @@ func (h *chatHost) apply(c *chatState, ev chat.Event) {
 	for _, ch := range ev.Changes {
 		items = append(items, ch.Item)
 	}
-	if len(items) > 0 {
-		if err := c.log.put(items...); err != nil {
-			fmt.Println("pier-supervisor: chat log:", err)
-		}
-	}
+	c.log.put(items...)
 	h.mu.Lock()
 	for _, it := range items {
 		delete(c.streaming, it.ID)

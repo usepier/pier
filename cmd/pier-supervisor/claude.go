@@ -33,7 +33,7 @@ type claudeProc struct {
 	wmu    sync.Mutex
 	in     io.WriteCloser
 	stream *chat.ClaudeStream
-	done   chan struct{}
+	done   <-chan struct{}
 	stderr *tailBuffer
 
 	mu  sync.Mutex
@@ -87,27 +87,20 @@ func startClaude(h *chatHost, c *chatState) (agentProc, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	p := &claudeProc{h: h, c: c, cmd: cmd, in: in, stream: chat.NewClaudeStream(newOpID() + "-"), done: make(chan struct{}),
+	p := &claudeProc{h: h, c: c, cmd: cmd, in: in, stream: chat.NewClaudeStream(newOpID() + "-"),
 		stderr: newTailBuffer(filepath.Join(c.dir, "agent.log")), ctl: map[string]chan ctlResult{},
 		model: rec.Model, effort: rec.Effort, mode: rec.Mode}
 	cmd.Stderr = p.stderr
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	go p.read(out)
-	go func() {
-		err := cmd.Wait()
-		close(p.done)
+	p.done, err = startPiped(cmd, p.read, func(err error) {
 		why := p.stderr.tail()
 		if err != nil && why == "" {
 			why = err.Error()
 		}
 		h.exited(c, p, why)
-	}()
+	})
+	if err != nil {
+		return nil, err
+	}
 	// The handshake: it answers once it is ready, and says which models it
 	// offers.
 	res, err := p.request(map[string]any{"subtype": "initialize"}, time.Minute)

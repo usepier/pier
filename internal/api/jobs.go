@@ -130,10 +130,19 @@ func init() {
 				seen = append(seen, wireEvent(e))
 			}
 			if j.State == pier.JobRunning {
-				go pier.FollowJob(ctx, p.ID, off, func(e pier.Event) {
-					cur, _ := pier.JobByID(p.ID)
-					sub.Emit(wire.JobUpdate{Job: wireJob(cur), Events: []wire.Event{wireEvent(e)}})
-				})
+				go func() {
+					err := pier.FollowJob(ctx, p.ID, off, func(e pier.Event) {
+						cur, err := pier.JobByID(p.ID)
+						if err != nil {
+							s.logf("job %s: %v", p.ID, err)
+							return
+						}
+						sub.Emit(wire.JobUpdate{Job: wireJob(cur), Events: []wire.Event{wireEvent(e)}})
+					})
+					if err != nil && ctx.Err() == nil {
+						s.logf("following job %s: %v", p.ID, err)
+					}
+				}()
 			}
 			return wire.JobUpdate{Job: wireJob(j), Events: seen}, nil
 		})

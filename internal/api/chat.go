@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -134,23 +135,31 @@ func chatsCache(sessionID string) string {
 	return filepath.Join(pier.MirrorDir(sessionID), "chats.json")
 }
 
-func loadChats(sessionID string) []wire.ChatInfo {
+func loadChats(sessionID string) ([]wire.ChatInfo, error) {
 	b, err := os.ReadFile(chatsCache(sessionID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []wire.ChatInfo
-	_ = json.Unmarshal(b, &out)
-	return out
+	return out, json.Unmarshal(b, &out)
 }
 
-func saveChats(sessionID string, chats []wire.ChatInfo) {
-	b, _ := json.Marshal(chats)
-	_ = os.MkdirAll(pier.MirrorDir(sessionID), 0o700)
-	tmp := chatsCache(sessionID) + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		_ = os.Rename(tmp, chatsCache(sessionID))
+func saveChats(sessionID string, chats []wire.ChatInfo) error {
+	b, err := json.Marshal(chats)
+	if err != nil {
+		return err
 	}
+	if err := os.MkdirAll(pier.MirrorDir(sessionID), 0o700); err != nil {
+		return err
+	}
+	tmp := chatsCache(sessionID) + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, chatsCache(sessionID))
 }
 
 type chatListener struct {
@@ -195,7 +204,11 @@ func (s *Server) follower(id string) (*chatFollower, func(), error) {
 		ctx, cancel := context.WithCancel(s.root)
 		f = &chatFollower{s: s, id: id, feeds: map[string]*chatFeed{}, streaming: map[string]map[string]*wire.ChatItem{},
 			listeners: map[int]chatListener{}, lists: map[int]func(wire.ChatsChange){}, cancel: cancel, ready: make(chan struct{})}
-		f.chats = loadChats(id)
+		chats, err := loadChats(id)
+		if err != nil {
+			s.logf("chat list of %s: %v", id, err)
+		}
+		f.chats = chats
 		for _, c := range f.chats {
 			if err := f.openFeed(c.ID); err != nil {
 				s.logf("chat %s/%s: %v", id, c.ID, err)
@@ -400,7 +413,9 @@ func (f *chatFollower) setChats(sess pier.Session, chats []wire.ChatInfo, fromSt
 		f.again = true
 	}
 	f.mu.Unlock()
-	saveChats(f.id, chats)
+	if err := saveChats(f.id, chats); err != nil {
+		f.s.logf("keeping the chat list of %s: %v", sess.Name, err)
+	}
 	for _, c := range chats {
 		f.s.notices.chat(sess, c)
 	}
@@ -516,6 +531,7 @@ func (f *chatFollower) onEvent(sess pier.Session, ev string, data json.RawMessag
 	case "chats":
 		chats, err := pier.ParseChats(data)
 		if err != nil {
+			f.s.logf("chats of %s: %v", sess.Name, err)
 			return
 		}
 		f.setLive(true)
@@ -523,7 +539,8 @@ func (f *chatFollower) onEvent(sess pier.Session, ev string, data json.RawMessag
 		f.markReady()
 	case "log":
 		var ch pier.LogChunk
-		if json.Unmarshal(data, &ch) != nil {
+		if err := json.Unmarshal(data, &ch); err != nil {
+			f.s.logf("a chat log of %s: %v", sess.Name, err)
 			return
 		}
 		f.mu.Lock()
@@ -536,7 +553,9 @@ func (f *chatFollower) onEvent(sess pier.Session, ev string, data json.RawMessag
 		if err != nil {
 			// Start the copy over: the next follow sends it all.
 			f.s.logf("chat %s/%s: %v — reading its log again", sess.Name, ch.Chat, err)
-			feed.mirror.Reset()
+			if err := feed.mirror.Reset(); err != nil {
+				f.s.logf("chat %s/%s: starting the copy over: %v", sess.Name, ch.Chat, err)
+			}
 			feed.reset(nil)
 			f.gap = true
 			f.mu.Unlock()

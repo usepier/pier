@@ -81,7 +81,7 @@ func (c *Client) Changes(ctx context.Context, s Session) (gitview.Changes, error
 	if err := c.query(ctx, s, "repo.changes", nil, &ch); err != nil {
 		return gitview.Changes{}, err
 	}
-	cacheJSON(s.ID, "changes.json", ch)
+	c.cacheJSON(s.ID, "changes.json", ch)
 	return ch, nil
 }
 
@@ -156,7 +156,7 @@ func (c *Client) KeepSnapshot(ctx context.Context, s Session, next GitState) err
 	if _, ok := readCachedJSON(s.ID, "kept.json", &k); ok {
 		prev = &k
 	}
-	cacheJSON(s.ID, "changes.json", next.Changes)
+	c.cacheJSON(s.ID, "changes.json", next.Changes)
 	old := map[string]gitview.File{}
 	if prev != nil && prev.Changes != nil {
 		for _, f := range prev.Changes.Files {
@@ -200,7 +200,7 @@ func (c *Client) KeepSnapshot(ctx context.Context, s Session, next GitState) err
 		}
 		for p, fc := range r.Files {
 			if fc.Size <= maxKeptFile && !fc.TooLarge {
-				cacheJSON(s.ID, filepath.Join("files", pathKey(p)+".json"), fc)
+				c.cacheJSON(s.ID, filepath.Join("files", pathKey(p)+".json"), fc)
 			}
 		}
 	}
@@ -211,7 +211,7 @@ func (c *Client) KeepSnapshot(ctx context.Context, s Session, next GitState) err
 			return err
 		}
 	}
-	cacheJSON(s.ID, "kept.json", kept{Changes: next.Changes, Stamps: next.Stamps})
+	c.cacheJSON(s.ID, "kept.json", kept{Changes: next.Changes, Stamps: next.Stamps})
 	return nil
 }
 
@@ -236,7 +236,7 @@ func (c *Client) Diff(ctx context.Context, s Session, f gitview.File, context in
 		return "", false, err
 	}
 	if context == 0 {
-		cacheFile(s.ID, diffName(f.Path), []byte(r.Patch))
+		c.cacheFile(s.ID, diffName(f.Path), []byte(r.Patch))
 	}
 	return r.Patch, r.Truncated, nil
 }
@@ -255,7 +255,7 @@ func (c *Client) Diffs(ctx context.Context, s Session, files []gitview.File) (ma
 		return nil, err
 	}
 	for p, patch := range r.Patches {
-		cacheFile(s.ID, diffName(p), []byte(patch))
+		c.cacheFile(s.ID, diffName(p), []byte(patch))
 	}
 	return r.Patches, nil
 }
@@ -365,7 +365,7 @@ func (c *Client) ListFiles(ctx context.Context, s Session) (paths []string, trun
 	if err := c.query(ctx, s, "repo.list", nil, &r); err != nil {
 		return nil, false, err
 	}
-	cacheJSON(s.ID, "files.json", r)
+	c.cacheJSON(s.ID, "files.json", r)
 	return r.Paths, r.Truncated, nil
 }
 
@@ -470,17 +470,26 @@ func pathKey(p string) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func cacheFile(sessionID, name string, b []byte) {
+// cacheFile keeps a copy of something read from a session, for when it is
+// parked; a copy that can't be written is logged and skipped.
+func (c *Client) cacheFile(sessionID, name string, b []byte) {
 	p := filepath.Join(MirrorDir(sessionID), name)
-	if os.MkdirAll(filepath.Dir(p), 0o700) == nil {
-		_ = writeFileAtomic(p, b)
+	err := os.MkdirAll(filepath.Dir(p), 0o700)
+	if err == nil {
+		err = writeFileAtomic(p, b)
+	}
+	if err != nil {
+		c.logf("keeping %s of %s: %v", name, sessionID, err)
 	}
 }
 
-func cacheJSON(sessionID, name string, v any) {
-	if b, err := json.Marshal(v); err == nil {
-		cacheFile(sessionID, name, b)
+func (c *Client) cacheJSON(sessionID, name string, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		c.logf("keeping %s of %s: %v", name, sessionID, err)
+		return
 	}
+	c.cacheFile(sessionID, name, b)
 }
 
 func cachedExists(sessionID, name string) bool {
