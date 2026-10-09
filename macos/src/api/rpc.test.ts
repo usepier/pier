@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Disconnected, Rpc, RpcError } from "./rpc";
+import { compatible, Disconnected, Rpc, RpcError } from "./rpc";
 import type { Transport } from "./transport";
 
 /** A transport whose server side the test plays. */
@@ -35,6 +35,32 @@ async function connected() {
   await rpc.start();
   return { t, rpc };
 }
+
+describe("compatible", () => {
+  it("holds a release app to the pier released with it", () => {
+    expect(compatible("1.2.0", "v1.2")).toBe(true);
+    expect(compatible("1.2.0", "v1.2.0")).toBe(true);
+    expect(compatible("1.2.0", "v1.1.0")).toBe(false);
+    expect(compatible("dev", "v1.1.0")).toBe(true);
+    expect(compatible("1.2.0", "v1.1.0-4-gabc123")).toBe(true);
+  });
+
+  it("stops at an incompatible pier instead of restarting it", async () => {
+    const t = new FakeTransport();
+    const rpc = new Rpc(() => t, { name: "test", version: "2.0.0" });
+    t.send = async (line: string) => {
+      const m = JSON.parse(line);
+      t.sent.push(m);
+      if (m.method === "initialize")
+        t.reply(m.id, { protocol: 1, version: "v1.9.0", configured: true, cloud: "AWS" });
+    };
+    await rpc.start();
+    expect(rpc.status).toBe("incompatible");
+    expect(rpc.lastExit).toContain("v1.9.0");
+    t.onExit("stopped");
+    expect(rpc.status).toBe("incompatible");
+  });
+});
 
 describe("Rpc", () => {
   it("initializes, then answers calls by id", async () => {

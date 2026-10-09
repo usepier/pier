@@ -35,7 +35,21 @@ export class Disconnected extends RpcError {
   }
 }
 
-export type Status = "starting" | "ready" | "restarting" | "failed";
+/** incompatible: the pier answering isn't the one this app was built with. */
+export type Status = "starting" | "ready" | "restarting" | "failed" | "incompatible";
+
+/** A release version without its v and with its patch: "v1.2" → "1.2.0"; undefined for a dev build. */
+function release(v: string): string | undefined {
+  const m = /^v?(\d+)\.(\d+)(?:\.(\d+))?$/.exec(v);
+  return m ? `${m[1]}.${m[2]}.${m[3] ?? 0}` : undefined;
+}
+
+/** A release app runs only the pier released with it; dev builds run any. */
+export function compatible(app: string, pier: string): boolean {
+  const a = release(app);
+  const p = release(pier);
+  return !a || !p || a === p;
+}
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -149,6 +163,14 @@ export class Rpc {
       });
       if (this.info.protocol !== PROTOCOL_VERSION) {
         throw new Error(`pier speaks protocol ${this.info.protocol}, the app ${PROTOCOL_VERSION}`);
+      }
+      if (!compatible(this.client.version, this.info.version)) {
+        // Starting it again won't change which pier answers.
+        this.transport = null;
+        void t.stop();
+        this.lastExit = `This app is ${this.client.version} but the pier it runs is ${this.info.version}`;
+        this.setStatus("incompatible");
+        return;
       }
       this.setStatus("ready");
       for (const w of this.watches) void w.open();

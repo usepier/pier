@@ -12,6 +12,13 @@ export function ConnectionBanner() {
   if (status === "restarting") {
     return <Banner tone="warn">pier stopped — restarting…</Banner>;
   }
+  if (status === "incompatible") {
+    return (
+      <Banner tone="bad">
+        {rpc.lastExit}. They ship together and must match — install Pier again to fix it.
+      </Banner>
+    );
+  }
   return (
     <>
       <Banner
