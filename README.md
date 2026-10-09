@@ -249,7 +249,7 @@ pier repos [--json]       every repo: session image, pool, idle cost, tips
 pier bake                 build this repo's session image (repo prebuilt by default)
     --toolchain-only      keep repo state out of the image for this bake
 pier pool                 this repo's pool (set <n> | fill | drain [repo])
-pier proxy                every running session as <session>.pier (macOS)
+pier proxy                every running session as <session>.pier (macOS); start | stop | status | forget
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
 pier setup [--skills]     first-time setup; --skills only refreshes the agent skill
 pier doctor [--json]      environment + account checks
@@ -440,7 +440,11 @@ proxy up — running sessions resolve as <session>.pier (http + https), ports mi
   It persists on disk, so a proxy restart starts warm too.
 - A live connection counts as attachment, so a session never parks under
   your open browser tab.
-- One sudo on first run. macOS only for now.
+- One sudo, the first time ever: a boot task puts the addresses back
+  after a restart. `pier proxy forget` removes the setup.
+- `pier proxy start` runs it in the background instead (`status`, `stop`).
+  There is only ever one: the app and the command share it.
+- macOS only for now.
 - `pier port <session> 3000` is the manual, zero-sudo fallback everywhere.
 
 ### `pier bake`: per-repo prebuilt images

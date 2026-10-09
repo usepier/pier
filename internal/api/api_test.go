@@ -370,12 +370,7 @@ func (f *fake) RerunChecks(context.Context, pier.Session, int64) error { return 
 func (f *fake) CheckLog(context.Context, pier.Session, int64, int) (string, error) {
 	return "--- FAIL: TestLogin", nil
 }
-func (f *fake) GitHubLimit() github.RateLimit { return github.RateLimit{} }
-func (f *fake) RunProxy(ctx context.Context, _ func(string) error, onChange func(pier.ProxyStatus)) error {
-	onChange(pier.ProxyStatus{Sessions: []pier.ProxySession{{ID: "i-1", Name: "fix", Ports: []int{3000}}}})
-	<-ctx.Done()
-	return nil
-}
+func (f *fake) GitHubLimit() github.RateLimit                             { return github.RateLimit{} }
 func (f *fake) ForwardPort(context.Context, pier.Session, int, int) error { return nil }
 func (f *fake) UnforwardPort(pier.Session, int, int) error                { return nil }
 func (f *fake) ContainerAction(_ context.Context, _ pier.Session, c, action string) error {
@@ -415,7 +410,7 @@ func start(t *testing.T, f *fake) *client {
 	c := &client{t: t, in: inW, msgs: make(chan map[string]any, 100), done: make(chan error, 1)}
 	go func() {
 		c.done <- Serve(context.Background(), Options{
-			In: inR, Out: outW, Version: "test",
+			In: inR, Out: outW, Version: "test", Proxy: &fakeProxy{},
 			Open: func() (Backend, error) {
 				if f == nil {
 					return nil, fmt.Errorf("%w at /x — run `pier setup` first", config.ErrNoConfig)

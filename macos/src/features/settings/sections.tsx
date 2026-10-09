@@ -413,7 +413,9 @@ function useMoreSections(): { sections: Section[]; sheet: React.ReactNode } {
           title: proxy?.running
             ? `On — ${proxy.sessions.length} running session${proxy.sessions.length === 1 ? "" : "s"}`
             : "Off",
-          description: proxy?.error || "The first start asks for an administrator's password, once.",
+          description:
+            proxy?.error ||
+            "It runs in the background, shared with the pier command, and keeps running after pier quits. The first start asks for an administrator's password, once.",
           text: "proxy names dns ports pier",
           control: (
             <Button
@@ -447,6 +449,32 @@ function useMoreSections(): { sections: Section[]; sheet: React.ReactNode } {
               },
             ]
           : []),
+        {
+          id: "proxyForget",
+          title: "Remove the local setup",
+          description:
+            "Stops the proxy and takes its resolver, boot task and loopback addresses off this Mac. Turning it on again sets them up again.",
+          text: "proxy remove forget resolver uninstall",
+          control: (
+            <Button
+              size="sm"
+              variant="plain"
+              onPress={async () => {
+                if (
+                  !(await confirm(
+                    "Remove the local setup?",
+                    "Sessions stop answering at <session>.pier until the proxy is turned on again.",
+                    { ok: "Remove" },
+                  ))
+                )
+                  return;
+                if ((await attempt(() => rpc.call("proxy.forget", {}))) !== undefined) toast("Removed", "ok");
+              }}
+            >
+              Remove…
+            </Button>
+          ),
+        },
         {
           id: "proxyOnLaunch",
           title: "Turn on when pier opens",

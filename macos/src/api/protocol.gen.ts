@@ -1697,13 +1697,15 @@ export interface Methods {
   "prompts.get": { params: PromptsParams; result: Prompts };
   /** Sets a prompt for a repo, or every repo; empty text falls back again. */
   "prompts.set": { params: PromptSetParams; result: null };
-  /** Serves every running session as <session>.pier with its ports mirrored on this Mac. The first time, macOS asks for an administrator's password (local names and addresses). */
+  /** Stops the proxy and takes its network setup off this Mac (the .pier resolver, the boot task, the loopback addresses); macOS asks for an administrator's password. */
+  "proxy.forget": { params: Empty; result: null };
+  /** Serves every running session as <session>.pier with its ports mirrored on this Mac, from a background proxy shared with `pier proxy` that outlives the app. The first time, macOS asks for an administrator's password (local names and addresses, put back at every boot). */
   "proxy.start": { params: Empty; result: ProxyState };
-  /** Stops the proxy; sessions' names and mirrored ports go away. */
+  /** Stops the proxy, however it was started; sessions' names and mirrored ports go away. */
   "proxy.stop": { params: Empty; result: null };
   /** Makes this Mac trust the proxy's certificate, so https://<session>.pier opens without a warning (macOS asks for the password). */
   "proxy.trustCA": { params: Empty; result: null };
-  /** The proxy's state: running, each session's name and mirrored ports. */
+  /** The proxy's state, whoever started it: running, each session's name and mirrored ports. */
   "proxy.watch": { params: Empty; result: WatchResult<ProxyState> };
   /** What a create from the checkout containing path would carry: branch, HEAD, uncommitted changes, base. */
   "repos.inspect": { params: PathParams; result: CheckoutInfo };

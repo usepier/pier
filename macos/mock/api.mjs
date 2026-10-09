@@ -158,6 +158,9 @@ function edited(id, path, added) {
   emit("git", id, changes(id));
 }
 // What pier asks the agent: its own wording, the user's, a repo's.
+// The machine's proxy, shared with the pier command.
+const proxyState = { running: true, caTrusted: false, sessions: [{ id: "i-01", host: "checkout-flow.pier", ports: [3000], localhost: [3000] }] };
+
 const promptKinds = [
   { key: "fixCI", title: "Fix CI", desc: "Starts the message that sends the failing checks' logs to the agent.", def: "CI is failing on PR #{pr}. Find out why, fix it, and push." },
   { key: "addressComments", title: "Address review comments", desc: "Starts the message that sends the pull request's open review feedback to the agent.", def: "Address the review feedback on PR #{pr}, then push." },
@@ -575,7 +578,27 @@ const handlers = {
     return { created: [], existed: ["security group pier", "instance profile pier"], checks: [{ name: "aws login", status: "ok", detail: "dev" }], skills: [".claude"], adopted: {} };
   },
   "cli.status": () => ({ link: "/usr/local/bin/pier", installed: true }),
-  "proxy.watch": () => ({ sub: openSub("proxy", ""), seq: 0, snapshot: { running: true, caTrusted: false, sessions: [{ id: "i-01", host: "checkout-flow.pier", ports: [3000], localhost: [3000] }] } }),
+  "proxy.start": () => {
+    proxyState.running = true;
+    emit("proxy", "", proxyState);
+    return proxyState;
+  },
+  "proxy.stop": () => {
+    proxyState.running = false;
+    emit("proxy", "", proxyState);
+    return null;
+  },
+  "proxy.forget": () => {
+    proxyState.running = false;
+    emit("proxy", "", proxyState);
+    return null;
+  },
+  "proxy.trustCA": () => {
+    proxyState.caTrusted = true;
+    emit("proxy", "", proxyState);
+    return null;
+  },
+  "proxy.watch": () => ({ sub: openSub("proxy", ""), seq: 0, snapshot: proxyState }),
   "tmux.windows": (p) => windows.get(p.sessionId) ?? [],
   "tmux.newWindow": (p) => {
     const list = windows.get(p.sessionId) ?? [];

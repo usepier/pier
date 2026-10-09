@@ -126,9 +126,8 @@ type PullRequests interface {
 	GitHubLimit() github.RateLimit
 }
 
-// Ports put sessions' ports on this machine: the proxy and forwards.
+// Ports forward sessions' ports to this machine by hand.
 type Ports interface {
-	RunProxy(ctx context.Context, privileged func(script string) error, onChange func(pier.ProxyStatus)) error
 	ForwardPort(ctx context.Context, s pier.Session, local, remote int) error
 	UnforwardPort(s pier.Session, local, remote int) error
 }

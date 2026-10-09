@@ -47,6 +47,8 @@ type Options struct {
 	Log io.Writer
 	// Pier is what setup builds drivers with before any config exists.
 	Pier pier.Options
+	// Proxy is the machine's proxy (nil: the real one).
+	Proxy ProxyControl
 }
 
 // Server is one `pier api` session with one client.
@@ -88,6 +90,9 @@ type Server struct {
 
 // Serve runs a server until its input closes or ctx ends.
 func Serve(ctx context.Context, o Options) error {
+	if o.Proxy == nil {
+		o.Proxy = machineProxy{}
+	}
 	s := &Server{
 		opts:  o,
 		out:   bufio.NewWriter(o.Out),
@@ -133,7 +138,6 @@ func Serve(ctx context.Context, o Options) error {
 	// that ignores cancellation must not keep the process alive.
 	cancel()
 	s.closeTerminals()
-	s.stopProxy()
 	settled := make(chan struct{})
 	go func() {
 		s.overview.stop()

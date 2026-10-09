@@ -8,79 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/usepier/pier/internal/config"
-	"github.com/usepier/pier/internal/proxy"
-)
-
-// Running sessions as <name>.pier on this machine, from a frontend that
-// keeps its own connections (Options.Mux): the proxy rides them instead of
-// opening a second ssh connection per session.
-
-type (
-	ProxyStatus  = proxy.Status
-	ProxySession = proxy.SessionStatus
 )
 
 // ErrAdminCancelled: the administrator prompt was dismissed.
 var ErrAdminCancelled = errors.New("cancelled at the administrator prompt")
-
-// RunProxy serves every running session as <session>.pier, its listening
-// ports mirrored, until ctx ends. privileged runs the one-time network
-// setup with admin rights; onChange gets the proxy's state as it changes.
-func (c *Client) RunProxy(ctx context.Context, privileged func(script string) error, onChange func(ProxyStatus)) error {
-	if c.mux == nil {
-		return errors.New("this client keeps no connections (Options.Mux is off)")
-	}
-	return proxy.Run(ctx, c.drv, proxy.Options{
-		StateDir: config.Dir(), Connect: c.proxyLink, Privileged: privileged, OnChange: onChange,
-	})
-}
-
-// muxLink is a session's connection, as the proxy uses it. Each use asks
-// the manager again, so a connection made anew after a drop is picked up.
-type muxLink struct {
-	c  *Client
-	id string
-}
-
-func (c *Client) proxyLink(ctx context.Context, id string) (proxy.Link, error) {
-	if _, err := c.mux.Conn(ctx, id); err != nil {
-		return nil, err
-	}
-	return &muxLink{c, id}, nil
-}
-
-func (l *muxLink) Exec(ctx context.Context, script string) ([]byte, error) {
-	conn, err := l.c.mux.Conn(ctx, l.id)
-	if err != nil {
-		return nil, err
-	}
-	conn.Busy()
-	return conn.Exec(ctx, script, nil)
-}
-
-func (l *muxLink) Forward(spec string) error {
-	conn := l.c.mux.Existing(l.id)
-	if conn == nil {
-		return errors.New("the session's connection is gone")
-	}
-	return conn.Forward("-L", spec)
-}
-
-func (l *muxLink) Cancel(spec string) error {
-	if conn := l.c.mux.Existing(l.id); conn != nil {
-		return conn.Cancel("-L", spec)
-	}
-	return nil
-}
-
-func (l *muxLink) Generation() int {
-	if conn := l.c.mux.Existing(l.id); conn != nil {
-		return conn.Generation()
-	}
-	return -1
-}
 
 // ForwardPort forwards 127.0.0.1:local to the session's localhost:remote
 // over its connection — `pier port`, for a frontend. It lasts as long as

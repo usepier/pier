@@ -310,7 +310,7 @@ A session either exists fully set up or not at all — no half-states:
 
 ### 6.1 Hostnames: `pier proxy`
 
-`pier proxy` (foreground, ctrl-c to stop) gives every **running** session its
+`pier proxy` gives every **running** session its
 own hostname: `http://<session>.pier:3000` in the browser, `psql -h
 <session>.pier` — real port numbers, any TCP client, zero per-port commands.
 All machinery lives in `internal/proxy`; the rest of the product contributes
@@ -324,9 +324,18 @@ only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
   32 slots; the resolver sits on 127.94.0.53:5533 — a high port plus a `port`
   directive in the resolver file, because macOS lets unprivileged processes
   bind low ports only on the wildcard address). macOS needs `ifconfig lo0
-  alias` per IP — the one sudo, disclosed before it runs; aliases are inert
-  /32s that vanish at reboot. Per-session IPs are what let two sessions both
-  serve :3000 without colliding — pier's most normal situation.
+  alias` per IP — root, disclosed before it runs; aliases are inert /32s
+  that vanish at reboot, so the same setup installs a boot task (a launchd
+  job, `com.usepier.pier.loopback`) that adds them as the Mac starts: the
+  password is asked once. `pier proxy forget` takes it all away again.
+  Per-session IPs are what let two sessions both serve :3000 without
+  colliding — pier's most normal situation.
+- **One per machine**: whichever proxy runs — `pier proxy` in the
+  foreground, or the background one `pier proxy start` and the app start,
+  which outlives them — answers on a control socket in pier's state dir.
+  Others follow its state and stop it there (`pier proxy status | stop`)
+  rather than start a second one that would fight it for the resolver and
+  the addresses.
 - **Forwards**: one multiplexed OpenSSH master per running session
   (`-M -S <ctl> -N` over the SSM tunnel). Beacon polls ride the mux as exec
   channels (no new SSM sessions, no AWS API); forwards are added/removed
@@ -685,11 +694,13 @@ in-flight work three seconds to see its cancellation.
   from the account, narrating each step.
   `doctor.run` and `pier doctor --json` give each check the command that
   fixes it.
-- **Proxy and ports.** `proxy.start` runs `pier proxy` inside `pier api`,
-  on the connections it already keeps (one per session, not a second ssh
-  per session); its one-time network setup asks through the macOS
-  administrator prompt. `proxy.watch` reports each session's name and
-  mirrored ports, `proxy.trustCA` trusts its certificate for https.
+- **Proxy and ports.** `proxy.start` starts the machine's proxy in the
+  background (§6.1) — it keeps running after the app quits — after its
+  one-time network setup, asked for through the macOS administrator
+  prompt. `proxy.watch` follows it, however it was started: each session's
+  name and mirrored ports. `proxy.stop` stops it, `proxy.forget` also takes
+  its network setup away, and `proxy.trustCA` trusts its certificate for
+  https.
   `ports.forward` is `pier port` for the app, lasting as long as pier api
   does. `cli.install` links /usr/local/bin/pier to the app's own pier,
   behind the same prompt when the directory isn't writable.
@@ -720,7 +731,8 @@ pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
 pier proxy              every running session as <session>.pier, listening ports mirrored
                         live onto a per-session loopback IP and onto localhost, HTTP
-                        accelerated (§6.1; macOS, one sudo)
+                        accelerated (§6.1; macOS, one sudo); start | stop | status in
+                        the background, forget to undo its setup
 pier port <match> <p> [p...]  manual port forwards, zero-sudo any-OS fallback (3000 or 8080:3000)
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
