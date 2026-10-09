@@ -40,3 +40,20 @@ test("settings shots", async ({ page }) => {
   await page.getByRole("textbox", { name: "Search settings" }).fill("park");
   await page.screenshot({ path: "/tmp/shot-settings-search.png" });
 });
+
+test("page shots", async ({ page }) => {
+  await page.goto("/#/");
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: "/tmp/shot-home.png" });
+  await page.goto("/#/repo/shop");
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: "/tmp/shot-cockpit.png" });
+  await page.goto("/#/setup");
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: "/tmp/shot-setup.png" });
+  await page.goto("/#/session/i-02");
+  await page.waitForTimeout(1500);
+  await page.getByRole("tab", { name: "PR #41" }).click();
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: "/tmp/shot-pr.png" });
+});

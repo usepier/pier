@@ -10,6 +10,8 @@ import { age, bytes, hourly, monthly, plural, until } from "@/lib/format";
 import { useLoadHistory } from "@/state/history";
 import { trackJob, useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview, useRepo, useRepoSessions } from "@/state/overview";
+import { poolState } from "@/state/pool";
+import { useSetting } from "@/state/settings";
 import { attempt, toast } from "@/state/toasts";
 import { useUI } from "@/state/ui";
 import { Badge } from "@/ui/Badge";
@@ -287,6 +289,7 @@ function PoolPanel({ repo }: { repo: Repo }) {
     if (r) toast(`Removed ${plural(r.removed, "pooled session")}`, "ok");
   };
   const fills = useRunningJobs((j) => j.kind === "fill" && j.repo === repo.name);
+  const state = poolState(repo, useSetting("speed.auto_refill") === "true", fills.length > 0);
   return (
     <Panel
       title="Pool"
@@ -314,6 +317,11 @@ function PoolPanel({ repo }: { repo: Repo }) {
     >
       <p className="mb-2 text-xs text-secondary">
         Parked, set-up sessions a new session claims instead of creating — disk-only cost while they wait.
+      </p>
+      <p
+        className={`mb-2 rounded-ctl px-2.5 py-1.5 text-sm ${state.kind === "short" ? "bg-warn/12 text-label" : state.kind === "ready" ? "bg-ok/10 text-label" : "bg-raised text-secondary"}`}
+      >
+        {state.detail}
       </p>
       <Facts
         rows={[

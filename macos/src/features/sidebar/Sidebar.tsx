@@ -2,13 +2,18 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ChevronRight, House, Plus, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button as AriaButton } from "react-aria-components";
+import { rpc } from "@/api/client";
 import type { Repo, Session } from "@/api/protocol.gen";
 import { PRBadge } from "@/features/github/PRBadge";
 import { linkCheckout } from "@/features/repos/link";
 import { hourly } from "@/lib/format";
 import { attentionOf, reasonText, reasonTone, useSeen } from "@/state/attention";
+import { trackJob, useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview } from "@/state/overview";
+import { poolState } from "@/state/pool";
 import { useProxy } from "@/state/proxy";
+import { useSetting } from "@/state/settings";
+import { attempt } from "@/state/toasts";
 import { useUI } from "@/state/ui";
 import { IconButton } from "@/ui/Button";
 import { Meter } from "@/ui/Panel";
@@ -145,15 +150,7 @@ function RepoGroup({ repo, sessions, path }: { repo: Repo; sessions: Session[]; 
               </Row>
             );
           })}
-          {pool && (
-            <div
-              className="flex h-6 items-center gap-2 pl-[44px] text-xs text-tertiary"
-              title="Pooled sessions: parked and set up, claimed by the next new session"
-            >
-              pool {repo.poolReady}/{repo.poolTarget} ready
-              {repo.poolFilling > 0 ? ` · ${repo.poolFilling} filling` : ""}
-            </div>
-          )}
+          {pool && <PoolLine repo={repo} />}
           {sessions.length === 0 && !pool && (
             <div className="h-6 pl-[44px] text-xs text-tertiary">no sessions</div>
           )}
@@ -230,6 +227,29 @@ function SidebarFooter() {
         <div className="mt-1" title={q.detail}>
           <Meter value={q.used} max={q.limit} tone={q.used / q.limit > 0.85 ? "warn" : "accent"} />
         </div>
+      )}
+    </div>
+  );
+}
+
+/** A repo's pool in one line: ready, filling, or why not. */
+function PoolLine({ repo }: { repo: Repo }) {
+  const fills = useRunningJobs((j) => j.kind === "fill" && j.repo === repo.name);
+  const st = poolState(repo, useSetting("speed.auto_refill") === "true", fills.length > 0);
+  return (
+    <div className="flex h-6 items-center gap-2 pl-[44px] text-xs" title={st.detail}>
+      <span className={st.kind === "short" ? "text-warn" : "text-tertiary"}>{st.short}</span>
+      {st.kind === "short" && repo.checkout && !repo.checkout.missing && (
+        <button
+          type="button"
+          onClick={async () => {
+            const j = await attempt(() => rpc.call("pool.fill", { path: repo.checkout!.path }));
+            if (j) trackJob(j);
+          }}
+          className="rounded-[5px] px-1 text-secondary transition-colors hover:bg-hover hover:text-label"
+        >
+          Fill now
+        </button>
       )}
     </div>
   );
