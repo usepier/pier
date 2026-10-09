@@ -15,13 +15,17 @@ func TestTabAttach(t *testing.T) {
 	}
 	for _, want := range []string{
 		"tmux new-session -d -t main -s pier-tab-a1",
-		"tmux set-option -t pier-tab-a1 destroy-unattached on",
 		"tmux select-window -t pier-tab-a1:@7",
-		"exec tmux attach-session -t pier-tab-a1",
+		// Set once attached, in the same command list: tmux 3.4 destroys a
+		// session that is unattached when the option is set.
+		"exec tmux attach-session -t pier-tab-a1 \\; set-option -t pier-tab-a1 destroy-unattached on",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("tab script lacks %q:\n%s", want, s)
 		}
+	}
+	if strings.Count(s, "destroy-unattached") != 1 {
+		t.Errorf("destroy-unattached is set before the attach:\n%s", s)
 	}
 	if s, _ := TabAttach("a1", ""); strings.Contains(s, "select-window") {
 		t.Error("no window means main's current one")

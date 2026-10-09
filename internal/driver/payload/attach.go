@@ -53,10 +53,11 @@ func TabAttach(tab, window string) (string, error) {
 	s := "pier-tab-" + tab
 	script := "tmux has-session -t main 2>/dev/null || tmux new-session -d -s main\n" +
 		"tmux kill-session -t " + s + " 2>/dev/null\n" +
-		"tmux new-session -d -t main -s " + s + "\n" +
-		"tmux set-option -t " + s + " destroy-unattached on\n"
+		"tmux new-session -d -t main -s " + s + "\n"
 	if window != "" {
 		script += "tmux select-window -t " + s + ":" + window + " 2>/dev/null\n"
 	}
-	return script + "exec tmux attach-session -t " + s, nil
+	// destroy-unattached only once attached: tmux (3.4) destroys a session
+	// that is unattached when the option is set.
+	return script + "exec tmux attach-session -t " + s + " \\; set-option -t " + s + " destroy-unattached on", nil
 }
