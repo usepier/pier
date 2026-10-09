@@ -93,7 +93,15 @@ function Tab({
         type="button"
         role="tab"
         aria-selected={on}
+        tabIndex={on ? 0 : -1}
+        aria-keyshortcuts={onClose ? "Delete" : undefined}
         onClick={onSelect}
+        onKeyDown={(e) => {
+          if (onClose && (e.key === "Delete" || e.key === "Backspace")) {
+            e.preventDefault();
+            onClose();
+          }
+        }}
         className={`flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 text-sm ${on ? "text-label" : "text-secondary group-hover:text-label"} ${onClose ? "pr-1" : "pr-2.5"}`}
       >
         <span className="flex shrink-0 items-center">{icon}</span>
@@ -101,14 +109,18 @@ function Tab({
         {children}
       </button>
       {onClose && (
-        <IconButton
-          label={closeLabel ?? "Close"}
-          size="sm"
-          className={`mr-1 size-5 ${on ? "opacity-60" : "opacity-0"} group-hover:opacity-100`}
-          onPress={onClose}
+        // The pointer's way to close; the keyboard's is Delete on the tab
+        // (or ⌘W), so the tab list holds only tabs.
+        <button
+          type="button"
+          aria-hidden
+          tabIndex={-1}
+          title={closeLabel ?? "Close"}
+          onClick={onClose}
+          className={`mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-ctl text-tertiary transition-colors hover:bg-hover hover:text-label ${on ? "opacity-60" : "opacity-0"} group-hover:opacity-100`}
         >
           <X size={11} />
-        </IconButton>
+        </button>
       )}
     </div>
   );
@@ -193,6 +205,11 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
     if (r) setActive(r.windowId);
   };
 
+  const activeTabButton = () =>
+    active
+      ? strip.current?.querySelector<HTMLButtonElement>(`[data-tab-id="${CSS.escape(active)}"] [role="tab"]`)
+      : undefined;
+
   // ⌘⇧] and ⌘⇧[ step through the tabs; ⌘L goes to the chat's message box;
   // ⌘T opens a chat.
   useEffect(() => {
@@ -233,6 +250,17 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
         run: () => {
           if (!isChatTab(active) && chatIds[0]) setActiveIn(s.id, chatTab(chatIds[0]));
           focusTarget("composer");
+        },
+      },
+      {
+        id: "view.closeTab",
+        title: "Close Tab",
+        shortcut: "CmdOrCtrl+W",
+        menu: "view",
+        // The tab closes as Delete on it would (and asks what it would).
+        enabled: () => !!activeTabButton()?.getAttribute("aria-keyshortcuts"),
+        run: () => {
+          activeTabButton()?.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
         },
       },
     ]);
@@ -277,9 +305,30 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
         <div
           ref={strip}
           role="tablist"
+          aria-label="Chats, terminals and files"
           onWheel={(e) => {
             // A mouse wheel scrolls the tabs sideways.
             if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
+          }}
+          onKeyDown={(e) => {
+            // Arrows move along the tabs (and show the one reached).
+            const tabs = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+            const at = tabs.indexOf(document.activeElement as HTMLButtonElement);
+            if (at < 0) return;
+            const to =
+              e.key === "ArrowRight"
+                ? (at + 1) % tabs.length
+                : e.key === "ArrowLeft"
+                  ? (at - 1 + tabs.length) % tabs.length
+                  : e.key === "Home"
+                    ? 0
+                    : e.key === "End"
+                      ? tabs.length - 1
+                      : -1;
+            if (to < 0) return;
+            e.preventDefault();
+            tabs[to]!.focus();
+            tabs[to]!.click();
           }}
           className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2.5 [scrollbar-width:none]"
         >
@@ -314,7 +363,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
             />
           ))}
           {(chats.length > 0 || openDrafts.length > 0) && windows.length > 0 && (
-            <div className="mx-1 h-4 w-px shrink-0 bg-separator" />
+            <div aria-hidden className="mx-1 h-4 w-px shrink-0 bg-separator" />
           )}
           {windows.map((w) => {
             const Icon = w.role === "setup" ? Wrench : w.role === "agent" ? MessagesSquare : SquareTerminal;
@@ -331,7 +380,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
               />
             );
           })}
-          {docs.length > 0 && <div className="mx-1 h-4 w-px shrink-0 bg-separator" />}
+          {docs.length > 0 && <div aria-hidden className="mx-1 h-4 w-px shrink-0 bg-separator" />}
           {docs.map((d) => {
             const Icon = d.kind === "diff" ? GitCompareArrows : FileCode;
             const dirty = d.kind === "file" && !!buffers[bufferKey(s.id, d.path)];

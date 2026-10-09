@@ -140,7 +140,7 @@ export function NewSessionSheet() {
                   key={c.path}
                   id={c.path}
                   textValue={c.name}
-                  className="flex cursor-default flex-col rounded-ctl px-2 py-1 outline-none data-focused:bg-accent data-focused:text-on-accent"
+                  className="flex cursor-default flex-col rounded-ctl px-2 py-1 outline-none data-focused:bg-accent-fill data-focused:text-on-accent"
                 >
                   <span className="text-base">{c.name}</span>
                   <span className="truncate text-xs opacity-70">{c.path}</span>
@@ -149,7 +149,7 @@ export function NewSessionSheet() {
               <ListBoxItem
                 id={LINK}
                 textValue="Link a repository"
-                className="rounded-ctl px-2 py-1 text-base text-accent outline-none data-focused:bg-accent data-focused:text-on-accent"
+                className="rounded-ctl px-2 py-1 text-base text-accent outline-none data-focused:bg-accent-fill data-focused:text-on-accent"
               >
                 Link a repository…
               </ListBoxItem>

@@ -33,6 +33,7 @@
   --color-hover: var(--hover);
   --color-selected: var(--active);
   --color-accent: var(--accent);
+  --color-accent-fill: var(--accent-fill);
   --color-on-accent: var(--on-accent);
   --color-accent-soft: color-mix(in oklch, var(--accent) 16%, transparent);
 
@@ -55,14 +56,16 @@
   --bg-popover: #ffffff;
   --bg-input: #ffffff;
   --fg: #171717;
-  --fg-muted: #636363;
-  --fg-subtle: #959595;
+  --fg-muted: #585858;
+  /* The faintest text still reads at 4.5:1 (WCAG AA) on every surface. */
+  --fg-subtle: #737373;
   --fg-faint: #c9c9c9;
   --border: #ebebeb;
   --border-strong: #dcdcdc;
   --hover: rgb(0 0 0 / 0.045);
   --active: rgb(0 0 0 / 0.075);
   --accent: #13a596;
+  --accent-fill: #0d7d71;
   --on-accent: #ffffff;
   /* Code: the editor's and the chat's highlighting. */
   --hl-keyword: #ad3da4;
@@ -84,8 +87,8 @@
     --bg-popover: #202020;
     --bg-input: #1b1b1b;
     --fg: #ececec;
-    --fg-muted: #a3a3a3;
-    --fg-subtle: #6f6f6f;
+    --fg-muted: #a8a8a8;
+    --fg-subtle: #8c8c8c;
     --fg-faint: #474747;
     --border: #262626;
     --border-strong: #353535;

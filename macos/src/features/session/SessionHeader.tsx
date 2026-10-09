@@ -149,7 +149,7 @@ function ResizeButton({ session: s, onResize }: { session: Session; onResize: (j
               key={m.type}
               isDisabled={m.type === s.machineType}
               onPress={() => void resize(m.type)}
-              className="flex w-full items-center gap-3 rounded-ctl px-2 py-1.5 text-left text-sm outline-none hover:bg-accent hover:text-on-accent disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-label"
+              className="flex w-full items-center gap-3 rounded-ctl px-2 py-1.5 text-left text-sm outline-none hover:bg-accent-fill hover:text-on-accent disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-label"
             >
               <span className="w-28 font-medium">{m.type}</span>
               <span className="flex-1 text-xs opacity-80">

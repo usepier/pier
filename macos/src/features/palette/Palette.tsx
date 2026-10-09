@@ -128,7 +128,7 @@ export function Palette() {
                     ev.preventDefault();
                     choose(e);
                   }}
-                  className={`flex h-8 items-center gap-2.5 px-4 text-sm ${on ? "bg-accent text-on-accent" : ""}`}
+                  className={`flex h-8 items-center gap-2.5 px-4 text-sm ${on ? "bg-accent-fill text-on-accent" : ""}`}
                 >
                   {s ? (
                     <StateDot tone={sessionTone(s)} />

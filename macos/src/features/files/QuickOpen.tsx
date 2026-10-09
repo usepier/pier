@@ -77,7 +77,7 @@ export function QuickOpen() {
                     e.preventDefault();
                     choose(p);
                   }}
-                  className={`flex h-7 items-center gap-2 px-4 text-sm ${i === pick ? "bg-accent text-on-accent" : ""}`}
+                  className={`flex h-7 items-center gap-2 px-4 text-sm ${i === pick ? "bg-accent-fill text-on-accent" : ""}`}
                 >
                   <File size={12} className="shrink-0 opacity-60" />
                   <span className="shrink-0">{name}</span>

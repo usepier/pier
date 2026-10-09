@@ -225,7 +225,7 @@ function ContentSearch({ session: s }: { session: Session }) {
       aria-label={label}
       title={label}
       onClick={() => set(!on)}
-      className={`h-5 rounded px-1 font-mono text-[11px] ${on ? "bg-accent text-on-accent" : "text-secondary hover:bg-hover"}`}
+      className={`h-5 rounded px-1 font-mono text-[11px] ${on ? "bg-accent-fill text-on-accent" : "text-secondary hover:bg-hover"}`}
     >
       {text}
     </button>

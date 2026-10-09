@@ -415,7 +415,7 @@ export function Composer({
             label="Send"
             isDisabled={empty || uploading || !canSend}
             onPress={() => send(false)}
-            className="ml-0.5 rounded-full bg-accent text-on-accent hover:bg-accent hover:text-on-accent hover:brightness-110 disabled:bg-selected disabled:text-tertiary"
+            className="ml-0.5 rounded-full bg-accent-fill text-on-accent hover:bg-accent-fill hover:text-on-accent hover:brightness-110 disabled:bg-selected disabled:text-tertiary"
           >
             <ArrowUp size={15} strokeWidth={2.4} />
           </IconButton>

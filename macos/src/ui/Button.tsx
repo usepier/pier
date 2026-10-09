@@ -4,7 +4,7 @@ import { Button as AriaButton } from "react-aria-components";
 type Variant = "primary" | "secondary" | "plain" | "danger";
 
 const variants: Record<Variant, string> = {
-  primary: "bg-accent text-on-accent hover:brightness-110 data-pressed:brightness-95",
+  primary: "bg-accent-fill text-on-accent hover:brightness-110 data-pressed:brightness-95",
   secondary: "border border-strong bg-control text-label hover:bg-hover data-pressed:bg-selected",
   plain: "text-secondary hover:bg-hover hover:text-label data-pressed:bg-selected",
   danger: "bg-bad/90 text-white hover:bg-bad data-pressed:brightness-95",

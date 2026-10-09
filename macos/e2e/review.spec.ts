@@ -84,3 +84,22 @@ test("commands put the focus where they say: a new chat's message box, the searc
   await page.keyboard.press("Meta+l");
   await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
 });
+
+test("the session's tabs work from the keyboard: arrows move, Delete and ⌘W close", async ({ page }) => {
+  await openSession(page, "i-01");
+  await inspector(page, "Changes");
+  await page.getByRole("button", { name: "M src/checkout/PayButton.tsx" }).click();
+  await page.getByRole("button", { name: "M src/api/charges.ts" }).click();
+  const strip = page.getByRole("tablist", { name: "Chats, terminals and files" });
+  const charges = strip.getByRole("tab", { name: "charges.ts" });
+  await expect(charges).toHaveAttribute("aria-selected", "true");
+  await charges.focus();
+  await page.keyboard.press("ArrowLeft");
+  const pay = strip.getByRole("tab", { name: "PayButton.tsx" });
+  await expect(pay).toHaveAttribute("aria-selected", "true");
+  await expect(pay).toBeFocused();
+  await page.keyboard.press("Delete");
+  await expect(pay).toHaveCount(0);
+  await page.keyboard.press("Meta+w");
+  await expect(charges).toHaveCount(0);
+});

@@ -101,6 +101,29 @@ addChat("i-02", { id: "c4", agent: "codex", title: "Create hello.txt", state: "r
 addChat("i-03", { id: "c5", agent: "claude", title: "Answer two questions", state: "ready", since: iso(D) },
   [user("p5", "Ask me which color I prefer and which fruits I like, then tell me my answers.", D + 60e3), ...stamp(recorded["claude-question"], D)]);
 
+// PIER_MOCK_BIG: a lot of everything, for the performance tests — 50 more
+// sessions across five repos, and a chat of 5,000 items.
+if (process.env.PIER_MOCK_BIG === "1") {
+  const states = ["running", "idle", "parked", "working"];
+  for (let n = 0; n < 50; n++) {
+    const repo = `repo-${n % 5}`;
+    const state = states[n % states.length];
+    sessions.push(
+      sess({ id: `i-big-${n}`, name: `branch-${n}`, repo, origin: `github.com/acme/${repo}`, branch: `branch-${n}`, state,
+        label: state === "parked" ? "parked" : "running", createdAt: iso((n + 1) * H), resources: state === "parked" ? undefined : res(10 + (n % 60), 1.5) }),
+    );
+  }
+  const loop = [...recorded["claude-tools"], ...recorded["codex-tools"], ...recorded["claude-question"]];
+  const big = [];
+  for (let i = 0; big.length < 4999; i++) {
+    if (i % 20 === 0) big.push(user(`pb${i}`, `Message ${big.length}: keep going with the next part of the refactor.`, (5000 - big.length) * 4000));
+    const it = loop[i % loop.length];
+    big.push({ ...it, id: `${it.id}-${i}`, time: iso((5000 - big.length) * 4000), text: it.kind === "assistant" ? `${it.text ?? ""} (item ${big.length})` : it.text });
+  }
+  big.push({ id: "big-last", kind: "assistant", time: iso(1000), text: "The last word of a long chat." });
+  addChat("i-01", { id: "c-big", agent: "claude", title: "A very long chat", model: "opus", mode: "default", state: "ready", since: iso(60e3), last: "item 4999" }, big);
+}
+
 const chatsOf = (sessionId) => [...chats.values()].filter((c) => c.sessionId === sessionId);
 const summary = (c) => {
   const { model, effort, mode, created, pending, queue, error, ...s } = c.info;
