@@ -8,7 +8,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { rpc } from "@/api/client";
 import { useWatch } from "@/api/live";
@@ -82,17 +82,17 @@ function Tab({
   return (
     <div
       title={hint}
-      className={`group flex h-[30px] shrink-0 items-center rounded-[7px] transition-colors ${on ? "bg-selected" : "hover:bg-hover"}`}
+      className={`group flex h-[30px] max-w-[220px] min-w-[120px] shrink items-center rounded-[7px] transition-colors ${on ? "bg-selected" : "hover:bg-hover"}`}
     >
       <button
         type="button"
         role="tab"
         aria-selected={on}
         onClick={onSelect}
-        className={`flex h-full items-center gap-1.5 pl-2.5 text-sm ${on ? "text-label" : "text-secondary group-hover:text-label"} ${onClose ? "pr-1" : "pr-2.5"}`}
+        className={`flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 text-sm ${on ? "text-label" : "text-secondary group-hover:text-label"} ${onClose ? "pr-1" : "pr-2.5"}`}
       >
-        {icon}
-        <span className="max-w-44 truncate">{title}</span>
+        <span className="flex shrink-0 items-center">{icon}</span>
+        <span className="min-w-0 truncate">{title}</span>
         {children}
       </button>
       {onClose && (
@@ -132,6 +132,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
   const setActive = (id: string) => setActiveIn(s.id, id);
   const buffers = useBuffers((b) => b.buffers);
   const [visited, setVisited] = useState<string[]>([]);
+  const strip = useRef<HTMLDivElement>(null);
 
   // A draft whose chat started is the chat now.
   useEffect(() => {
@@ -262,129 +263,144 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
   };
 
   const activeChat = isChatTab(active) ? active!.slice(5) : undefined;
+  // The active tab stays in view however many there are.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new active tab is the trigger
+  useEffect(() => {
+    strip.current
+      ?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [active]);
   return (
     <div className="flex h-full flex-col bg-surface">
-      <div
-        role="tablist"
-        className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-separator px-2.5 [scrollbar-width:none]"
-      >
-        {chats.map((c) => (
-          <Tab
-            key={c.id}
-            on={active === chatTab(c.id)}
-            onSelect={() => setActive(chatTab(c.id))}
-            icon={<AgentGlyph agent={c.agent} />}
-            title={c.title || "New chat"}
-            hint={`${agentName(c.agent)} · ${c.title}`}
-            onClose={() => void closeChat(c)}
-            closeLabel={`Close ${c.title}`}
-          >
-            <ChatMark
-              c={c}
-              unread={c.state === "ready" && !!c.last && c.since > (seen[seenKey(s.id, c.id)] ?? "")}
-            />
-          </Tab>
-        ))}
-        {openDrafts.map((d) => (
-          <Tab
-            key={d.id}
-            on={active === chatTab(d.id)}
-            onSelect={() => setActive(chatTab(d.id))}
-            icon={<AgentGlyph agent={d.agent} />}
-            title="New chat"
-            onClose={() => dropDraft(s.id, d.id)}
-            closeLabel="Discard the new chat"
-          />
-        ))}
-        {(chats.length > 0 || openDrafts.length > 0) && windows.length > 0 && (
-          <div className="mx-1 h-4 w-px shrink-0 bg-separator" />
-        )}
-        {windows.map((w) => {
-          const Icon = w.role === "setup" ? Wrench : w.role === "agent" ? MessagesSquare : SquareTerminal;
-          return (
+      <div className="flex h-11 shrink-0 items-center border-b border-separator">
+        <div
+          ref={strip}
+          role="tablist"
+          onWheel={(e) => {
+            // A mouse wheel scrolls the tabs sideways.
+            if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
+          }}
+          className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2.5 [scrollbar-width:none]"
+        >
+          {chats.map((c) => (
             <Tab
-              key={w.id}
-              on={w.id === active}
-              onSelect={() => setActive(w.id)}
-              icon={<Icon size={13} className={w.name === "setup-failed" ? "text-bad" : ""} />}
-              title={label(w)}
-              onClose={w.role === "setup" ? undefined : () => void closeWindow(w)}
-              closeLabel={`Close ${label(w)}`}
-            />
-          );
-        })}
-        <Menu
-          label="Open"
-          placement="bottom start"
-          trigger={
-            <AriaButton
-              aria-label="New chat or terminal"
-              isDisabled={!s.hasKey}
-              className="inline-flex size-[30px] shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-tertiary outline-none transition-colors hover:bg-hover hover:text-label disabled:cursor-default disabled:opacity-35"
+              key={c.id}
+              on={active === chatTab(c.id)}
+              onSelect={() => setActive(chatTab(c.id))}
+              icon={<AgentGlyph agent={c.agent} />}
+              title={c.title || "New chat"}
+              hint={`${agentName(c.agent)} · ${c.title}`}
+              onClose={() => void closeChat(c)}
+              closeLabel={`Close ${c.title}`}
             >
-              <Plus size={15} />
-            </AriaButton>
-          }
-          items={[
-            {
-              id: "claude",
-              label: "New Claude chat",
-              icon: <AgentGlyph agent="claude" />,
-              onAction: () => newChat("claude"),
-            },
-            {
-              id: "codex",
-              label: "New Codex chat",
-              icon: <AgentGlyph agent="codex" />,
-              onAction: () => newChat("codex"),
-            },
-            "separator",
-            {
-              id: "term",
-              label: "New terminal",
-              icon: <SquareTerminal size={13} />,
-              disabled: !live,
-              onAction: () => void newTerminal(),
-            },
-            {
-              id: "chats-term",
-              label: "Chats in a terminal",
-              icon: <MessagesSquare size={13} />,
-              disabled: !live,
-              onAction: () => void chatsInTerminal(),
-            },
-          ]}
-        />
-        {docs.length > 0 && <div className="mx-1 h-4 w-px shrink-0 bg-separator" />}
-        {docs.map((d) => {
-          const Icon = d.kind === "diff" ? GitCompareArrows : FileCode;
-          const dirty = d.kind === "file" && !!buffers[bufferKey(s.id, d.path)];
-          return (
+              <ChatMark
+                c={c}
+                unread={c.state === "ready" && !!c.last && c.since > (seen[seenKey(s.id, c.id)] ?? "")}
+              />
+            </Tab>
+          ))}
+          {openDrafts.map((d) => (
             <Tab
               key={d.id}
-              on={d.id === active}
-              onSelect={() => setActive(d.id)}
-              icon={<Icon size={13} />}
-              title={baseName(d.path)}
-              hint={d.path}
-              onClose={async () => {
-                if (d.kind === "file" && !(await confirmClose(s.id, d.path))) return;
-                closeDoc(s.id, d.id);
-              }}
-              closeLabel={`Close ${baseName(d.path)}`}
-            >
-              {dirty && <span className="size-1.5 rounded-full bg-label/60" title="Edited" />}
-            </Tab>
-          );
-        })}
-        <div className="flex-1" />
-        {activeChat && live && chats.some((c) => c.id === activeChat) && (
-          <Tip content="Continue this chat in a terminal (the agent's own interface)">
-            <IconButton label="Continue in a terminal" onPress={() => void takeover(activeChat)}>
-              <TerminalSquare size={15} />
-            </IconButton>
-          </Tip>
-        )}
+              on={active === chatTab(d.id)}
+              onSelect={() => setActive(chatTab(d.id))}
+              icon={<AgentGlyph agent={d.agent} />}
+              title="New chat"
+              onClose={() => dropDraft(s.id, d.id)}
+              closeLabel="Discard the new chat"
+            />
+          ))}
+          {(chats.length > 0 || openDrafts.length > 0) && windows.length > 0 && (
+            <div className="mx-1 h-4 w-px shrink-0 bg-separator" />
+          )}
+          {windows.map((w) => {
+            const Icon = w.role === "setup" ? Wrench : w.role === "agent" ? MessagesSquare : SquareTerminal;
+            return (
+              <Tab
+                key={w.id}
+                on={w.id === active}
+                onSelect={() => setActive(w.id)}
+                icon={<Icon size={13} className={w.name === "setup-failed" ? "text-bad" : ""} />}
+                title={label(w)}
+                onClose={w.role === "setup" ? undefined : () => void closeWindow(w)}
+                closeLabel={`Close ${label(w)}`}
+              />
+            );
+          })}
+          {docs.length > 0 && <div className="mx-1 h-4 w-px shrink-0 bg-separator" />}
+          {docs.map((d) => {
+            const Icon = d.kind === "diff" ? GitCompareArrows : FileCode;
+            const dirty = d.kind === "file" && !!buffers[bufferKey(s.id, d.path)];
+            return (
+              <Tab
+                key={d.id}
+                on={d.id === active}
+                onSelect={() => setActive(d.id)}
+                icon={<Icon size={13} />}
+                title={baseName(d.path)}
+                hint={d.path}
+                onClose={async () => {
+                  if (d.kind === "file" && !(await confirmClose(s.id, d.path))) return;
+                  closeDoc(s.id, d.id);
+                }}
+                closeLabel={`Close ${baseName(d.path)}`}
+              >
+                {dirty && <span className="size-1.5 rounded-full bg-label/60" title="Edited" />}
+              </Tab>
+            );
+          })}
+        </div>
+        <div className="flex shrink-0 items-center gap-1 pr-2 pl-1">
+          <Menu
+            label="Open"
+            placement="bottom start"
+            trigger={
+              <AriaButton
+                aria-label="New chat or terminal"
+                isDisabled={!s.hasKey}
+                className="inline-flex size-[30px] shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-tertiary outline-none transition-colors hover:bg-hover hover:text-label disabled:cursor-default disabled:opacity-35"
+              >
+                <Plus size={15} />
+              </AriaButton>
+            }
+            items={[
+              {
+                id: "claude",
+                label: "New Claude chat",
+                icon: <AgentGlyph agent="claude" />,
+                onAction: () => newChat("claude"),
+              },
+              {
+                id: "codex",
+                label: "New Codex chat",
+                icon: <AgentGlyph agent="codex" />,
+                onAction: () => newChat("codex"),
+              },
+              "separator",
+              {
+                id: "term",
+                label: "New terminal",
+                icon: <SquareTerminal size={13} />,
+                disabled: !live,
+                onAction: () => void newTerminal(),
+              },
+              {
+                id: "chats-term",
+                label: "Chats in a terminal",
+                icon: <MessagesSquare size={13} />,
+                disabled: !live,
+                onAction: () => void chatsInTerminal(),
+              },
+            ]}
+          />
+          {activeChat && live && chats.some((c) => c.id === activeChat) && (
+            <Tip content="Continue this chat in a terminal (the agent's own interface)">
+              <IconButton label="Continue in a terminal" onPress={() => void takeover(activeChat)}>
+                <TerminalSquare size={15} />
+              </IconButton>
+            </Tip>
+          )}
+        </div>
       </div>
       <div className="relative min-h-0 flex-1">
         {chatIds.map((id) => (

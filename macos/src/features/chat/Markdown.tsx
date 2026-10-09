@@ -107,7 +107,7 @@ const components: Components = {
 /** The agent's text: GitHub-flavoured markdown, selectable. */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
-    <div className="selectable text-[14px] leading-[1.6] break-words text-label">
+    <div className="md selectable text-[14px] leading-[1.6] break-words text-label">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {text}
       </ReactMarkdown>

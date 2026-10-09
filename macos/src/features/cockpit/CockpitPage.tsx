@@ -2,6 +2,7 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import { FolderGit2, Hammer, Minus, Plus, Sparkles, SquarePlus } from "lucide-react";
 import { rpc } from "@/api/client";
 import type { Repo, Session } from "@/api/protocol.gen";
+import { Toolbar } from "@/app/toolbar";
 import { PRBadge } from "@/features/github/PRBadge";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { linkCheckout } from "@/features/repos/link";
@@ -35,25 +36,24 @@ export function CockpitPage() {
   const parked = sessions.filter((s) => s.state === "parked").length;
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex max-w-6xl flex-col gap-4 p-6">
-        <header className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-xl font-semibold">{repo.name}</h1>
-            <div className="selectable mt-0.5 truncate text-sm text-secondary">
-              {repo.checkout ? repo.checkout.path : "No local clone linked"}
-              {repo.origin && <span className="text-tertiary"> · {repo.origin}</span>}
-            </div>
+      <Toolbar>
+        <div data-tauri-drag-region className="min-w-0 flex-1 leading-tight">
+          <h1 className="truncate text-base font-semibold">{repo.name}</h1>
+          <div className="selectable truncate text-xs text-secondary">
+            {repo.checkout ? repo.checkout.path : "No local clone linked"}
+            {repo.origin && <span className="text-tertiary"> · {repo.origin}</span>}
           </div>
-          {!repo.checkout && (
-            <Button icon={<FolderGit2 size={14} />} onPress={() => void linkCheckout(repo.name)}>
-              Locate clone…
-            </Button>
-          )}
-          <Button variant="primary" icon={<SquarePlus size={14} />} onPress={() => openNew(repo.name)}>
-            New Session
+        </div>
+        {!repo.checkout && (
+          <Button icon={<FolderGit2 size={14} />} onPress={() => void linkCheckout(repo.name)}>
+            Locate clone…
           </Button>
-        </header>
-
+        )}
+        <Button variant="primary" icon={<SquarePlus size={14} />} onPress={() => openNew(repo.name)}>
+          New Session
+        </Button>
+      </Toolbar>
+      <div className="mx-auto flex max-w-6xl flex-col gap-4 p-6">
         {repo.checkout && !repo.hasPier && (
           <div className="flex items-center gap-3 rounded-card border border-accent/30 bg-accent-soft px-4 py-3 text-sm">
             <Sparkles size={16} className="shrink-0 text-accent" />

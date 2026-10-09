@@ -174,14 +174,17 @@ button:disabled,
   cursor: pointer;
 }
 
-:focus {
-  outline: none;
-}
+/* In the base layer, so a control's own focus style (a utility) wins. */
+@layer base {
+  :focus {
+    outline: none;
+  }
 
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  border-radius: var(--radius-ctl);
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-radius: var(--radius-ctl);
+  }
 }
 
 ::selection {
@@ -255,8 +258,10 @@ button:disabled,
   animation: pier-in 0.12s ease-out;
 }
 
-/* The caret at the end of text being written. */
-.typing-caret-last .selectable > :last-child::after,
+/* The caret at the end of text being written: after the last paragraph,
+   heading or list item, never under a code block or table. */
+.typing-caret-last .md > :is(p, h3, h4, blockquote):last-child::after,
+.typing-caret-last .md > :is(ul, ol):last-child > li:last-child::after,
 .typing-caret::after {
   content: "";
   display: inline-block;

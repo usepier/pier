@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { KeyRound, Power } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
@@ -9,6 +9,7 @@ import { FilesPanel } from "@/features/files/FilesPanel";
 import { PRPanel } from "@/features/github/PRPanel";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { ChangesPanel } from "@/features/review/ChangesPanel";
+import { preloadDiffs } from "@/features/review/DiffView";
 import { age } from "@/lib/format";
 import { readable, running } from "@/lib/session";
 import { type InspectorTab, useInspector } from "@/state/inspector";
@@ -33,6 +34,7 @@ export function SessionPage() {
   const setTab = useInspector((i) => i.setTab);
   const [openWindow, setOpenWindow] = useState<string>();
   const layout = useDefaultLayout({ id: "pier.session", storage: localStorage });
+  useEffect(preloadDiffs, []);
   const resizing = useRunningJobs((j) => j.kind === "resize" && j.session === s?.name)[0]?.id ?? resizeJob;
   if (!s) return <Empty title="Session" detail="Gone, or still loading." />;
   const live = running(s);

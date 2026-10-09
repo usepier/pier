@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Button as AriaButton, Dialog, DialogTrigger, Popover } from "react-aria-components";
 import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
+import { Toolbar } from "@/app/toolbar";
 import { confirm } from "@/lib/confirm";
 import { until } from "@/lib/format";
 import { running } from "@/lib/session";
@@ -43,11 +44,11 @@ export function SessionHeader({
     navigate({ to: "/repo/$name", params: { name: s.repo } });
   };
   return (
-    <header className="flex items-center gap-3 border-b border-separator px-5 py-3">
+    <Toolbar>
       <StateDot tone={sessionTone(s)} className="size-2.5" />
-      <div className="min-w-0 flex-1">
+      <div data-tauri-drag-region className="min-w-0 flex-1 leading-tight">
         <div className="flex items-center gap-2">
-          <h1 className="truncate text-md font-semibold">{s.name}</h1>
+          <h1 className="truncate text-base font-semibold">{s.name}</h1>
           <Badge>{s.label}</Badge>
           {s.setup === "running" && <Badge tone="info">setting up</Badge>}
           {s.setup === "failed" && <Badge tone="bad">setup failed</Badge>}
@@ -92,7 +93,7 @@ export function SessionHeader({
           Remove
         </Button>
       </div>
-    </header>
+    </Toolbar>
   );
 }
 

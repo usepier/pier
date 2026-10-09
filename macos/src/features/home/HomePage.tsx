@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
-import { Anchor } from "lucide-react";
+import { Anchor, SquarePlus } from "lucide-react";
 import type { Session } from "@/api/protocol.gen";
+import { Toolbar } from "@/app/toolbar";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { ago, hourly, monthly } from "@/lib/format";
 import { billed } from "@/lib/session";
@@ -42,13 +43,15 @@ export function HomePage() {
   const inbox = needingAttention(o.sessions, seen);
   return (
     <div className="h-full overflow-y-auto">
+      <Toolbar>
+        <h1 data-tauri-drag-region className="flex-1 text-base font-semibold">
+          Home
+        </h1>
+        <Button variant="primary" icon={<SquarePlus size={14} />} onPress={() => openNew()}>
+          New Session
+        </Button>
+      </Toolbar>
       <div className="mx-auto flex max-w-5xl flex-col gap-4 p-6">
-        <header className="flex items-center gap-3">
-          <h1 className="flex-1 text-xl font-semibold">Home</h1>
-          <Button variant="primary" onPress={() => openNew()}>
-            New Session
-          </Button>
-        </header>
         <div className="grid grid-cols-2 gap-4 rounded-card border border-separator bg-raised/60 p-4 md:grid-cols-5">
           <Stat label="Running" value={o.totals.running} />
           <Stat label="Parked" value={o.totals.parked} />

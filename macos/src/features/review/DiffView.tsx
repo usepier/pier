@@ -1,4 +1,4 @@
-import type { DiffLineAnnotation, SelectedLineRange } from "@pierre/diffs";
+import { type DiffLineAnnotation, preloadHighlighter, type SelectedLineRange } from "@pierre/diffs";
 import { PatchDiff } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
 import { FileCode, FoldVertical, MessageSquarePlus, Send, Trash2, UnfoldVertical } from "lucide-react";
@@ -19,6 +19,35 @@ import { linesFromPatch } from "./patch";
 type Note = { comment?: Comment; draft?: { side: Comment["side"]; line: number; endLine?: number } };
 
 const noComments: Comment[] = [];
+
+let preloaded = false;
+
+/** Loads the diff highlighter ahead of the first diff (it takes a moment). */
+export function preloadDiffs() {
+  if (preloaded) return;
+  preloaded = true;
+  const go = () =>
+    void preloadHighlighter({
+      themes: ["pierre-dark", "pierre-light"],
+      langs: [
+        "typescript",
+        "tsx",
+        "javascript",
+        "go",
+        "python",
+        "rust",
+        "json",
+        "css",
+        "markdown",
+        "yaml",
+        "bash",
+      ],
+    }).catch(() => {
+      preloaded = false;
+    });
+  if ("requestIdleCallback" in window) window.requestIdleCallback(go);
+  else setTimeout(go, 200);
+}
 
 /** Context lines that show a whole file around its changes. */
 const wholeFile = 1_000_000;

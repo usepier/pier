@@ -508,6 +508,35 @@ const handlers = {
     reviews: [{ author: "maria", state: "changes_requested", body: "Close — one thing about the cookie name." }] }),
   "pr.log": () => ({ text: "Run pnpm test\n FAIL src/auth/mw.test.ts\nError: Process completed with exit code 1." }),
   "cli.status": () => ({ link: "/usr/local/bin/pier", installed: false }),
+  "setup.detect": () => ({
+    configured: true,
+    draft: { cloud: "aws-ec2", awsProfile: "dev", awsRegion: "eu-central-1", machine: "t4g.medium", diskGib: 30, idleTimeout: "30m", unattendedCap: "8h", speed: "fast", manifest: [] },
+    awsTools: [{ name: "aws", hint: "brew install awscli", found: true }, { name: "session-manager-plugin", hint: "brew install --cask session-manager-plugin", found: true }],
+    gcpTools: [{ name: "gcloud", hint: "brew install --cask google-cloud-sdk", found: false }],
+    awsProfiles: ["default", "dev", "prod"],
+    agents: [".claude", ".codex"],
+    needsClaudeToken: true,
+    hasClaudeToken: true,
+  }),
+  "setup.check": (p) => ({ identity: `arn:aws:iam::111122223333:user/dev (${p.profile})`, region: "eu-central-1" }),
+  "setup.defaults": (d) => ({
+    rows: [
+      { key: "machine", label: "Machine", value: d.machine, note: "2 vCPU · 4 GiB · ~$0.04/h while running" },
+      { key: "disk", label: "Disk", value: `${d.diskGib} GiB`, note: "~$2.40/mo per session, parked or not" },
+      { key: "idle", label: "Parks after", value: d.idleTimeout, note: "idle with nobody attached" },
+      { key: "cap", label: "Unattended cap", value: d.unattendedCap, note: "a busy session nobody watches parks after this" },
+    ],
+    machines: [
+      { type: "t4g.medium", cpu: "2", mem: "4", cost: "~$0.04/h" },
+      { type: "t4g.large", cpu: "2", mem: "8", cost: "~$0.07/h" },
+      { type: "t4g.xlarge", cpu: "4", mem: "16", cost: "~$0.13/h" },
+    ],
+  }),
+  "setup.apply": async () => {
+    await wait(600);
+    return { created: [], existed: ["security group pier", "instance profile pier"], checks: [{ name: "aws login", status: "ok", detail: "dev" }], skills: [".claude"], adopted: {} };
+  },
+  "cli.status": () => ({ link: "/usr/local/bin/pier", installed: true }),
   "proxy.watch": () => ({ sub: openSub("proxy", ""), seq: 0, snapshot: { running: true, caTrusted: false, sessions: [{ id: "i-01", host: "checkout-flow.pier", ports: [3000], localhost: [3000] }] } }),
   "tmux.windows": (p) => windows.get(p.sessionId) ?? [],
   "tmux.newWindow": (p) => {

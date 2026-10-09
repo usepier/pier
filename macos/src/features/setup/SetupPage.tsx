@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { rpc } from "@/api/client";
 import type { LocalPurpose, SetupDraft, SetupResult, SetupState } from "@/api/protocol.gen";
 import { RpcError } from "@/api/rpc";
+import { Toolbar } from "@/app/toolbar";
 import { linkCheckout } from "@/features/repos/link";
 import { attempt, toast } from "@/state/toasts";
 import { Button } from "@/ui/Button";
@@ -62,6 +63,11 @@ export function SetupPage() {
   const at = steps.findIndex(([s]) => s === step);
   return (
     <div className="h-full overflow-y-auto">
+      <Toolbar>
+        <h1 data-tauri-drag-region className="flex-1 text-base font-semibold">
+          Setup
+        </h1>
+      </Toolbar>
       <div className="mx-auto flex max-w-2xl flex-col gap-5 p-8">
         <header>
           <div className="flex items-center gap-2 text-xl font-semibold">
