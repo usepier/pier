@@ -100,9 +100,13 @@ describe("Rpc", () => {
     await new Promise((r) => setTimeout(r, 0));
     t.push("sub.event", { sub: "overview-1", seq: 1, topic: "overview", data: "one" });
     t.push("sub.event", { sub: "overview-1", seq: 3, topic: "overview", data: "skipped" });
+    t.push("sub.event", { sub: "overview-1", seq: 4, topic: "overview", data: "late" });
     expect(seen).toEqual(["snap", "one"]);
     await Promise.resolve();
     const again = t.last("overview.watch");
     expect(again.id).not.toBe(first.id);
+    // The old subscription is ended, and asked for again once.
+    expect(t.last("sub.cancel").params).toEqual({ sub: "overview-1" });
+    expect(t.sent.filter((m) => m.method === "overview.watch")).toHaveLength(2);
   });
 });

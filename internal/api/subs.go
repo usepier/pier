@@ -15,33 +15,88 @@ type subscription struct {
 	cancel context.CancelFunc
 }
 
-// Sub is the sending end of one subscription.
+// maxQueued bounds the updates a subscription holds for a client that
+// isn't reading them; past it, the client is told to start over.
+const maxQueued = 4096
+
+// Sub is the sending end of one subscription. Updates queue per
+// subscription and go out in order from its own goroutine, so whoever
+// emits never waits on the client.
 type Sub[D any] struct {
 	s      *Server
 	id     string
 	topic  string
 	ctx    context.Context
 	opened chan struct{} // closed once the watch reply is on the wire
+	wake   chan struct{}
 
-	mu  sync.Mutex
-	seq int
+	mu     sync.Mutex
+	queue  []D
+	lagged bool // the queue overflowed: what's left is one skip
+	seq    int
 }
 
-// Emit sends one update. Updates produced before the watch reply went out
+func newSub[D any](s *Server, id, topic string, ctx context.Context) *Sub[D] {
+	u := &Sub[D]{s: s, id: id, topic: topic, ctx: ctx, opened: make(chan struct{}), wake: make(chan struct{}, 1)}
+	go u.pump()
+	return u
+}
+
+// Emit queues one update. Updates emitted before the watch reply went out
 // wait for it, so a client never sees an event for a sub it doesn't know.
 func (u *Sub[D]) Emit(d D) {
+	u.mu.Lock()
+	switch {
+	case u.ctx.Err() != nil || u.lagged:
+	case len(u.queue) >= maxQueued:
+		// A client this far behind starts over from a fresh snapshot.
+		u.queue, u.lagged = nil, true
+	default:
+		u.queue = append(u.queue, d)
+	}
+	u.mu.Unlock()
+	select {
+	case u.wake <- struct{}{}:
+	default:
+	}
+}
+
+// pump sends what was queued, in order.
+func (u *Sub[D]) pump() {
 	select {
 	case <-u.opened:
 	case <-u.ctx.Done():
 		return
 	}
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.ctx.Err() != nil {
-		return
+	for {
+		select {
+		case <-u.ctx.Done():
+			return
+		case <-u.wake:
+		}
+		for {
+			u.mu.Lock()
+			batch, lagged := u.queue, u.lagged
+			u.queue = nil
+			u.mu.Unlock()
+			if lagged {
+				// A sequence number skipped: the client resubscribes.
+				u.seq += 2
+				u.s.notify("sub.event", wire.SubEvent{Sub: u.id, Seq: u.seq, Topic: u.topic})
+				return
+			}
+			if len(batch) == 0 {
+				break
+			}
+			for _, d := range batch {
+				if u.ctx.Err() != nil {
+					return
+				}
+				u.seq++
+				u.s.notify("sub.event", wire.SubEvent{Sub: u.id, Seq: u.seq, Topic: u.topic, Data: d})
+			}
+		}
 	}
-	u.seq++
-	u.s.notify("sub.event", wire.SubEvent{Sub: u.id, Seq: u.seq, Topic: u.topic, Data: d})
 }
 
 // Done is closed when the client cancels the subscription or goes away.
@@ -74,7 +129,7 @@ func watchChanges[P, S, D any](topic, doc string, start func(ctx context.Context
 			subCtx, cancel := context.WithCancel(s.root)
 			s.subs[id] = &subscription{id: id, cancel: cancel}
 			s.mu.Unlock()
-			sub := &Sub[D]{s: s, id: id, topic: topic, ctx: subCtx, opened: make(chan struct{})}
+			sub := newSub[D](s, id, topic, subCtx)
 			snap, err := start(subCtx, s, p, sub)
 			if err != nil {
 				s.cancelSub(id)

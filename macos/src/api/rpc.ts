@@ -59,6 +59,7 @@ export class Watch<T extends keyof Watches> {
   private sub = "";
   private seq = 0;
   private closed = false;
+  private reopening = false;
 
   constructor(
     private readonly rpc: Rpc,
@@ -89,8 +90,16 @@ export class Watch<T extends keyof Watches> {
 
   /** @internal */
   receive(ev: SubEvent) {
+    if (this.reopening) return;
     if (ev.seq !== this.seq + 1) {
-      void this.open(); // missed one: start over from a fresh snapshot
+      // Missed one (or pier says this client fell behind): end this
+      // subscription and start over from a fresh snapshot.
+      this.reopening = true;
+      this.rpc.notify("sub.cancel", { sub: this.sub });
+      this.rpc.dropWatch(this.sub);
+      void this.open().finally(() => {
+        this.reopening = false;
+      });
       return;
     }
     this.seq = ev.seq;
