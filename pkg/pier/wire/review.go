@@ -14,6 +14,8 @@ type ChangedFile struct {
 	Binary  bool   `json:"binary,omitempty"`
 	// Uncommitted: the working tree or index differs from HEAD here.
 	Uncommitted bool `json:"uncommitted,omitempty"`
+	// Stamp changes with every edit of the file (pushed changes only).
+	Stamp string `json:"stamp,omitempty"`
 }
 
 // Changes is a session's checkout against its base: everything the branch
@@ -61,6 +63,14 @@ type FilePathParams struct {
 	Path      string `json:"path"` // relative to the repo root
 }
 
+// FileAtParams names a file of a session's checkout, as the working
+// tree has it or (at "base") as the branch's base does.
+type FileAtParams struct {
+	SessionID string `json:"sessionId"`
+	Path      string `json:"path"`
+	At        string `json:"at,omitempty"` // "work" (default) | "base"
+}
+
 // FileContent is a file of a session's checkout. Text is set for text
 // files; binary ones only say so.
 type FileContent struct {
@@ -72,6 +82,9 @@ type FileContent struct {
 	Sha      string `json:"sha"`
 	Missing  bool   `json:"missing,omitempty"`
 	TooLarge bool   `json:"tooLarge,omitempty"`
+	// AsOf is set for a session that can't be read now: the file as this
+	// machine kept it then (read-only).
+	AsOf *time.Time `json:"asOf,omitempty"`
 }
 
 // FileWriteParams saves a file, unless it changed since it was read.
@@ -91,7 +104,8 @@ type FileWritten struct {
 	Sha string `json:"sha"`
 }
 
-// SearchParams searches a session's checkout.
+// SearchParams searches a session's checkout: literal text, or a regular
+// expression in ripgrep's syntax.
 type SearchParams struct {
 	SessionID     string `json:"sessionId"`
 	Query         string `json:"query"`
@@ -107,10 +121,14 @@ type SearchMatch struct {
 	Text string `json:"text"`
 }
 
-// SearchResult is a search's matches, in file order.
+// SearchResult is a search's matches as they're found: the snapshot has
+// none, each event the next batch; the last says done (and why it
+// failed, if it did).
 type SearchResult struct {
 	Matches   []SearchMatch `json:"matches"`
 	Truncated bool          `json:"truncated"`
+	Done      bool          `json:"done"`
+	Error     *ErrorData    `json:"error,omitempty"`
 }
 
 // CommitParams commits everything in a session's checkout.

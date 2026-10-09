@@ -44,6 +44,7 @@ var kinds = []struct {
 	{pier.ErrDeleting, wire.ErrDeleting},
 	{pier.ErrParked, wire.ErrParked},
 	{pier.ErrConflict, wire.ErrConflict},
+	{pier.ErrNoCheckout, wire.ErrNoCheckout},
 	{pier.ErrHeadMoved, wire.ErrHeadMoved},
 	{pier.ErrNoPR, wire.ErrNotFound},
 	{pier.ErrNoKey, wire.ErrNoKey},

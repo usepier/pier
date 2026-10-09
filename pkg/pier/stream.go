@@ -21,7 +21,7 @@ import (
 
 // streamProto is the supervisor stream protocol this pier speaks; a
 // supervisor reporting an older one is replaced.
-const streamProto = 4
+const streamProto = 5
 
 // errNoStream: the session's supervisor predates the stream.
 var errNoStream = errors.New("no stream socket")
@@ -49,7 +49,20 @@ var errUpgradeLater = errors.New("the session runs an older pier supervisor — 
 // message at a time (its event name and JSON data), until ctx ends or the
 // connection drops. An older supervisor is upgraded in place first.
 func (c *Client) Follow(ctx context.Context, s Session, topics []string, fn func(ev string, data json.RawMessage)) error {
-	return c.followUpgrading(ctx, s, topics, nil, fn)
+	return c.followUpgrading(ctx, s, topics, nil, byEvent(fn))
+}
+
+// streamMsg is one message from a session's supervisor.
+type streamMsg struct {
+	Ev   string          `json:"ev"`
+	ID   string          `json:"id"`
+	Err  string          `json:"error"`
+	Code string          `json:"code"`
+	Data json.RawMessage `json:"data"`
+}
+
+func byEvent(fn func(ev string, data json.RawMessage)) func(streamMsg) {
+	return func(m streamMsg) { fn(m.Ev, m.Data) }
 }
 
 // Tail is where this machine's copy of a chat's log ends: the log it is
@@ -69,7 +82,7 @@ func (c *Client) FollowChats(ctx context.Context, s Session, topics []string, ta
 	for _, t := range tails {
 		extra = append(extra, map[string]any{"op": "tail", "args": map[string]any{"chat": t.Chat, "file": t.File, "from": t.From}})
 	}
-	return c.followUpgrading(ctx, s, topics, extra, fn)
+	return c.followUpgrading(ctx, s, topics, extra, byEvent(fn))
 }
 
 // busyChats reports a chat mid-turn or waiting on its user.
@@ -83,7 +96,7 @@ func busyChats(s Session) bool {
 	return false
 }
 
-func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage)) error {
+func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string, extra []any, fn func(streamMsg)) error {
 	err := c.follow(ctx, s, topics, extra, fn)
 	if errors.Is(err, errOtherBuild) {
 		// Same protocol: a busy session keeps its supervisor for now.
@@ -107,13 +120,13 @@ func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string
 	return err
 }
 
-func (c *Client) follow(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage)) error {
+func (c *Client) follow(ctx context.Context, s Session, topics []string, extra []any, fn func(streamMsg)) error {
 	return c.followAs(ctx, s, topics, extra, fn, false)
 }
 
 // followAs follows a session; anyBuild takes whatever supervisor build
 // answers, as long as it speaks this pier's protocol.
-func (c *Client) followAs(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage), anyBuild bool) error {
+func (c *Client) followAs(ctx context.Context, s Session, topics []string, extra []any, fn func(streamMsg), anyBuild bool) error {
 	conn, err := c.Conn(ctx, s)
 	if err != nil {
 		return err
@@ -162,7 +175,11 @@ func (c *Client) followAs(ctx context.Context, s Session, topics []string, extra
 			return errOtherBuild
 		}
 	}
-	for _, req := range append([]any{map[string]any{"op": "subscribe", "topics": topics}}, extra...) {
+	var reqs []any
+	if len(topics) > 0 {
+		reqs = append(reqs, map[string]any{"op": "subscribe", "topics": topics})
+	}
+	for _, req := range append(reqs, extra...) {
 		b, _ := json.Marshal(req)
 		if _, err := stdin.Write(append(b, '\n')); err != nil {
 			return err
@@ -170,12 +187,9 @@ func (c *Client) followAs(ctx context.Context, s Session, topics []string, extra
 	}
 	conn.Busy()
 	for sc.Scan() {
-		var m struct {
-			Ev   string          `json:"ev"`
-			Data json.RawMessage `json:"data"`
-		}
+		var m streamMsg
 		if json.Unmarshal(sc.Bytes(), &m) == nil && m.Ev != "" {
-			fn(m.Ev, m.Data)
+			fn(m)
 			conn.Busy()
 		}
 	}
@@ -245,7 +259,7 @@ func (c *Client) OpID(ctx context.Context, s Session, id, op string, args any) (
 		out, err = run()
 	}
 	if err != nil {
-		return nil, err
+		return nil, opError(err)
 	}
 	return json.RawMessage(out), nil
 }

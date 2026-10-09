@@ -77,6 +77,7 @@ type Server struct {
 
 	chatMu sync.Mutex
 	chats  map[string]*chatFollower // followed chats by session id
+	gits   map[string]*gitFollower  // followed checkouts by session id
 }
 
 // Serve runs a server until its input closes or ctx ends.
@@ -89,6 +90,7 @@ func Serve(ctx context.Context, o Options) error {
 		// Until the client says otherwise it is looking.
 		activity: wire.ClientActivity{Focused: true},
 		chats:    map[string]*chatFollower{},
+		gits:     map[string]*gitFollower{},
 	}
 	s.overview = newOverviewPoller(s)
 	s.notices = newNotices(s)

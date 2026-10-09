@@ -309,8 +309,9 @@ const (
 	ErrNoKey          ErrorKind = "no_key" // the session's key lives on another machine
 	ErrNotInRepo      ErrorKind = "not_in_repo"
 	ErrUnreachable    ErrorKind = "unreachable"
-	ErrConflict       ErrorKind = "conflict"   // a file changed underneath the write
-	ErrHeadMoved      ErrorKind = "head_moved" // the pull request moved past what was reviewed
+	ErrConflict       ErrorKind = "conflict"    // a file changed underneath the write
+	ErrNoCheckout     ErrorKind = "no_checkout" // the session has no checkout yet
+	ErrHeadMoved      ErrorKind = "head_moved"  // the pull request moved past what was reviewed
 	ErrBusy           ErrorKind = "busy"
 	// Setup's groundwork, failing for a reason the user acts on.
 	ErrNoDefaultVPC ErrorKind = "no_default_vpc" // name a subnet (awsSubnet)

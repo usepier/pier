@@ -40,6 +40,9 @@ type fake struct {
 	prompts []string
 	decided []string
 	follows int
+	// gitStates are what FollowGit pushes; kept what KeepSnapshot got.
+	gitStates []pier.GitState
+	kept      []pier.GitState
 }
 
 func (f *fake) Cloud() string         { return "AWS test-1" }
@@ -260,7 +263,26 @@ func (f *fake) Changes(_ context.Context, s pier.Session) (gitview.Changes, erro
 func (f *fake) Diff(_ context.Context, _ pier.Session, file gitview.File, _ int) (string, bool, error) {
 	return "--- a/" + file.Path + "\n+++ b/" + file.Path + "\n", false, nil
 }
-func (f *fake) ReadFile(_ context.Context, _ pier.Session, path string) (pier.FileContent, error) {
+func (f *fake) FollowGit(ctx context.Context, s pier.Session, fn func(pier.GitState)) error {
+	f.mu.Lock()
+	states := f.gitStates
+	f.mu.Unlock()
+	for _, g := range states {
+		fn(g)
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (f *fake) KeepSnapshot(_ context.Context, _ pier.Session, g pier.GitState) error {
+	f.mu.Lock()
+	f.kept = append(f.kept, g)
+	f.mu.Unlock()
+	return nil
+}
+func (f *fake) FileAt(_ context.Context, _ pier.Session, path, at string) (pier.FileContent, error) {
+	if at == "base" {
+		return pier.FileContent{Path: path, Data: []byte("package old\n"), Size: 12}, nil
+	}
 	if path == "logo.png" {
 		return pier.FileContent{Path: path, Data: []byte{0x89, 'P', 0, 1}, Sha: "s0"}, nil
 	}
@@ -272,8 +294,13 @@ func (f *fake) WriteFile(_ context.Context, _ pier.Session, _, _ string, _ []byt
 	}
 	return "s2", nil
 }
-func (f *fake) Search(context.Context, pier.Session, string, bool, bool) ([]pier.Match, bool, error) {
-	return []pier.Match{{Path: "a.go", Line: 3, Col: 5, Text: "hello"}}, false, nil
+func (f *fake) Search(_ context.Context, _ pier.Session, q pier.SearchQuery, fn func([]pier.Match, bool, bool)) error {
+	if q.Query == "(" {
+		return &pier.OpError{Code: "", Message: "regex parse error"}
+	}
+	fn([]pier.Match{{Path: "a.go", Line: 3, Col: 5, Text: "hello"}}, false, false)
+	fn([]pier.Match{{Path: "b.go", Line: 1, Col: 1, Text: "hello"}}, true, false)
+	return nil
 }
 func (f *fake) Commit(context.Context, pier.Session, string, string) (string, error) {
 	return "def", nil

@@ -126,6 +126,40 @@ const overview = () => ({
 });
 const live = (sessionId) => ["running", "working", "idle"].includes(sessions.find((s) => s.id === sessionId)?.state);
 
+/** An error of a kind the app tells apart (parked, conflict, ...). */
+function rpcError(kind, message) {
+  return Object.assign(new Error(message), { kind });
+}
+
+// Each session's checkout against its base, as the session pushes it.
+const checkoutFiles = new Map();
+function filesOf(id) {
+  if (!checkoutFiles.has(id)) {
+    checkoutFiles.set(id, [
+      { path: "src/checkout/PayButton.tsx", status: "modified", added: 4, removed: 1, uncommitted: true, stamp: "1" },
+      { path: "src/api/charges.ts", status: "modified", added: 6, removed: 2, stamp: "1" },
+      { path: "src/api/charges.test.ts", status: "added", added: 31, removed: 0, stamp: "1" },
+    ]);
+  }
+  return checkoutFiles.get(id);
+}
+function changes(id) {
+  const files = filesOf(id);
+  const on = live(id);
+  return { branch: "checkout-flow", head: "abc1234", upstream: "origin/checkout-flow", ahead: 2, behind: 0, baseRef: "origin/main", baseOid: "b4se",
+    uncommitted: files.filter((f) => f.uncommitted).length, live: on, asOf: on ? undefined : iso(20 * 60e3), files: files.map((f) => ({ ...f, stamp: on ? f.stamp : undefined })) };
+}
+/** An agent edited a file: the session pushes its new changes. */
+function edited(id, path, added) {
+  const files = filesOf(id);
+  const f = files.find((x) => x.path === path);
+  if (f) Object.assign(f, { added: f.added + added, uncommitted: true, stamp: String(Number(f.stamp) + 1) });
+  else files.push({ path, status: "untracked", added, removed: 0, uncommitted: true, stamp: "1" });
+  emit("git", id, changes(id));
+}
+const repoFiles = ["src/checkout/PayButton.tsx", "src/checkout/Summary.tsx", "src/api/charges.ts", "src/api/charges.test.ts", "package.json", "README.md"];
+const fileText = (path) => `// ${path}\nexport function PayButton() {\n  return null;\n}\n`;
+
 function changed(c) {
   emit("chats", c.sessionId, { chats: chatsOf(c.sessionId).map((x) => x.info), live: live(c.sessionId) });
   emit("chat", c.info.id, { op: "chat", chat: c.info });
@@ -238,6 +272,7 @@ async function turn(c, text) {
     put(c, { id: edit.id, kind: "tool", time: iso(), tool: edit });
     await wait(400);
     put(c, { id: edit.id, kind: "tool", time: iso(), tool: { ...edit, status: "ok" } });
+    edited(c.sessionId, "src/checkout/PayButton.tsx", 2);
     await finish(c, t, "Done. `PayButton` now ignores clicks while a charge is in flight:\n\n```tsx\nconst [pending, setPending] = useState(false);\nreturn <button disabled={pending} onClick={pay}>Pay</button>;\n```");
   } catch (e) {
     put(c, { id: nid("e"), kind: "error", time: iso(), text: String(e) });
@@ -437,16 +472,36 @@ const handlers = {
   "chat.compose": () => ({ text: "The `test (ubuntu)` check fails:\n\n```\nFAIL src/auth/mw.test.ts\n  expected 1 redirect, got 2\n```\n\nFix it and push." }),
   "agents.models": (p) => ({ agent: p.agent, models: models[p.agent] ?? [], modes: modes[p.agent] ?? [] }),
   "files.upload": (p) => (live(p.sessionId) ? { name: p.name, path: `/home/agent/.pier/uploads/${p.name}`, mime: p.mime } : { name: p.name, path: `staged:/tmp/${p.name}`, mime: p.mime }),
-  "files.list": () => ({ paths: ["src/checkout/PayButton.tsx", "src/checkout/Summary.tsx", "src/api/charges.ts", "src/api/charges.test.ts", "package.json", "README.md"], truncated: false }),
-  "git.changes": () => ({ branch: "checkout-flow", head: "abc1234", upstream: "origin/checkout-flow", ahead: 2, behind: 0, baseRef: "origin/main", baseOid: "b4se", uncommitted: 2, live: true,
-    files: [
-      { path: "src/checkout/PayButton.tsx", status: "modified", added: 4, removed: 1, uncommitted: true },
-      { path: "src/api/charges.ts", status: "modified", added: 6, removed: 2 },
-      { path: "src/api/charges.test.ts", status: "added", added: 31, removed: 0 },
-    ] }),
-  "git.diff": (p) => ({ path: p.path, live: true, patch: `diff --git a/${p.path} b/${p.path}\n--- a/${p.path}\n+++ b/${p.path}\n@@ -8,3 +8,6 @@\n export function PayButton({ onPay }: Props) {\n-  return <button onClick={onPay}>Pay</button>;\n+  const [pending, setPending] = useState(false);\n+  return <button disabled={pending} onClick={pay}>Pay</button>;\n }\n` }),
-  "files.read": (p) => ({ path: p.path, size: 120, sha: "abc", text: "export function PayButton() {\n  return null;\n}\n" }),
-  "files.search": () => ({ truncated: false, matches: [{ path: "src/api/charges.ts", line: 14, col: 9, text: "  await createCharge(order, { idempotencyKey })" }] }),
+  "files.list": (p) => ({ paths: [...repoFiles, ...filesOf(p.sessionId).filter((f) => !repoFiles.includes(f.path)).map((f) => f.path)], truncated: false, asOf: live(p.sessionId) ? undefined : iso(20 * 60e3) }),
+  "git.changes": (p) => changes(p.id),
+  "git.watch": (p) => ({ sub: openSub("git", p.id), seq: 0, snapshot: changes(p.id) }),
+  "git.diff": (p) => {
+    const f = filesOf(p.sessionId).find((x) => x.path === p.path);
+    const extra = Array.from({ length: Math.max(0, (f?.added ?? 4) - 4) }, (_, i) => `+  // edit ${i + 1}\n`).join("");
+    const before = p.context ? Array.from({ length: 7 }, (_, i) => ` // line ${i + 1}\n`).join("") : "";
+    const start = p.context ? 1 : 8;
+    return { path: p.path, live: live(p.sessionId), asOf: live(p.sessionId) ? undefined : iso(20 * 60e3),
+      patch: `diff --git a/${p.path} b/${p.path}\n--- a/${p.path}\n+++ b/${p.path}\n@@ -${start},${p.context ? 10 : 3} +${start},${(p.context ? 13 : 6) + extra.split("\n").length - 1} @@\n${before} export function PayButton({ onPay }: Props) {\n-  return <button onClick={onPay}>Pay</button>;\n+  const [pending, setPending] = useState(false);\n+  return <button disabled={pending} onClick={pay}>Pay</button>;\n${extra} }\n` };
+  },
+  "files.read": (p) => {
+    if (!live(p.sessionId) && !filesOf(p.sessionId).some((f) => f.path === p.path)) throw rpcError("parked", "Parked — wake it to read it");
+    const text = p.at === "base" ? "export function PayButton() {}\n" : fileText(p.path);
+    return { path: p.path, size: text.length, sha: live(p.sessionId) ? "abc" : "", text, asOf: live(p.sessionId) ? undefined : iso(20 * 60e3) };
+  },
+  "search.watch": (p) => {
+    const sub = openSub("search", `${p.sessionId}:${subSeq}`);
+    const key = subs.get(sub).key;
+    const all = [
+      { path: "src/api/charges.ts", line: 14, col: 9, text: "  await createCharge(order, { idempotencyKey })" },
+      { path: "src/api/charges.test.ts", line: 3, col: 10, text: "import { createCharge } from './charges'" },
+      { path: "src/checkout/PayButton.tsx", line: 21, col: 5, text: "    createCharge(order)" },
+    ];
+    const q = p.caseSensitive ? p.query : p.query.toLowerCase();
+    const found = all.filter((m) => (p.caseSensitive ? m.text : m.text.toLowerCase()).includes(q));
+    setTimeout(() => emit("search", key, { matches: found.slice(0, 2), truncated: false, done: false }), fast ? 5 : 120);
+    setTimeout(() => emit("search", key, { matches: found.slice(2), truncated: false, done: true }), fast ? 10 : 400);
+    return { sub, seq: 0, snapshot: { matches: [], truncated: false, done: false } };
+  },
   "pr.get": () => ({ id: "PR_41", number: 41, title: "Fix the login redirect loop", url: "https://github.com/acme/shop/pull/41", state: "open", headOid: "abc", baseRef: "main", additions: 12, deletions: 3, checks: "failing", checksPassed: 3, checksTotal: 4, review: "changes_requested", mergeable: "blocked", body: "",
     runs: [{ name: "test (ubuntu)", state: "failing", url: "u", jobId: 1, runId: 9 }, { name: "lint", state: "passing", url: "u", jobId: 2, runId: 9 }],
     threads: [{ path: "src/auth/mw.ts", line: 12, resolved: false, outdated: false, comments: [{ author: "maria", body: "Read the cookie name from config instead." }] }],
@@ -516,7 +571,7 @@ rl.on("line", (line) => {
   try {
     send({ id: m.id, result: h(m.params ?? {}) ?? null });
   } catch (e) {
-    send({ id: m.id, error: { code: -32000, message: e.message, data: { kind: "failed" } } });
+    send({ id: m.id, error: { code: -32000, message: e.message, data: { kind: e.kind ?? "failed", message: e.message } } });
   }
 });
 rl.on("close", () => process.exit(0));

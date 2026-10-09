@@ -2,120 +2,177 @@ package pier
 
 import (
 	"context"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/pkg/pier/gitview"
 )
 
-// execDriver runs a session's one-off commands here, with HOME standing in
-// for the session's home.
-type execDriver struct {
+// opDriver answers a session's supervisor ops (`pier-supervisor op
+// '<json>'`) from handlers, and counts what was asked.
+type opDriver struct {
 	driver.Driver
-	home string
+	mu    sync.Mutex
+	ops   map[string]func(args json.RawMessage) (any, error)
+	asked map[string][]json.RawMessage
 }
 
-func (d execDriver) Exec(ctx context.Context, _ string, script string) (string, error) {
-	cmd := exec.CommandContext(ctx, "bash", "-c", script)
-	cmd.Env = append(os.Environ(), "HOME="+d.home)
-	out, err := cmd.Output()
-	return string(out), err
-}
-
-func git(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	c := exec.Command("git", args...)
-	c.Dir = dir
-	c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=a", "GIT_AUTHOR_EMAIL=a@b", "GIT_COMMITTER_NAME=a", "GIT_COMMITTER_EMAIL=a@b")
-	if out, err := c.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %s", args, out)
+func (d *opDriver) Exec(_ context.Context, _ string, script string) (string, error) {
+	quoted, ok := strings.CutPrefix(script, "pier-supervisor op ")
+	if !ok {
+		return "", fmt.Errorf("unexpected script %q", script)
 	}
-}
-
-func TestReviewScripts(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git")
+	var req struct {
+		Op   string          `json:"op"`
+		Args json.RawMessage `json:"args"`
 	}
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	home := t.TempDir()
-	dir := filepath.Join(home, "work", "shop")
-	os.MkdirAll(dir, 0o755)
-	git(t, dir, "init", "-q", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "old.txt"), []byte("same\n"), 0o644)
-	git(t, dir, "add", "-A")
-	git(t, dir, "commit", "-q", "-m", "base")
-	git(t, dir, "update-ref", "refs/pier/base", "HEAD")
-	git(t, dir, "checkout", "-q", "-b", "fix")
-	git(t, dir, "mv", "old.txt", "new name.txt")
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello\n"), 0o644)
-	git(t, dir, "add", "-A")
-	git(t, dir, "commit", "-q", "-m", "work")
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n2\nthree hello\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "notes.md"), []byte("x\ny\n"), 0o644)
-
-	c := &Client{drv: execDriver{home: home}}
-	s := Session{ID: "i-1", Name: "fix", Repo: "shop", State: StateRunning}
-	ctx := context.Background()
-	ch, err := c.Changes(ctx, s)
+	raw := strings.ReplaceAll(strings.Trim(quoted, "'"), `'\''`, "'")
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		return "", err
+	}
+	d.mu.Lock()
+	d.asked[req.Op] = append(d.asked[req.Op], req.Args)
+	f := d.ops[req.Op]
+	d.mu.Unlock()
+	if f == nil {
+		return "", fmt.Errorf("ssh i-1: unknown op %q", req.Op)
+	}
+	v, err := f(req.Args)
 	if err != nil {
+		return "", err
+	}
+	b, _ := json.Marshal(v)
+	return string(b), nil
+}
+
+func (d *opDriver) count(op string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.asked[op])
+}
+
+func newOpDriver() *opDriver {
+	return &opDriver{ops: map[string]func(json.RawMessage) (any, error){}, asked: map[string][]json.RawMessage{}}
+}
+
+func TestOpErrorCodes(t *testing.T) {
+	d := newOpDriver()
+	d.ops["write"] = func(json.RawMessage) (any, error) {
+		return nil, errors.New("ssh i-1: a.txt changed since it was read\npier-op-code: conflict")
+	}
+	d.ops["repo.changes"] = func(json.RawMessage) (any, error) {
+		return nil, errors.New("ssh i-1: the session has no checkout yet\npier-op-code: no_checkout")
+	}
+	c := &Client{drv: d}
+	s := Session{ID: "i-1", State: StateRunning}
+	_, err := c.WriteFile(context.Background(), s, "w1", "a.txt", []byte("x"), "old")
+	if !errors.Is(err, ErrConflict) || strings.Contains(err.Error(), "pier-op-code") {
+		t.Errorf("write = %v", err)
+	}
+	var oe *OpError
+	if _, err := c.Changes(context.Background(), s); !errors.Is(err, ErrNoCheckout) || !errors.As(err, &oe) || oe.Code != "no_checkout" {
+		t.Errorf("changes = %v", err)
+	}
+}
+
+// What a parked session shows is kept as the checkout changes, reading
+// again only what changed.
+func TestKeepSnapshot(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	d := newOpDriver()
+	d.ops["repo.diffs"] = func(raw json.RawMessage) (any, error) {
+		var a struct{ Files []struct{ Path string } }
+		json.Unmarshal(raw, &a)
+		out := map[string]string{}
+		for _, f := range a.Files {
+			out[f.Path] = "patch of " + f.Path
+		}
+		return map[string]any{"patches": out}, nil
+	}
+	d.ops["repo.files"] = func(raw json.RawMessage) (any, error) {
+		var a struct{ Paths []string }
+		json.Unmarshal(raw, &a)
+		out := map[string]any{}
+		for _, p := range a.Paths {
+			data := "content of " + p
+			out[p] = map[string]any{"data": base64.StdEncoding.EncodeToString([]byte(data)), "size": len(data), "sha": "s-" + p}
+		}
+		return map[string]any{"files": out}, nil
+	}
+	d.ops["repo.list"] = func(json.RawMessage) (any, error) {
+		return map[string]any{"paths": []string{"a.go", "b.go", "c.go"}}, nil
+	}
+	c := &Client{drv: d}
+	s := Session{ID: "i-1", State: StateRunning}
+	ctx := context.Background()
+	state := func(stamps map[string]string, files ...gitview.File) GitState {
+		return GitState{Changes: &gitview.Changes{Files: files}, Stamps: stamps}
+	}
+	a := gitview.File{Path: "a.go", Status: gitview.Modified, Added: 1, Uncommitted: true}
+	b := gitview.File{Path: "b.go", Status: gitview.Added, Added: 3}
+	gone := gitview.File{Path: "gone.go", Status: gitview.Deleted, Removed: 2}
+
+	if err := c.KeepSnapshot(ctx, s, state(map[string]string{"a.go": "1", "b.go": "1"}, a, b, gone)); err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]gitview.File{}
-	for _, f := range ch.Files {
-		got[f.Path] = f
+	if p, _, ok := CachedDiff("i-1", "gone.go"); !ok || p != "patch of gone.go" {
+		t.Errorf("deleted file's diff = %q", p)
 	}
-	if f := got["a.txt"]; f.Status != gitview.Modified || f.Added != 2 || f.Removed != 1 || !f.Uncommitted {
-		t.Errorf("a.txt = %+v", f)
+	if fc, _, ok := CachedFile("i-1", "a.go"); !ok || string(fc.Data) != "content of a.go" {
+		t.Errorf("a.go kept = %+v", fc)
 	}
-	if f := got["b.txt"]; f.Status != gitview.Added || f.Uncommitted {
-		t.Errorf("b.txt = %+v", f)
+	if _, _, ok := CachedFile("i-1", "gone.go"); ok {
+		t.Error("a deleted file's content was asked for")
 	}
-	if f := got["new name.txt"]; f.Status != gitview.Renamed || f.OldPath != "old.txt" {
-		t.Errorf("rename = %+v", f)
-	}
-	if f := got["notes.md"]; f.Status != gitview.Untracked || f.Added != 2 {
-		t.Errorf("untracked = %+v", f)
-	}
-	if ch.Branch.Head != "fix" || ch.BaseOid == "" {
-		t.Errorf("branch = %+v base %q", ch.Branch, ch.BaseOid)
-	}
-	if cached, _, ok := CachedChanges("i-1"); !ok || len(cached.Files) != len(ch.Files) {
-		t.Error("the snapshot wasn't kept for when the session parks")
+	if paths, _, _, ok := CachedFiles("i-1"); !ok || len(paths) != 3 {
+		t.Errorf("file list = %v", paths)
 	}
 
-	patch, _, err := c.Diff(ctx, s, got["a.txt"], 0)
-	if err != nil || !strings.Contains(patch, "+three hello") || !strings.Contains(patch, "-two") {
-		t.Errorf("diff = %q %v", patch, err)
+	// a.go edited again, same counts: only it is read again; the list
+	// stays (no file came or went).
+	if err := c.KeepSnapshot(ctx, s, state(map[string]string{"a.go": "2", "b.go": "1"}, a, b, gone)); err != nil {
+		t.Fatal(err)
 	}
-	patch, _, _ = c.Diff(ctx, s, got["notes.md"], 0)
-	if !strings.Contains(patch, "+y") {
-		t.Errorf("untracked diff = %q", patch)
+	if d.count("repo.diffs") != 2 || d.count("repo.list") != 1 {
+		t.Errorf("asked diffs %d times, list %d", d.count("repo.diffs"), d.count("repo.list"))
 	}
-	if p, _, ok := CachedDiff("i-1", "notes.md"); !ok || p != patch {
-		t.Error("the diff wasn't kept")
-	}
-
-	fc, err := c.ReadFile(ctx, s, "a.txt")
-	if err != nil || string(fc.Data) != "one\n2\nthree hello\n" || fc.Size != 18 || len(fc.Sha) != 64 {
-		t.Errorf("read = %+v %v", fc, err)
-	}
-	if fc, _ := c.ReadFile(ctx, s, "nope.txt"); !fc.Missing {
-		t.Error("a missing file reads as missing")
-	}
-	if _, err := c.ReadFile(ctx, s, "../x"); err == nil {
-		t.Error("read outside the checkout")
+	var second struct{ Files []struct{ Path string } }
+	json.Unmarshal(d.asked["repo.diffs"][1], &second)
+	if len(second.Files) != 1 || second.Files[0].Path != "a.go" {
+		t.Errorf("read again = %+v", second)
 	}
 
-	ms, _, err := c.Search(ctx, s, "hello", false, false)
-	if err != nil || len(ms) != 2 {
-		t.Fatalf("search = %+v %v", ms, err)
+	// b.go committed away: its copies go, and the list is read again.
+	if err := c.KeepSnapshot(ctx, s, state(map[string]string{"a.go": "2"}, a, gone)); err != nil {
+		t.Fatal(err)
 	}
-	if ms[0].Path != "a.txt" || ms[0].Line != 3 || ms[0].Col != 7 || ms[1].Path != "b.txt" {
-		t.Errorf("matches = %+v", ms)
+	if _, _, ok := CachedDiff("i-1", "b.go"); ok {
+		t.Error("b.go's diff outlived its change")
+	}
+	if _, _, ok := CachedFile("i-1", "b.go"); ok {
+		t.Error("b.go's content outlived its change")
+	}
+	if d.count("repo.diffs") != 2 || d.count("repo.list") != 2 {
+		t.Errorf("asked diffs %d times, list %d", d.count("repo.diffs"), d.count("repo.list"))
+	}
+	if ch, _, ok := CachedChanges("i-1"); !ok || len(ch.Files) != 2 {
+		t.Errorf("changes kept = %+v", ch)
+	}
+}
+
+func TestParseGitState(t *testing.T) {
+	g, err := ParseGitState(json.RawMessage(`{"changes":{"Files":[{"Path":"a","Status":"modified"}]},"stamps":{"a":"x"},"at":"2026-10-09T10:00:00Z"}`))
+	if err != nil || g.Changes == nil || len(g.Changes.Files) != 1 || g.Stamps["a"] != "x" || g.Err != nil {
+		t.Errorf("state = %+v %v", g, err)
+	}
+	g, _ = ParseGitState(json.RawMessage(`{"error":"the session has no checkout yet","code":"no_checkout"}`))
+	if !errors.Is(g.Err, ErrNoCheckout) || g.Changes != nil {
+		t.Errorf("no checkout = %+v", g)
 	}
 }

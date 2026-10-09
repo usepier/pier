@@ -17,24 +17,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
-
-var repoName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-
-// workDir is a checkout's directory: ~/work/<repo>.
-func workDir(repo string) (string, error) {
-	if !repoName.MatchString(repo) || repo == "." || repo == ".." {
-		return "", fmt.Errorf("bad repo %q", repo)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "work", repo), nil
-}
 
 // inside resolves a path relative to a checkout, refusing anything that
 // leaves it — through .. or through a symlink.
@@ -82,22 +67,22 @@ func fileSha(p string) (string, error) {
 }
 
 // writeOp saves a file of a checkout unless it changed since the frontend
-// read it: {repo, path, data (base64), base_sha ("" for a new file)}.
+// read it: {path, data (base64), base_sha ("" for a new file)}.
 func writeOp(raw json.RawMessage) (any, error) {
 	var a struct {
-		Repo, Path, Data string
-		BaseSha          string `json:"base_sha"`
+		Path, Data string
+		BaseSha    string `json:"base_sha"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return nil, err
 	}
-	dir, err := workDir(a.Repo)
+	dir, err := repoRoot()
 	if err != nil {
 		return nil, err
 	}
 	p, err := inside(dir, a.Path)
 	if err != nil {
-		return nil, err
+		return nil, coded(codeOutside, "%v", err)
 	}
 	data, err := base64.StdEncoding.DecodeString(a.Data)
 	if err != nil {
@@ -108,7 +93,7 @@ func writeOp(raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if cur != a.BaseSha {
-		return nil, fmt.Errorf("conflict: %s changed since it was read", a.Path)
+		return nil, coded(codeConflict, "%s changed since it was read", a.Path)
 	}
 	mode := os.FileMode(0o644)
 	if fi, err := os.Stat(p); err == nil {
@@ -142,13 +127,13 @@ func writeOp(raw json.RawMessage) (any, error) {
 	return map[string]string{"sha": hex.EncodeToString(h[:])}, nil
 }
 
-// gitOp commits or pushes a checkout: {repo, action: commit|push, message}.
+// gitOp commits or pushes the checkout: {action: commit|push, message}.
 func gitOp(raw json.RawMessage) (any, error) {
-	var a struct{ Repo, Action, Message string }
+	var a struct{ Action, Message string }
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return nil, err
 	}
-	dir, err := workDir(a.Repo)
+	dir, err := repoRoot()
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +152,7 @@ func gitOp(raw json.RawMessage) (any, error) {
 			if ctx.Err() != nil {
 				msg = "timed out"
 			}
-			return "", fmt.Errorf("git %s: %s", args[0], msg)
+			return "", coded(codeGit, "git %s: %s", args[0], msg)
 		}
 		return strings.TrimSpace(string(out)), nil
 	}

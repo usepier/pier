@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,14 +37,16 @@ var sockPath = "/run/pier/supervisor.sock"
 const (
 	// streamProto goes up with every change to the stream protocol; a
 	// frontend that needs newer replaces the supervisor.
-	streamProto = 4
+	streamProto = 5
 )
 
 type message struct {
-	Ev   string          `json:"ev,omitempty"`
-	ID   string          `json:"id,omitempty"`
-	OK   *bool           `json:"ok,omitempty"`
-	Err  string          `json:"error,omitempty"`
+	Ev  string `json:"ev,omitempty"`
+	ID  string `json:"id,omitempty"`
+	OK  *bool  `json:"ok,omitempty"`
+	Err string `json:"error,omitempty"`
+	// Code tells failures apart (codeConflict, codeNoCheckout, ...).
+	Code string          `json:"code,omitempty"`
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
@@ -55,11 +58,16 @@ type request struct {
 }
 
 type hub struct {
-	mu      sync.Mutex
-	subs    map[*client]bool
-	status  json.RawMessage
-	env     json.RawMessage
-	chats   json.RawMessage
+	mu     sync.Mutex
+	subs   map[*client]bool
+	status json.RawMessage
+	env    json.RawMessage
+	chats  json.RawMessage
+	// git is the checkout's changes as last published; gitLive says the
+	// watcher keeps it current, gitKick asks it for a fresh one.
+	git     json.RawMessage
+	gitLive bool
+	gitKick chan struct{}
 	results []result // recent op results, oldest first: a replayed id gets its answer
 	running map[string]chan struct{}
 	boot    string
@@ -73,7 +81,7 @@ type hub struct {
 type result struct {
 	id   string
 	data json.RawMessage
-	err  string
+	err  error
 }
 
 type client struct {
@@ -82,7 +90,11 @@ type client struct {
 	topics map[string]bool
 	// tails are the chats it follows: each closes to stop its tail.
 	tails map[string]chan struct{}
+	// searches are its searches running, by id.
+	searches map[string]*searchRun
 }
+
+type searchRun struct{ cancel context.CancelFunc }
 
 func (c *client) send(m message) error {
 	b, err := json.Marshal(m)
@@ -112,7 +124,7 @@ var selfBuild = sync.OnceValue(func() string {
 })
 
 func newHub() *hub {
-	return &hub{subs: map[*client]bool{}, running: map[string]chan struct{}{}, boot: bootID()}
+	return &hub{subs: map[*client]bool{}, running: map[string]chan struct{}{}, boot: bootID(), gitKick: make(chan struct{}, 1)}
 }
 
 // bootID names this boot of the machine; a var so tests can reboot.
@@ -140,7 +152,7 @@ func (h *hub) serve() error {
 
 func (h *hub) handle(conn net.Conn) {
 	defer conn.Close()
-	c := &client{w: bufio.NewWriter(conn), topics: map[string]bool{}, tails: map[string]chan struct{}{}}
+	c := &client{w: bufio.NewWriter(conn), topics: map[string]bool{}, tails: map[string]chan struct{}{}, searches: map[string]*searchRun{}}
 	hello, _ := json.Marshal(map[string]any{"proto": streamProto, "boot": h.boot, "build": selfBuild()})
 	if c.send(message{Ev: "hello", Data: hello}) != nil {
 		return
@@ -150,6 +162,7 @@ func (h *hub) handle(conn net.Conn) {
 	h.mu.Unlock()
 	defer func() {
 		c.untailAll()
+		c.cancelSearches()
 		h.mu.Lock()
 		delete(h.subs, c)
 		h.mu.Unlock()
@@ -170,6 +183,10 @@ func (h *hub) handle(conn net.Conn) {
 			c.mu.Unlock()
 			h.mu.Lock()
 			status, env, chats := h.status, h.env, h.chats
+			git := h.git
+			if !h.gitLive {
+				git = nil
+			}
 			h.mu.Unlock()
 			if c.wants("status") && status != nil {
 				c.send(message{Ev: "status", Data: status})
@@ -182,6 +199,15 @@ func (h *hub) handle(conn net.Conn) {
 					env = envSnapshot(nil)
 				}
 				c.send(message{Ev: "env", Data: env})
+			}
+			if c.wants("git") {
+				// A watcher that kept it current answers now; otherwise
+				// the first read goes to every follower.
+				if git != nil {
+					c.send(message{Ev: "git", Data: git})
+				} else {
+					h.kickGit()
+				}
 			}
 		case "ping":
 			c.send(message{Ev: "pong", ID: r.ID})
@@ -216,13 +242,39 @@ func (h *hub) handle(conn net.Conn) {
 			}
 			json.Unmarshal(r.Args, &a)
 			c.untail(a.Chat)
+		case "search":
+			// Search the checkout, sending matches as they're found:
+			// "search" messages with the request's id until one says done.
+			var a searchArgs
+			json.Unmarshal(r.Args, &a)
+			a.ID = r.ID
+			ctx, cancel := context.WithCancel(context.Background())
+			run := &searchRun{cancel: cancel}
+			c.mu.Lock()
+			if prev := c.searches[r.ID]; prev != nil {
+				prev.cancel()
+			}
+			c.searches[r.ID] = run
+			c.mu.Unlock()
+			go func() {
+				defer c.endSearch(r.ID, run)
+				h.search(ctx, a, func(ms []searchMatch, done, truncated bool, err error) {
+					c.send(searchMessage(r.ID, ms, done, truncated, err))
+				})
+			}()
+		case "search.cancel":
+			c.mu.Lock()
+			if run := c.searches[r.ID]; run != nil {
+				run.cancel()
+			}
+			c.mu.Unlock()
 		default:
 			go func() {
 				data, err := h.op(r)
 				ok := err == nil
 				m := message{Ev: "result", ID: r.ID, OK: &ok, Data: data}
 				if err != nil {
-					m.Err = err.Error()
+					m.Err, m.Code = err.Error(), errCode(err)
 				}
 				c.send(m)
 			}()
@@ -245,6 +297,25 @@ func (c *client) untailAll() {
 	for id, stop := range c.tails {
 		close(stop)
 		delete(c.tails, id)
+	}
+}
+
+func (c *client) cancelSearches() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, run := range c.searches {
+		run.cancel()
+		delete(c.searches, id)
+	}
+}
+
+// endSearch forgets a search that ended, unless another took its id.
+func (c *client) endSearch(id string, run *searchRun) {
+	run.cancel()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.searches[id] == run {
+		delete(c.searches, id)
 	}
 }
 
@@ -323,6 +394,8 @@ func (h *hub) publish(topic string, data any) {
 		h.env = b
 	case "chats":
 		h.chats = b
+	case "git":
+		h.git = b
 	}
 	var to []*client
 	for c := range h.subs {
@@ -337,8 +410,12 @@ func (h *hub) publish(topic string, data any) {
 }
 
 // op runs one change, once per id: a retry of an id that already ran (or
-// is running) gets the first run's answer.
+// is running) gets the first run's answer. Queries just run: asking twice
+// changes nothing, and their answers can be large.
 func (h *hub) op(r request) (json.RawMessage, error) {
+	if q, ok := queries[r.Op]; ok {
+		return marshalled(q(r.Args))
+	}
 	if r.ID == "" {
 		return nil, errors.New("an op needs an id")
 	}
@@ -347,10 +424,7 @@ func (h *hub) op(r request) (json.RawMessage, error) {
 		for _, res := range h.results {
 			if res.id == r.ID {
 				h.mu.Unlock()
-				if res.err != "" {
-					return res.data, errors.New(res.err)
-				}
-				return res.data, nil
+				return res.data, res.err
 			}
 		}
 		if wait, ok := h.running[r.ID]; ok {
@@ -363,13 +437,9 @@ func (h *hub) op(r request) (json.RawMessage, error) {
 		h.mu.Unlock()
 
 		data, err := runOp(r.Op, r.Args)
-		res := result{id: r.ID, data: data}
-		if err != nil {
-			res.err = err.Error()
-		}
 		h.mu.Lock()
 		delete(h.running, r.ID)
-		h.results = append(h.results, res)
+		h.results = append(h.results, result{id: r.ID, data: data, err: err})
 		if len(h.results) > 256 {
 			h.results = h.results[len(h.results)-256:]
 		}
@@ -388,17 +458,20 @@ var ops = map[string]func(args json.RawMessage) (any, error){
 	"version": func(json.RawMessage) (any, error) { return map[string]int{"proto": streamProto}, nil },
 }
 
+// queries read the session for frontends, by name.
+var queries = map[string]func(args json.RawMessage) (any, error){}
+
 func runOp(name string, args json.RawMessage) (json.RawMessage, error) {
 	f, ok := ops[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown op %q", name)
 	}
-	v, err := f(args)
-	if err != nil {
+	return marshalled(f(args))
+}
+
+func marshalled(v any, err error) (json.RawMessage, error) {
+	if err != nil || v == nil {
 		return nil, err
-	}
-	if v == nil {
-		return nil, nil
 	}
 	return json.Marshal(v)
 }
@@ -508,14 +581,19 @@ func opRequest(req string) ([]byte, int) {
 	defer conn.Close()
 	conn.Write(append([]byte(req), '\n'))
 	sc := bufio.NewScanner(conn)
-	sc.Buffer(make([]byte, 64<<10), 8<<20)
+	sc.Buffer(make([]byte, 64<<10), 32<<20)
 	for sc.Scan() {
 		var m message
 		if json.Unmarshal(sc.Bytes(), &m) != nil || m.Ev != "result" || m.ID != r.ID {
 			continue
 		}
 		if m.OK == nil || !*m.OK {
+			// The code goes on a line of its own, for the frontend to
+			// tell the failure apart.
 			fmt.Fprintln(os.Stderr, m.Err)
+			if m.Code != "" {
+				fmt.Fprintln(os.Stderr, "pier-op-code: "+m.Code)
+			}
 			return nil, 1
 		}
 		return m.Data, 0

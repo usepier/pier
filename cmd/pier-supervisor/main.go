@@ -180,6 +180,7 @@ func main() {
 	host.load()
 	h.publish("chats", host.topic())
 	go host.pins.installAll()
+	go h.watchGit()
 	go func() {
 		if err := h.serve(); err != nil {
 			fmt.Println("pier-supervisor: stream socket:", err)

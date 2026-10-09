@@ -69,10 +69,12 @@ type Backend interface {
 	Upload(ctx context.Context, s pier.Session, name string, data []byte) (string, error)
 	ListFiles(ctx context.Context, s pier.Session) ([]string, bool, error)
 	Changes(ctx context.Context, s pier.Session) (gitview.Changes, error)
+	FollowGit(ctx context.Context, s pier.Session, fn func(pier.GitState)) error
+	KeepSnapshot(ctx context.Context, s pier.Session, next pier.GitState) error
 	Diff(ctx context.Context, s pier.Session, f gitview.File, context int) (string, bool, error)
-	ReadFile(ctx context.Context, s pier.Session, path string) (pier.FileContent, error)
+	FileAt(ctx context.Context, s pier.Session, path, at string) (pier.FileContent, error)
 	WriteFile(ctx context.Context, s pier.Session, id, path string, data []byte, baseSha string) (string, error)
-	Search(ctx context.Context, s pier.Session, query string, regex, caseSensitive bool) ([]pier.Match, bool, error)
+	Search(ctx context.Context, s pier.Session, q pier.SearchQuery, fn func(ms []pier.Match, done, truncated bool)) error
 	Commit(ctx context.Context, s pier.Session, id, message string) (string, error)
 	Push(ctx context.Context, s pier.Session, id string) error
 	PullRequests(ctx context.Context, sessions []pier.Session) (map[string]pier.PR, error)

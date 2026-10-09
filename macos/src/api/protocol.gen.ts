@@ -87,6 +87,8 @@ export interface ChangedFile {
   binary?: boolean;
   /** Uncommitted: the working tree or index differs from HEAD here. */
   uncommitted?: boolean;
+  /** Stamp changes with every edit of the file (pushed changes only). */
+  stamp?: string;
 }
 
 /** ChatChange is one update of a chat watch. */
@@ -463,6 +465,17 @@ export interface Container {
 }
 
 /**
+ * FileAtParams names a file of a session's checkout, as the working
+ * tree has it or (at "base") as the branch's base does.
+ */
+export interface FileAtParams {
+  sessionId: string;
+  path: string;
+  /** "work" (default) | "base" */
+  at?: string;
+}
+
+/**
  * FileContent is a file of a session's checkout. Text is set for text
  * files; binary ones only say so.
  */
@@ -475,6 +488,11 @@ export interface FileContent {
   sha: string;
   missing?: boolean;
   tooLarge?: boolean;
+  /**
+   * AsOf is set for a session that can't be read now: the file as this
+   * machine kept it then (read-only).
+   */
+  asOf?: string;
 }
 
 /** FileDiff is a unified diff of one file against the base. */
@@ -493,18 +511,16 @@ export interface FileDiff {
 export interface FileList {
   paths: string[];
   truncated: boolean;
+  /**
+   * AsOf is set for a session that can't be read now: the list as this
+   * machine kept it then.
+   */
+  asOf?: string;
 }
 
 /** FileListParams lists a session's files. */
 export interface FileListParams {
   sessionId: string;
-}
-
-/** FilePathParams names a file of a session's checkout. */
-export interface FilePathParams {
-  sessionId: string;
-  /** relative to the repo root */
-  path: string;
 }
 
 /** FileWriteParams saves a file, unless it changed since it was read. */
@@ -734,7 +750,7 @@ export interface ErrorData {
  * ErrorKind classifies a failed call so the app can react without parsing
  * messages.
  */
-export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "head_moved" | "busy" | "no_default_vpc" | "no_billing" | "no_permission";
+export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "no_checkout" | "head_moved" | "busy" | "no_default_vpc" | "no_billing" | "no_permission";
 
 /** PRDetail is a session's pull request in full. */
 export interface PRDetail extends PRSummary {
@@ -1061,7 +1077,10 @@ export interface Resources {
   load1: number;
 }
 
-/** SearchParams searches a session's checkout. */
+/**
+ * SearchParams searches a session's checkout: literal text, or a regular
+ * expression in ripgrep's syntax.
+ */
 export interface SearchParams {
   sessionId: string;
   query: string;
@@ -1069,10 +1088,16 @@ export interface SearchParams {
   caseSensitive?: boolean;
 }
 
-/** SearchResult is a search's matches, in file order. */
+/**
+ * SearchResult is a search's matches as they're found: the snapshot has
+ * none, each event the next batch; the last says done (and why it
+ * failed, if it did).
+ */
 export interface SearchResult {
   matches: SearchMatch[];
   truncated: boolean;
+  done: boolean;
+  error?: ErrorData;
 }
 
 /** SearchMatch is one line that matched. */
@@ -1552,12 +1577,10 @@ export interface Methods {
   "doctor.run": { params: Empty; result: Check[] };
   /** What runs in a session — windows, containers, processes, ports, load — pushed every few seconds while watched. */
   "env.watch": { params: SessionRef; result: WatchResult<Env> };
-  /** The paths in a session's checkout, tracked and untracked (ignored ones left out). */
+  /** The paths in a session's checkout, tracked and untracked (ignored ones left out). A session that can't be read answers with the list this machine kept (asOf). */
   "files.list": { params: FileListParams; result: FileList };
-  /** A file of a session's checkout, with the sha files.write checks against. */
-  "files.read": { params: FilePathParams; result: FileContent };
-  /** Finds text in a session's checkout: literal by default, or an extended regex. */
-  "files.search": { params: SearchParams; result: SearchResult };
+  /** A file of a session's checkout (or, at base, as the branch's base has it), with the sha files.write checks against. A session that can't be read answers with the copy this machine kept of a changed file (asOf). */
+  "files.read": { params: FileAtParams; result: FileContent };
   /** Puts a file attached to a prompt into a session; a parked session's waits on this Mac until the prompt wakes it. */
   "files.upload": { params: UploadParams; result: Attachment };
   /** Saves a file of a session's checkout, once per opId, unless it changed there since it was read (kind conflict). */
@@ -1570,6 +1593,8 @@ export interface Methods {
   "git.diff": { params: DiffParams; result: FileDiff };
   /** Pushes a session's branch to origin, once per opId. */
   "git.push": { params: PushParams; result: null };
+  /** Everything a session's branch changed against its base, pushed as it changes. A session that can't be read answers with what this machine kept (live false, asOf), and goes live once it can be. */
+  "git.watch": { params: SessionRef; result: WatchResult<Changes> };
   /** Bakes the checkout's repo into a session image in a background job. */
   "image.bake": { params: BakeParams; result: Job };
   /** Opens the session: the protocol version both sides speak, and whether pier is set up. */
@@ -1622,6 +1647,8 @@ export interface Methods {
   "repos.link": { params: PathParams; result: Checkout };
   /** Forgets a linked checkout; the clone itself is untouched. */
   "repos.unlink": { params: PathParams; result: null };
+  /** Finds text in a session's checkout (literal, or a regular expression), sending matches as they're found; the last event says done. */
+  "search.watch": { params: SearchParams; result: WatchResult<SearchResult> };
   /** Starts a session from a linked checkout's HEAD (uncommitted edits travel too) in a background job. The row lists as starting until it is ready. */
   "sessions.create": { params: CreateParams; result: Job };
   /** Never parks this session when idle (it still stops on the runaway cap). */
@@ -1679,9 +1706,11 @@ export interface Watches {
   "chat": { params: ChatRef; snapshot: ChatSnapshot; data: ChatChange };
   "chats": { params: SessionRef; snapshot: ChatsSnapshot; data: ChatsChange };
   "env": { params: SessionRef; snapshot: Env; data: Env };
+  "git": { params: SessionRef; snapshot: Changes; data: Changes };
   "job": { params: JobRef; snapshot: JobUpdate; data: JobUpdate };
   "overview": { params: Empty; snapshot: Overview; data: Overview };
   "proxy": { params: Empty; snapshot: ProxyState; data: ProxyState };
+  "search": { params: SearchParams; snapshot: SearchResult; data: SearchResult };
 }
 
 export interface ServerNotifications {

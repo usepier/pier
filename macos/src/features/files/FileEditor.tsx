@@ -24,15 +24,16 @@ function readable(s: Session) {
 /**
  * A file of the session's checkout in an editor. Edits are kept on this Mac
  * as you type until saved; ⌘S saves them to the session — unless the file
- * changed there since it was opened, which asks first.
+ * changed there since it was opened, which asks first. A parked session
+ * shows a changed file as of the last look, read-only.
  */
 export function FileEditor({ session: s, doc, visible }: { session: Session; doc: Doc; visible: boolean }) {
   const qc = useQueryClient();
-  const queryKey = useMemo(() => ["file", s.id, doc.path], [s.id, doc.path]);
+  const live = readable(s);
+  const queryKey = useMemo(() => ["file", s.id, doc.path, live], [s.id, doc.path, live]);
   const file = useQuery({
     queryKey,
     queryFn: () => rpc.call("files.read", { sessionId: s.id, path: doc.path }),
-    enabled: readable(s),
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
   });
@@ -47,7 +48,7 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
   const save = useCallback(async () => {
     const v = view.current;
     const f = qc.getQueryData<FileContent>(queryKey);
-    if (!v || !f) return;
+    if (!v || !f || f.asOf) return;
     const text = v.state.doc.toString();
     const buf = useBuffers.getState().buffers[key];
     let base = buf?.baseSha ?? f.sha;
@@ -116,14 +117,15 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
   // The editor, made once the file has been read — and made again only for
   // another file: a save updates the query, not the editor.
   const data = file.data;
-  const editable = !!data && !data.binary && !data.tooLarge;
+  const shown = !!data && !data.binary && !data.tooLarge;
+  const kept = !!data?.asOf;
   const saveRef = useRef(save);
   saveRef.current = save;
   const textRef = useRef(data?.text ?? "");
   textRef.current = data?.text ?? "";
   useEffect(() => {
-    if (!host.current || !editable) return;
-    const buf = useBuffers.getState().buffers[bufferKey(s.id, doc.path)];
+    if (!host.current || !shown) return;
+    const buf = kept ? undefined : useBuffers.getState().buffers[bufferKey(s.id, doc.path)];
     const v = new EditorView({
       parent: host.current,
       state: EditorState.create({
@@ -131,6 +133,7 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
         extensions: [
           ...editorExtensions(() => void saveRef.current()),
           lang.current.of([]),
+          ...(kept ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
           EditorView.updateListener.of((u) => {
             if (!u.docChanged) return;
             const text = u.state.doc.toString();
@@ -149,7 +152,7 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
       v.destroy();
       view.current = null;
     };
-  }, [editable, doc.path, s.id, qc, queryKey]);
+  }, [shown, kept, doc.path, s.id, qc, queryKey]);
 
   // Show the line a search hit pointed at — again for each new request, and
   // once the editor exists.
@@ -165,16 +168,20 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
     v.focus();
   }, [doc.line, reveal, visible, data]);
 
-  if (!readable(s)) {
+  if (file.error) {
+    const parked = file.error instanceof RpcError && file.error.kind === "parked";
     return (
       <Empty
         icon={<FileWarning size={24} strokeWidth={1.5} />}
         title={doc.path}
-        detail={s.state === "parked" ? "Wake the session to open its files." : "Not readable right now."}
+        detail={
+          parked
+            ? "Only changed files are kept while a session is parked. Wake it to open this one."
+            : (file.error as Error).message
+        }
       />
     );
   }
-  if (file.error) return <Empty title={doc.path} detail={(file.error as Error).message} />;
   if (!data) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -200,15 +207,21 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-separator px-3 text-xs text-secondary">
         <span className="min-w-0 flex-1 truncate font-mono">{doc.path}</span>
         {data.missing && <span className="text-tertiary">new file</span>}
-        {dirty && <span className="text-label">edited</span>}
-        <Button
-          size="sm"
-          variant={dirty ? "primary" : "secondary"}
-          isDisabled={!dirty || saving}
-          onPress={() => void save()}
-        >
-          {saving ? "Saving…" : "Save"}
-        </Button>
+        {kept ? (
+          <span className="text-tertiary">as of the last look · read-only</span>
+        ) : (
+          <>
+            {dirty && <span className="text-label">edited</span>}
+            <Button
+              size="sm"
+              variant={dirty ? "primary" : "secondary"}
+              isDisabled={!dirty || saving}
+              onPress={() => void save()}
+            >
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </>
+        )}
       </div>
       <div ref={host} className="selectable min-h-0 flex-1 overflow-hidden" />
     </div>

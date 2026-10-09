@@ -12,13 +12,11 @@ export function CommitSheet({
   onOpenChange,
   session: s,
   files,
-  onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   session: Session;
   files: number;
-  onDone: () => void;
 }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,7 +36,6 @@ export function CommitSheet({
     toast(pushed ? "Committed and pushed" : `Committed ${head.head.slice(0, 7)}`, "ok");
     setMessage("");
     onOpenChange(false);
-    onDone();
   };
   return (
     <Sheet open={open} onOpenChange={onOpenChange} title={`Commit ${plural(files, "file")}`}>

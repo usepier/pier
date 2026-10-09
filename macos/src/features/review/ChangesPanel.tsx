@@ -1,7 +1,7 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpFromLine, GitBranch, GitCommitHorizontal, GitPullRequest, Send } from "lucide-react";
 import { useState } from "react";
 import { rpc } from "@/api/client";
+import { useWatch } from "@/api/live";
 import type { Session } from "@/api/protocol.gen";
 import { composeInto } from "@/features/github/PRPanel";
 import { plural } from "@/lib/format";
@@ -14,20 +14,10 @@ import { Spinner } from "@/ui/Spinner";
 import { CommitSheet } from "./CommitSheet";
 import { StatusMark, splitPath, totals } from "./status";
 
-function running(s: Session) {
-  return ["running", "working", "idle"].includes(s.state) && s.hasKey;
-}
-
 /** What the session's branch changed against its base, and the ways to ship it. */
 export function ChangesPanel({ session: s }: { session: Session }) {
-  const live = running(s);
-  const qc = useQueryClient();
-  const changes = useQuery({
-    queryKey: ["changes", s.id],
-    queryFn: () => rpc.call("git.changes", { id: s.id }),
-    refetchInterval: live ? 5000 : false,
-    retry: false,
-  });
+  // Pushed by the session as its checkout changes.
+  const changes = useWatch("git", { id: s.id });
   const open = useDocs((d) => d.open);
   const activeDoc = useDocs((d) => d.active[s.id]);
   const comments = useComments((c) => c.comments[s.id]?.length ?? 0);
@@ -52,7 +42,6 @@ export function ChangesPanel({ session: s }: { session: Session }) {
     const ok = await attempt(() => rpc.call("git.push", { sessionId: s.id, opId: crypto.randomUUID() }));
     setPushing(false);
     if (ok !== undefined) toast(`Pushed ${c.branch || "the branch"}`, "ok");
-    void qc.invalidateQueries({ queryKey: ["changes", s.id] });
   };
   return (
     <div className="flex h-full flex-col">
@@ -118,7 +107,7 @@ export function ChangesPanel({ session: s }: { session: Session }) {
           );
         })}
       </ul>
-      {live && (
+      {c.live && (
         <div className="flex shrink-0 flex-wrap gap-1.5 border-t border-separator p-2.5">
           {comments > 0 && (
             <Button
@@ -160,13 +149,7 @@ export function ChangesPanel({ session: s }: { session: Session }) {
           )}
         </div>
       )}
-      <CommitSheet
-        open={committing}
-        onOpenChange={setCommitting}
-        session={s}
-        files={c.uncommitted}
-        onDone={() => void qc.invalidateQueries({ queryKey: ["changes", s.id] })}
-      />
+      <CommitSheet open={committing} onOpenChange={setCommitting} session={s} files={c.uncommitted} />
     </div>
   );
 }

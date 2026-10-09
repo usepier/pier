@@ -1,9 +1,10 @@
 import type { DiffLineAnnotation, SelectedLineRange } from "@pierre/diffs";
 import { PatchDiff } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
-import { FileCode, MessageSquarePlus, Send, Trash2 } from "lucide-react";
+import { FileCode, FoldVertical, MessageSquarePlus, Send, Trash2, UnfoldVertical } from "lucide-react";
 import { useMemo, useState } from "react";
 import { rpc } from "@/api/client";
+import { useWatch } from "@/api/live";
 import type { Session } from "@/api/protocol.gen";
 import { type Comment, reviewMessage, useComments } from "@/state/comments";
 import { sendToAgent } from "@/state/currentChat";
@@ -17,11 +18,10 @@ import { linesFromPatch } from "./patch";
 
 type Note = { comment?: Comment; draft?: { side: Comment["side"]; line: number; endLine?: number } };
 
-function running(s: Session) {
-  return ["running", "working", "idle"].includes(s.state) && s.hasKey;
-}
-
 const noComments: Comment[] = [];
+
+/** Context lines that show a whole file around its changes. */
+const wholeFile = 1_000_000;
 
 /**
  * One file's changes against the branch's base. Click the + beside a line
@@ -29,12 +29,26 @@ const noComments: Comment[] = [];
  * the agent together.
  */
 export function DiffView({ session: s, doc, visible }: { session: Session; doc: Doc; visible: boolean }) {
-  const live = running(s);
+  // The file as the session last pushed it: a new stamp (or counts) means
+  // it changed, and its diff is read again.
+  const changes = useWatch("git", { id: s.id }, { enabled: visible });
+  const live = !!changes.data?.live;
+  const entry = changes.data?.files.find((f) => f.path === doc.path);
+  const version = entry ? `${entry.status}:${entry.added}:${entry.removed}:${entry.stamp ?? ""}` : "";
+  const [whole, setWhole] = useState(false);
   const diff = useQuery({
-    queryKey: ["diff", s.id, doc.path, doc.oldPath, doc.status],
+    queryKey: ["diff", s.id, doc.path, doc.oldPath, doc.status, version, whole],
     queryFn: () =>
-      rpc.call("git.diff", { sessionId: s.id, path: doc.path, oldPath: doc.oldPath, status: doc.status }),
-    refetchInterval: visible && live ? 8000 : false,
+      rpc.call("git.diff", {
+        sessionId: s.id,
+        path: doc.path,
+        oldPath: doc.oldPath,
+        status: entry?.status ?? doc.status,
+        context: whole ? wholeFile : undefined,
+      }),
+    // Wait for the file's entry, so the first read isn't wasted.
+    enabled: changes.data !== undefined || changes.error !== undefined,
+    placeholderData: (prev) => prev,
   });
   const split = usePrefs((p) => p.diffSplit);
   const setPrefs = usePrefs((p) => p.set);
@@ -83,6 +97,16 @@ export function DiffView({ session: s, doc, visible }: { session: Session; doc: 
           {doc.path}
         </span>
         {!diff.data.live && diff.data.asOf && <span className="text-tertiary">as of the last look</span>}
+        {diff.data.live && (
+          <Button
+            size="sm"
+            variant="plain"
+            icon={whole ? <FoldVertical size={11} /> : <UnfoldVertical size={11} />}
+            onPress={() => setWhole(!whole)}
+          >
+            {whole ? "Changes only" : "Whole file"}
+          </Button>
+        )}
         <fieldset
           aria-label="Layout"
           className="m-0 flex h-[22px] min-w-0 rounded-ctl border-0 bg-selected p-0.5"

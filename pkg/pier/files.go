@@ -41,33 +41,6 @@ func (c *Client) Upload(ctx context.Context, s Session, name string, data []byte
 	return strings.TrimSpace(string(out)), nil
 }
 
-// maxListed bounds a session's file list.
-const maxListed = 50000
-
-// ListFiles lists the session checkout's files (tracked and untracked,
-// ignored ones left out), relative to the repo root, for @-mentions.
-func (c *Client) ListFiles(ctx context.Context, s Session) (paths []string, truncated bool, err error) {
-	if err := CheckReady(s); err != nil {
-		return nil, false, err
-	}
-	out, err := c.exec(ctx, s.ID, "cd ~/work/"+shellQuote(s.Repo)+" && git ls-files -z --cached --others --exclude-standard | head -c 8000000")
-	if err != nil {
-		return nil, false, err
-	}
-	seen := map[string]bool{}
-	for _, p := range strings.Split(out, "\x00") {
-		if p == "" || seen[p] {
-			continue
-		}
-		if len(paths) == maxListed {
-			return paths, true, nil
-		}
-		seen[p] = true
-		paths = append(paths, p)
-	}
-	return paths, len(out) >= 8000000, nil
-}
-
 // mimeOf is a file's media type by its extension ("" when unknown).
 func mimeOf(name string) string {
 	return mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))

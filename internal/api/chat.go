@@ -928,15 +928,23 @@ func init() {
 			path, err := be.Upload(ctx, sess, name, data)
 			return wire.Attachment{Name: name, Path: path, Mime: p.Mime}, err
 		})
-	handle("files.list", "The paths in a session's checkout, tracked and untracked (ignored ones left out).",
+	handle("files.list", "The paths in a session's checkout, tracked and untracked (ignored ones left out). A session that can't be read answers with the list this machine kept (asOf).",
 		func(ctx context.Context, s *Server, _ *Call, p wire.FileListParams) (wire.FileList, error) {
-			var out wire.FileList
-			err := s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) (err error) {
-				out.Paths, out.Truncated, err = be.ListFiles(ctx, sess)
-				return err
-			})
-			if out.Paths == nil {
-				out.Paths = []string{}
+			out := wire.FileList{Paths: []string{}}
+			be, sess, err := s.sessionFor(ctx, p.SessionID)
+			if err != nil {
+				return out, err
+			}
+			var paths []string
+			if readable(be, sess) {
+				paths, out.Truncated, err = be.ListFiles(ctx, sess)
+			} else if kept, truncated, at, ok := pier.CachedFiles(sess.ID); ok {
+				paths, out.Truncated, out.AsOf = kept, truncated, asOf(at)
+			} else {
+				err = unreadable(be, sess)
+			}
+			if paths != nil {
+				out.Paths = paths
 			}
 			return out, err
 		})

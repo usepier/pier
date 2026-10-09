@@ -614,30 +614,43 @@ in-flight work three seconds to see its cancellation.
   something changes, slow when quiet, slower when the client reports
   `client.activity {focused: false}`); the stray sweep runs at most every
   ten minutes.
-- **Chat.** `chat.watch` sends a session's newest chat items with its
-  agent's state, then changes (append, update, reset, agent) as the agent
-  writes; a parked session answers from this machine's copy with
-  `live: false` and `asOf`. `chat.history` pages older items in. `chat.send`
-  queues a prompt once per id — on a parked session, through a background
-  job that wakes it. `chat.decide` answers a permission request,
-  `chat.interrupt` stops a turn and `chat.peek` shows the bottom of the
-  agent's pane without attaching; `files.upload` puts a pasted image into
-  the session and `files.list` lists its checkout for @-mentions. A client
-  that sets `approvals` in `initialize` answers permission requests: while
-  it runs, a session whose agent is at work is followed even without an
-  open chat, so its requests reach the client. `notify` tells the client
-  once about a finished turn, a needed answer, a failed setup or create.
-- **Review.** `git.changes` lists everything a session's branch changed
+- **Chat.** `chats.watch` lists a session's chats (agent, model, state,
+  what each waits on); `chat.watch` sends one chat's newest items, then
+  changes (append, update, reset, the chat's state) and the text its agent
+  is writing as it streams. A parked session answers from this machine's
+  copy with `live: false` and `asOf`; `chat.history` pages older items in.
+  `chat.create` starts a chat and `chat.send` sends it a prompt once per
+  id — mid-turn, it steers the turn or waits its turn in the queue
+  (`chat.dequeue` takes it back); on a parked session, through a
+  background job that wakes it. `chat.decide` answers a permission
+  request, a question or a plan; `chat.interrupt` stops a turn;
+  `chat.configure` changes model, effort or mode; `chat.close` ends a
+  chat. `chats.window` and `chat.takeover` open a chat in the session's
+  terminal, to watch or to carry on in the agent's own interface.
+  `agents.models` lists an agent's models, efforts and modes.
+  `files.upload` puts an attachment into the session (or keeps it here
+  for a parked one) and `files.list` lists its checkout for @-mentions.
+  `notify` tells the client once about a finished turn, a needed answer, a
+  failed setup or create.
+- **Review.** `git.watch` sends everything a session's branch changed
   against its base (the merge base with the origin branch it came off,
-  else the commit recorded at create), committed or not, with line counts;
-  `git.diff` gives one file's unified diff. Both answer for a parked
-  session from what this machine last read. `files.read` returns a file
-  with the sha of what was read and `files.write` saves it only if the
-  session's copy still has that sha (kind `conflict` otherwise);
-  `files.search` greps the checkout. Saves, `git.commit` and `git.push`
-  run inside the session's supervisor — a save is written to a temporary
-  file, synced and renamed into place — and each carries an id that makes
-  a retry a no-op.
+  else the commit recorded at create), committed or not, with line counts
+  — then again whenever it changes: the session's supervisor watches the
+  checkout (inotify) and pushes, so nothing polls. `git.changes` reads it
+  once. `git.diff` gives one file's unified diff, with as much context as
+  asked (the whole file). While a session is watched, this machine keeps
+  what a parked one shows — its changes, every changed file's diff and
+  contents, its file list — reading again only what changed; a parked
+  session answers from that copy (`live: false`, `asOf`; read-only).
+  `files.read` returns a file (or, `at: base`, the base's copy) with the
+  sha of what was read, and `files.write` saves it only if the session's
+  copy still has that sha (kind `conflict` otherwise). `search.watch`
+  streams matches from the session's ripgrep as they're found; a new
+  search ends the last. Reads run in the supervisor too, which finds the
+  checkout itself (kind `no_checkout` before there is one). Saves,
+  `git.commit` and `git.push` run there — a save is written to a
+  temporary file, synced and renamed into place — and each carries an id
+  that makes a retry a no-op.
 - **Pull requests.** The overview carries each session's pull request —
   found by its branch on the origin's GitHub host, one query per
   repository, with this machine's own login (gh's, else git's) — with its

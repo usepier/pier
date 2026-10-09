@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, File, Folder, Search } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { rpc } from "@/api/client";
-import type { Session } from "@/api/protocol.gen";
+import { useWatch } from "@/api/live";
+import type { SearchResult, Session } from "@/api/protocol.gen";
 import { rank } from "@/features/chat/mentions";
 import { plural } from "@/lib/format";
 import { docId, useDocs } from "@/state/docs";
@@ -22,14 +23,22 @@ const changeTone: Record<string, string> = {
   conflicted: "text-bad",
 };
 
-/** The session's checkout: a tree to browse, a filter, and a search of the contents. */
+/**
+ * The session's checkout: a tree to browse, a filter, and a search of the
+ * contents. A parked session shows the files as of the last look.
+ */
 export function FilesPanel({ session: s }: { session: Session }) {
   const mode = useInspector((i) => i.filesMode);
   const setMode = useInspector((i) => i.setFilesMode);
   if (!running(s)) {
     return (
-      <div className="p-4 text-sm text-secondary">
-        {s.state === "parked" ? "Parked — wake it to browse its files." : "Not readable right now."}
+      <div className="flex h-full flex-col">
+        <div className="shrink-0 border-b border-separator px-3 py-2 text-xs text-secondary">
+          {s.state === "parked"
+            ? "Parked — as of the last look. Wake it to search or edit."
+            : "Not readable right now."}
+        </div>
+        <Tree session={s} />
       </div>
     );
   }
@@ -61,16 +70,24 @@ export function FilesPanel({ session: s }: { session: Session }) {
   );
 }
 
+/** Names the set of files a change list adds, removes or renames: the file list is read again when it moves. */
+function listVersion(files: { path: string; status: string }[] | undefined) {
+  let h = 0;
+  for (const f of files ?? []) {
+    if (f.status === "modified") continue;
+    for (const ch of `${f.status}:${f.path};`) h = (Math.imul(h, 31) + ch.charCodeAt(0)) | 0;
+  }
+  return h;
+}
+
 function Tree({ session: s }: { session: Session }) {
+  const changes = useWatch("git", { id: s.id });
+  const version = listVersion(changes.data?.files);
   const files = useQuery({
-    queryKey: ["files", s.id],
+    queryKey: ["files", s.id, version, running(s)],
     queryFn: () => rpc.call("files.list", { sessionId: s.id }),
-    staleTime: 30_000,
-  });
-  const changes = useQuery({
-    queryKey: ["changes", s.id],
-    queryFn: () => rpc.call("git.changes", { id: s.id }),
-    staleTime: 5_000,
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
   });
   const status = useMemo(
     () => new Map((changes.data?.files ?? []).map((f) => [f.path, f.status])),
@@ -171,6 +188,11 @@ function Tree({ session: s }: { session: Session }) {
   );
 }
 
+/** Adds a batch of matches to those found so far. */
+function appendMatches(prev: SearchResult | undefined, next: SearchResult): SearchResult {
+  return { ...next, matches: [...(prev?.matches ?? []), ...next.matches] };
+}
+
 function ContentSearch({ session: s }: { session: Session }) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -188,18 +210,19 @@ function ContentSearch({ session: s }: { session: Session }) {
     input.current?.focus();
     input.current?.select();
   }, [focus]);
-  const result = useQuery({
-    queryKey: ["search", s.id, debounced, regex, caseSensitive],
-    queryFn: ({ signal }) =>
-      rpc.call("files.search", { sessionId: s.id, query: debounced, regex, caseSensitive }, { signal }),
-    enabled: debounced.length > 0,
-    staleTime: 10_000,
-  });
+  // Matches stream in as the session finds them; a new query ends the old.
+  const result = useWatch(
+    "search",
+    { sessionId: s.id, query: debounced, regex, caseSensitive },
+    { enabled: debounced.length > 0, graceMs: 0, reduce: appendMatches },
+  );
+  const data = debounced ? result.data : undefined;
+  const failed = data?.error ?? (result.error as Error | undefined);
   const groups = useMemo(() => {
-    const m = new Map<string, NonNullable<typeof result.data>["matches"]>();
-    for (const x of result.data?.matches ?? []) m.set(x.path, [...(m.get(x.path) ?? []), x]);
+    const m = new Map<string, SearchResult["matches"]>();
+    for (const x of data?.matches ?? []) m.set(x.path, [...(m.get(x.path) ?? []), x]);
     return [...m];
-  }, [result.data]);
+  }, [data]);
   const toggle = (on: boolean, set: (v: boolean) => void, label: string, text: string) => (
     <button
       type="button"
@@ -230,18 +253,17 @@ function ContentSearch({ session: s }: { session: Session }) {
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto pb-2 text-sm">
-        {result.isFetching && !result.data && (
+        {debounced && !data?.done && !failed && !data?.matches.length && (
           <div className="flex justify-center p-4">
             <Spinner />
           </div>
         )}
-        {result.error && (
-          <div className="selectable px-3 py-2 text-bad">{(result.error as Error).message}</div>
-        )}
-        {result.data && (
+        {failed && <div className="selectable px-3 py-2 text-bad">{failed.message}</div>}
+        {data && !failed && (data.done || data.matches.length > 0) && (
           <div className="px-3 py-1 text-2xs text-tertiary">
-            {plural(result.data.matches.length, "match", "matches")} in {plural(groups.length, "file")}
-            {result.data.truncated ? " (more not shown)" : ""}
+            {plural(data.matches.length, "match", "matches")} in {plural(groups.length, "file")}
+            {data.truncated ? " (more not shown)" : ""}
+            {!data.done && " so far"}
           </div>
         )}
         {groups.map(([path, ms]) => (

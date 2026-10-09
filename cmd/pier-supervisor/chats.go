@@ -1019,7 +1019,7 @@ func registerChatOps(h *chatHost, touch func()) {
 		}
 		return nil, h.closeChat(a.Chat)
 	}
-	ops["chat.page"] = func(raw json.RawMessage) (any, error) {
+	queries["chat.page"] = func(raw json.RawMessage) (any, error) {
 		var a struct {
 			Chat   string `json:"chat"`
 			Before string `json:"before"`
@@ -1049,7 +1049,7 @@ func registerChatOps(h *chatHost, touch func()) {
 		from := max(end-a.Limit, 0)
 		return map[string]any{"items": items[from:end], "more": from > 0}, nil
 	}
-	ops["models"] = func(raw json.RawMessage) (any, error) {
+	queries["models"] = func(raw json.RawMessage) (any, error) {
 		var a struct{ Agent string }
 		if err := json.Unmarshal(raw, &a); err != nil {
 			return nil, err

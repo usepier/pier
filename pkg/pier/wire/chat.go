@@ -427,6 +427,9 @@ type FileListParams struct {
 type FileList struct {
 	Paths     []string `json:"paths"`
 	Truncated bool     `json:"truncated"`
+	// AsOf is set for a session that can't be read now: the list as this
+	// machine kept it then.
+	AsOf *time.Time `json:"asOf,omitempty"`
 }
 
 // Notice is something worth telling the user about a session (notify):

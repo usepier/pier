@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/usepier/pier/pkg/pier"
+	"github.com/usepier/pier/pkg/pier/gitview"
 	"github.com/usepier/pier/pkg/pier/wire"
 )
 
@@ -29,11 +31,79 @@ func TestReview(t *testing.T) {
 	if kind := errKind(resp); kind != "conflict" {
 		t.Errorf("stale write = %v", resp)
 	}
-	resp, _ = c.call("files.search", map[string]any{"sessionId": "i-1", "query": "hello"})
-	var sr wire.SearchResult
-	remarshal(t, resp["result"], &sr)
-	if len(sr.Matches) != 1 || sr.Matches[0].Line != 3 {
-		t.Errorf("search = %+v", resp)
+	resp, _ = c.call("files.read", map[string]any{"sessionId": "i-1", "path": "a.go", "at": "base"})
+	remarshal(t, resp["result"], &fc)
+	if fc.Text != "package old\n" {
+		t.Errorf("at base = %+v", resp)
+	}
+}
+
+func TestSearchWatch(t *testing.T) {
+	c := start(t, &fake{sessions: []pier.Session{{ID: "i-1", Name: "fix", State: pier.StateRunning}}})
+	resp, _ := c.call("search.watch", map[string]any{"sessionId": "i-1", "query": "hello"})
+	var snap wire.WatchResult[wire.SearchResult]
+	remarshal(t, resp["result"], &snap)
+	if len(snap.Snapshot.Matches) != 0 || snap.Snapshot.Done {
+		t.Errorf("snapshot = %+v", resp)
+	}
+	var got []wire.SearchMatch
+	for {
+		var ev wire.SearchResult
+		remarshal(t, c.next("sub.event")["params"].(map[string]any)["data"], &ev)
+		got = append(got, ev.Matches...)
+		if ev.Done {
+			break
+		}
+	}
+	if len(got) != 2 || got[0].Path != "a.go" || got[1].Path != "b.go" {
+		t.Errorf("matches = %+v", got)
+	}
+	c.call("search.watch", map[string]any{"sessionId": "i-1", "query": "(", "regex": true})
+	var ev wire.SearchResult
+	remarshal(t, c.next("sub.event")["params"].(map[string]any)["data"], &ev)
+	if !ev.Done || ev.Error == nil || ev.Error.Message != "regex parse error" {
+		t.Errorf("a bad pattern = %+v", ev)
+	}
+}
+
+func TestGitWatch(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{sessions: []pier.Session{{ID: "i-1", Name: "fix", State: pier.StateRunning}}}
+	first := gitview.Changes{Branch: gitview.Branch{Head: "fix"}, Files: []gitview.File{{Path: "a.go", Status: gitview.Modified, Added: 1}}}
+	second := gitview.Changes{Branch: gitview.Branch{Head: "fix"}, Files: []gitview.File{{Path: "a.go", Status: gitview.Modified, Added: 2}}}
+	f.gitStates = []pier.GitState{{Changes: &first, Stamps: map[string]string{"a.go": "s1"}}, {Changes: &second, Stamps: map[string]string{"a.go": "s2"}}}
+	c := start(t, f)
+	resp, _ := c.call("git.watch", map[string]any{"id": "i-1"})
+	var snap wire.WatchResult[wire.Changes]
+	remarshal(t, resp["result"], &snap)
+	ch := snap.Snapshot
+	if !ch.Live || len(ch.Files) != 1 {
+		t.Fatalf("snapshot = %+v", resp)
+	}
+	// The snapshot is whichever push came last before it; the second
+	// arrives as an event when the first was the snapshot.
+	if ch.Files[0].Stamp == "s1" {
+		remarshal(t, c.next("sub.event")["params"].(map[string]any)["data"], &ch)
+	}
+	if ch.Files[0].Added != 2 || ch.Files[0].Stamp != "s2" {
+		t.Errorf("latest = %+v", ch)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f.mu.Lock()
+		n := len(f.kept)
+		last := pier.GitState{}
+		if n > 0 {
+			last = f.kept[n-1]
+		}
+		f.mu.Unlock()
+		if n > 0 && last.Stamps["a.go"] == "s2" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the newest state wasn't kept (%d kept)", n)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -54,5 +124,23 @@ func TestReviewParked(t *testing.T) {
 	resp, _ = c.call("git.diff", map[string]any{"sessionId": "i-2", "path": "b.go"})
 	if errKind(resp) != "parked" {
 		t.Errorf("an uncached diff of a parked session = %v", resp)
+	}
+	// A watch of it answers with the kept copy too.
+	resp, _ = c.call("git.watch", map[string]any{"id": "i-2"})
+	var snap wire.WatchResult[wire.Changes]
+	remarshal(t, resp["result"], &snap)
+	if snap.Snapshot.Live || snap.Snapshot.AsOf == nil || len(snap.Snapshot.Files) != 1 {
+		t.Errorf("parked watch = %+v", resp)
+	}
+	resp, _ = c.call("files.list", map[string]any{"sessionId": "i-2"})
+	if errKind(resp) != "parked" {
+		t.Errorf("an unkept list = %v", resp)
+	}
+	os.WriteFile(filepath.Join(dir, "files.json"), []byte(`{"paths":["b.go"]}`), 0o600)
+	resp, _ = c.call("files.list", map[string]any{"sessionId": "i-2"})
+	var fl wire.FileList
+	remarshal(t, resp["result"], &fl)
+	if len(fl.Paths) != 1 || fl.AsOf == nil {
+		t.Errorf("kept list = %+v", resp)
 	}
 }
