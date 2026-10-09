@@ -44,6 +44,35 @@ jobs:
       - run: pnpm exec vitest run
       - run: pnpm exec vite build
 
+  # The UI in WebKit on the mock pier api: flows, accessibility (axe),
+  # and performance with a lot of everything.
+  e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: macos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: macos/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps webkit
+      - run: pnpm exec playwright test
+        env:
+          PIER_MOCK_FAST: "1"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: macos/test-results
+          retention-days: 7
+
   # The app itself, unsigned, as a debug bundle with its sidecar.
   app:
     runs-on: macos-15
@@ -73,3 +102,52 @@ jobs:
         run: |
           app=$(ls -d macos/src-tauri/target/debug/bundle/macos/*.app)
           "$app/Contents/MacOS/pier" version
+      - name: keep the bundle
+        run: ditto -c -k --keepParent macos/src-tauri/target/debug/bundle/macos/Pier.app Pier.app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pier-app-debug
+          path: Pier.app.zip
+          retention-days: 3
+
+  # The bundle opens on the oldest macOS it supports and the newest runner:
+  # the window comes up and starts its pier.
+  launch:
+    needs: app
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pier-app-debug
+      - run: ditto -x -k Pier.app.zip .
+      - name: it opens and starts its pier
+        run: |
+          ./Pier.app/Contents/MacOS/pier-app > app.log 2>&1 &
+          app=$!
+          for _ in $(seq 1 30); do
+            pgrep -f "Pier.app/Contents/MacOS/pier api" > /dev/null && break
+            sleep 1
+          done
+          pgrep -f "Pier.app/Contents/MacOS/pier api" > /dev/null || { cat app.log; echo "pier api never started"; exit 1; }
+          sleep 5
+          kill -0 "$app" || { cat app.log; echo "the app quit by itself"; exit 1; }
+          screencapture -x launch.png || true
+          kill "$app"
+          # Its pier goes with it (stdin closes).
+          for _ in $(seq 1 10); do
+            pgrep -f "Pier.app/Contents/MacOS/pier api" > /dev/null || exit 0
+            sleep 1
+          done
+          echo "pier api outlived the app"; exit 1
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-${{ matrix.os }}
+          path: |
+            launch.png
+            app.log
+          retention-days: 7
