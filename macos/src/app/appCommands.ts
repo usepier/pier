@@ -13,6 +13,7 @@ import { useInspector } from "@/state/inspector";
 import { trackJob } from "@/state/jobs";
 import { attempt, toast } from "@/state/toasts";
 import { useUI } from "@/state/ui";
+import { useUpdates } from "@/state/updates";
 import { allCommands, matchesShortcut, registerCommands, runCommand, useCommandsVersion } from "./commands";
 import { buildMenu } from "./menu";
 import { router } from "./router";
@@ -81,6 +82,21 @@ export function useAppCommands() {
           shortcut: "CmdOrCtrl+,",
           menu: "app",
           run: () => router.navigate({ to: "/settings" }),
+        },
+        {
+          id: "app.checkUpdates",
+          title: "Check for Updates…",
+          menu: "app",
+          run: () =>
+            void useUpdates
+              .getState()
+              .check()
+              .then((u) => {
+                const err = useUpdates.getState().error;
+                if (u) toast(`pier ${u.version} is out — restart from the banner to update`, "info");
+                else if (err) toast(`Couldn't check for updates: ${err}`, "bad");
+                else toast("pier is up to date", "ok");
+              }),
         },
         {
           id: "app.quit",

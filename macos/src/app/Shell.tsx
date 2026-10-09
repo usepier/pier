@@ -4,19 +4,33 @@ import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panel
 import { ConnectionBanner } from "./ConnectionBanner";
 
 /**
- * The window: a translucent sidebar under the traffic lights, and the
- * content pane with its toolbar row. Blank toolbar space drags the window.
+ * The window: the sidebar under the traffic lights, and the content pane
+ * with its toolbar row. Blank toolbar space drags the window.
  */
 export function Shell({
   sidebar,
   toolbar,
   banners,
+  fullWindow,
 }: {
   sidebar: ReactNode;
   toolbar?: ReactNode;
   banners?: ReactNode;
+  /** The page takes the whole window (its own sidebar included). */
+  fullWindow?: boolean;
 }) {
   const layout = useDefaultLayout({ id: "pier.shell", storage: localStorage });
+  if (fullWindow) {
+    return (
+      <div className="flex h-full flex-col">
+        <ConnectionBanner />
+        {banners}
+        <div className="min-h-0 flex-1">
+          <Outlet />
+        </div>
+      </div>
+    );
+  }
   return (
     <Group orientation="horizontal" className="h-full" {...layout}>
       <Panel id="sidebar" defaultSize={248} minSize={200} maxSize={380} className="flex flex-col">

@@ -1,321 +1,168 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Info } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
-import {
-  Button as AriaButton,
-  Dialog,
-  DialogTrigger,
-  Input,
-  ListBox,
-  ListBoxItem,
-  Popover,
-  Select,
-  SelectValue,
-  TextField,
-} from "react-aria-components";
-import { rpc } from "@/api/client";
-import type { Setting, Settings } from "@/api/protocol.gen";
-import { accentColor, applyAccent } from "@/lib/theme";
-import { usePrefs } from "@/state/prefs";
-import { attempt, toast } from "@/state/toasts";
-import { Empty } from "@/ui/Empty";
+import { useRouter } from "@tanstack/react-router";
+import { ArrowLeft, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { registerCommands } from "@/app/commands";
+import { Kbd } from "@/ui/Kbd";
+import { SettingsRow } from "@/ui/SettingsRow";
 import { Spinner } from "@/ui/Spinner";
-import { AccountSection, ChecksSection, ProxySection } from "./MaintenanceSections";
+import { type Group, type Item, type Section, search } from "./model";
+import { useSections } from "./sections";
 
-/** The settings page: pier's own settings schema, one grouped form. */
+const groups: Group[] = ["This app", "pier", "Repositories", "More"];
+const lastSection = "pier.settings.section";
+
+/**
+ * Settings, the whole window: sections in a sidebar of their own — the
+ * app's, pier's (shared with the CLI and TUI), one per repository, and
+ * maintenance — and a search across all of them.
+ */
 export function SettingsPage() {
-  const qc = useQueryClient();
-  const q = useQuery({ queryKey: ["settings"], queryFn: () => rpc.call("settings.get", {}) });
-  const save = async (key: string, value: string) => {
-    const next = await attempt(() => rpc.call("settings.set", { key, value }));
-    if (!next) return;
-    qc.setQueryData(["settings"], next);
-    if (key === "theme") applyAccent(value);
-    toast("Saved", "ok");
-  };
-  if (q.isLoading) return <Empty title="Settings" detail={<Spinner />} />;
-  if (q.error) return <Empty title="Settings" detail={(q.error as Error).message} />;
-  const data = q.data as Settings;
+  const router = useRouter();
+  const { sections, loading, error, extra } = useSections();
+  const [active, setActive] = useState(() => localStorage.getItem(lastSection) ?? "general");
+  const [query, setQuery] = useState("");
+  const field = useRef<HTMLInputElement>(null);
+  const results = useMemo(() => search(sections, query), [sections, query]);
+  const current = sections.find((s) => s.id === active) ?? sections[0];
+
+  useEffect(() => {
+    localStorage.setItem(lastSection, active);
+  }, [active]);
+  useEffect(
+    () =>
+      registerCommands([
+        {
+          id: "settings.find",
+          title: "Find in Settings",
+          shortcut: "CmdOrCtrl+F",
+          run: () => field.current?.focus(),
+        },
+      ]),
+    [],
+  );
+
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <AppSection />
-        <ProxySection />
-        <ChecksSection />
-        <AccountSection />
-        {data.groups.map((g) => {
-          const rows = data.settings.filter((s) => s.group === g.key);
-          if (!rows.length) return null;
-          return (
-            <section key={g.key}>
-              <h2 className="mb-2 px-1 text-xs font-semibold text-secondary">{g.title}</h2>
-              <div className="divide-y divide-separator rounded-card border border-separator bg-raised/60">
-                {rows.map((s) => (
-                  <Row key={s.key} setting={s} onSave={save} />
-                ))}
+    <div className="flex h-full">
+      <nav
+        aria-label="Settings"
+        className="flex w-[260px] shrink-0 flex-col border-r border-separator bg-sidebar"
+      >
+        <div data-tauri-drag-region className="flex h-[52px] shrink-0 items-end justify-end px-3 pb-1">
+          <button
+            type="button"
+            onClick={() =>
+              router.history.canGoBack() ? router.history.back() : void router.navigate({ to: "/" })
+            }
+            className="flex items-center gap-1 rounded-[6px] px-2 py-1 text-sm text-secondary transition-colors hover:bg-hover hover:text-label"
+          >
+            <ArrowLeft size={13} /> Back
+          </button>
+        </div>
+        <div className="px-3 pt-2 pb-3">
+          <label className="flex h-[30px] items-center gap-2 rounded-ctl border border-strong bg-control px-2.5 text-secondary transition-colors focus-within:border-accent hover:border-quaternary">
+            <Search size={13} className="shrink-0" />
+            <input
+              ref={field}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+              placeholder="Search settings"
+              aria-label="Search settings"
+              className="selectable min-w-0 flex-1 bg-transparent text-base text-label outline-none placeholder:text-tertiary focus-visible:outline-none"
+            />
+            {query ? (
+              <button
+                type="button"
+                aria-label="Clear the search"
+                onClick={() => setQuery("")}
+                className="text-tertiary hover:text-label"
+              >
+                <X size={12} />
+              </button>
+            ) : (
+              <Kbd>⌘F</Kbd>
+            )}
+          </label>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+          {groups.map((g) => {
+            const list = sections.filter((s) => s.group === g);
+            if (!list.length) return null;
+            return (
+              <div key={g} className="mb-4">
+                <div className="px-2 pb-1 text-sm text-tertiary">{g}</div>
+                {list.map((s) => {
+                  const on = !query && current?.id === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      aria-current={on ? "page" : undefined}
+                      onClick={() => {
+                        setQuery("");
+                        setActive(s.id);
+                      }}
+                      className={`flex w-full items-center gap-2.5 rounded-[7px] px-2 py-[6px] text-left text-base transition-colors ${on ? "bg-selected text-label" : "text-secondary hover:bg-hover hover:text-label"}`}
+                    >
+                      <span aria-hidden="true" className="flex w-4 shrink-0 justify-center">
+                        {s.icon}
+                      </span>
+                      <span className="truncate">{s.title}</span>
+                    </button>
+                  );
+                })}
               </div>
-            </section>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      </nav>
+      <main className="min-w-0 flex-1 overflow-y-auto bg-surface">
+        <div data-tauri-drag-region className="h-[52px]" />
+        <div className="mx-auto max-w-[880px] px-10 pb-16">
+          {loading ? (
+            <div className="flex justify-center py-24">
+              <Spinner />
+            </div>
+          ) : error ? (
+            <div className="selectable py-24 text-center text-bad">{(error as Error).message}</div>
+          ) : query ? (
+            results.length ? (
+              results.map((r) => (
+                <SectionView key={r.section.id} section={r.section} items={r.items} compact />
+              ))
+            ) : (
+              <div className="py-24 text-center text-secondary">Nothing matches “{query}”.</div>
+            )
+          ) : current ? (
+            <SectionView section={current} items={current.items} />
+          ) : null}
+        </div>
+      </main>
+      {extra}
     </div>
   );
 }
 
-function Row({
-  setting: s,
-  onSave,
-}: {
-  setting: Setting;
-  onSave: (key: string, value: string) => Promise<void>;
-}) {
+function SectionView({ section: s, items, compact }: { section: Section; items: Item[]; compact?: boolean }) {
   return (
-    <div className="flex items-center gap-4 px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1 text-base first-letter:uppercase">
-          {s.label}
-          {s.detail && <Detail setting={s} />}
-        </div>
-        {s.hint && <div className="text-xs text-secondary">{s.hint}</div>}
-      </div>
-      <div className="w-56 shrink-0">
-        <Control setting={s} onSave={onSave} />
-      </div>
-    </div>
-  );
-}
-
-function Detail({ setting: s }: { setting: Setting }) {
-  return (
-    <DialogTrigger>
-      <AriaButton aria-label={`About ${s.label}`} className="text-tertiary outline-none hover:text-label">
-        <Info size={12} />
-      </AriaButton>
-      <Popover className="max-w-sm rounded-card border border-separator bg-surface p-3 text-sm shadow-xl outline-none">
-        <Dialog className="outline-none">
-          {s.detail.split("\n").map((line, i) => (
-            <p key={i} className="mb-1.5 last:mb-0">
-              {codeSpans(line)}
-            </p>
-          ))}
-          {s.default && <p className="mt-2 text-xs text-secondary">Default: {s.default}</p>}
-        </Dialog>
-      </Popover>
-    </DialogTrigger>
-  );
-}
-
-function codeSpans(text: string): ReactNode[] {
-  return text.split(/(`[^`]+`)/).map((part, i) =>
-    part.startsWith("`") ? (
-      <code key={i} className="rounded bg-selected px-1 font-mono text-xs">
-        {part.slice(1, -1)}
-      </code>
-    ) : (
-      part
-    ),
-  );
-}
-
-const CUSTOM = "\u0000custom";
-
-function Control({
-  setting: s,
-  onSave,
-}: {
-  setting: Setting;
-  onSave: (key: string, value: string) => Promise<void>;
-}) {
-  const [custom, setCustom] = useState(false);
-  const machines = useQuery({
-    queryKey: ["catalog", s.value],
-    queryFn: () => rpc.call("settings.machines", { current: s.value }),
-    enabled: s.kind === "machine",
-  });
-  if (s.kind === "text" || custom) return <TextControl setting={s} onSave={onSave} />;
-  const options =
-    s.kind === "machine"
-      ? (machines.data ?? []).map((m) => ({
-          value: m.type,
-          label: m.type,
-          desc: `${m.cpu} vCPU · ${m.mem} GiB · ${m.cost}`,
-        }))
-      : (s.options ?? []);
-  const known = options.some((o) => o.value === s.value);
-  return (
-    <Select
-      aria-label={s.label}
-      selectedKey={known ? s.value : null}
-      onSelectionChange={(k) => {
-        if (k === CUSTOM) setCustom(true);
-        else if (k !== null && String(k) !== s.value) void onSave(s.key, String(k));
-      }}
-    >
-      <AriaButton className="flex h-7 w-full items-center justify-between gap-2 rounded-ctl border border-separator bg-control px-2 text-left text-base outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
-        <SelectValue className="flex min-w-0 items-center gap-2 truncate">
-          {({ isPlaceholder }) =>
-            isPlaceholder ? <span className="truncate">{s.display || s.value}</span> : undefined
-          }
-        </SelectValue>
-        <span aria-hidden="true" className="text-tertiary">
-          ⌄
-        </span>
-      </AriaButton>
-      <Popover className="max-h-80 w-72 overflow-auto rounded-card border border-separator bg-surface p-1 shadow-xl outline-none">
-        <ListBox className="outline-none">
-          {options.map((o) => (
-            <ListBoxItem
-              key={o.value}
-              id={o.value}
-              textValue={o.label || o.value}
-              className="flex cursor-default items-center gap-2 rounded-ctl px-2 py-1 outline-none data-focused:bg-accent data-focused:text-on-accent"
-            >
-              {s.key === "theme" && (
-                <span className="size-3 rounded-full" style={{ background: accentColor(o.value) }} />
-              )}
-              <span className="flex-1 text-base">{o.label || o.value}</span>
-              {o.desc && <span className="text-xs opacity-70">{o.desc}</span>}
-            </ListBoxItem>
-          ))}
-          {!s.noCustom && (
-            <ListBoxItem
-              id={CUSTOM}
-              textValue="Custom"
-              className="rounded-ctl px-2 py-1 text-base text-secondary outline-none data-focused:bg-accent data-focused:text-on-accent"
-            >
-              Custom…
-            </ListBoxItem>
-          )}
-        </ListBox>
-      </Popover>
-    </Select>
-  );
-}
-
-function TextControl({
-  setting: s,
-  onSave,
-}: {
-  setting: Setting;
-  onSave: (key: string, value: string) => Promise<void>;
-}) {
-  const [v, setV] = useState(s.value);
-  useEffect(() => setV(s.value), [s.value]);
-  const commit = () => {
-    if (v !== s.value) void onSave(s.key, v.trim());
-  };
-  return (
-    <TextField aria-label={s.label} value={v} onChange={setV} onBlur={commit}>
-      <Input
-        placeholder={s.empty || s.default}
-        onKeyDown={(e) => e.key === "Enter" && commit()}
-        className="selectable h-7 w-full rounded-ctl border border-separator bg-control px-2 text-base outline-none placeholder:text-tertiary focus:border-accent focus:ring-2 focus:ring-accent/25"
-      />
-    </TextField>
-  );
-}
-
-const minutes = [
-  { ms: 0, label: "Right away" },
-  { ms: 60_000, label: "After 1 minute" },
-  { ms: 300_000, label: "After 5 minutes" },
-  { ms: 600_000, label: "After 10 minutes" },
-  { ms: 1_800_000, label: "After 30 minutes" },
-];
-
-function MsSelect({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (ms: number) => void;
-}) {
-  return (
-    <select
-      aria-label={label}
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="h-7 w-full rounded-ctl border border-separator bg-control px-2 text-base outline-none"
-    >
-      {minutes.map((m) => (
-        <option key={m.ms} value={m.ms}>
-          {m.label}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-/** Settings of the app itself, kept on this Mac. */
-function AppSection() {
-  const p = usePrefs();
-  return (
-    <section>
-      <h2 className="mb-2 px-1 text-xs font-semibold text-secondary">This app</h2>
-      <div className="divide-y divide-separator rounded-card border border-separator bg-raised/60">
-        <div className="flex items-center gap-4 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <div className="text-base">Detach a hidden terminal</div>
-            <div className="text-xs text-secondary">An attached terminal keeps its session awake.</div>
-          </div>
-          <div className="w-56 shrink-0">
-            <MsSelect
-              label="Detach a hidden terminal"
-              value={p.hiddenDetachMs}
-              onChange={(ms) => p.set({ hiddenDetachMs: ms })}
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-4 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <div className="text-base">Detach every terminal in the background</div>
-            <div className="text-xs text-secondary">
-              Once the app has been out of sight this long, sessions can park.
-            </div>
-          </div>
-          <div className="w-56 shrink-0">
-            <MsSelect
-              label="Detach every terminal in the background"
-              value={p.backgroundDetachMs}
-              onChange={(ms) => p.set({ backgroundDetachMs: ms })}
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-4 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <div className="text-base">Remove merged sessions</div>
-            <div className="text-xs text-secondary">
-              Once a session's pull request merges — only when everything in it is committed and merged.
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            aria-label="Remove merged sessions"
-            checked={p.autoRemoveMerged}
-            onChange={(e) => p.set({ autoRemoveMerged: e.target.checked })}
-            className="size-4 accent-[var(--accent)]"
-          />
-        </div>
-        <div className="flex items-center gap-4 px-3 py-2">
-          <div className="min-w-0 flex-1 text-base">Terminal font size</div>
-          <div className="w-56 shrink-0">
-            <select
-              aria-label="Terminal font size"
-              value={p.terminalFontSize}
-              onChange={(e) => p.set({ terminalFontSize: Number(e.target.value) })}
-              className="h-7 w-full rounded-ctl border border-separator bg-control px-2 text-base outline-none"
-            >
-              {[11, 12, 12.5, 13, 14, 15, 16].map((n) => (
-                <option key={n} value={n}>
-                  {n} pt
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+    <section className={compact ? "mb-10" : ""}>
+      <h1 className={`font-display font-semibold text-label ${compact ? "text-md" : "text-xl"}`}>
+        {s.title}
+      </h1>
+      {s.description && !compact && <p className="mt-1.5 text-base text-secondary">{s.description}</p>}
+      <div className={compact ? "mt-1" : "mt-4"}>
+        {items.map((i) => (
+          <SettingsRow
+            key={i.id}
+            id={i.id}
+            title={i.title}
+            description={i.description}
+            hint={i.hint}
+            control={i.control}
+          >
+            {i.children}
+          </SettingsRow>
+        ))}
       </div>
     </section>
   );

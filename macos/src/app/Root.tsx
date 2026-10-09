@@ -1,3 +1,4 @@
+import { useRouterState } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { rpc } from "@/api/client";
 import { useStatus } from "@/api/live";
@@ -54,9 +55,12 @@ export function Root() {
     window.addEventListener("keydown", block);
     return () => window.removeEventListener("keydown", block);
   }, []);
+  // Settings take the whole window, with their own sidebar.
+  const fullWindow = useRouterState({ select: (r) => r.location.pathname.startsWith("/settings") });
   return (
     <>
       <Shell
+        fullWindow={fullWindow}
         sidebar={<Sidebar />}
         banners={
           <>

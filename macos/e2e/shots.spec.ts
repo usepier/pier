@@ -28,3 +28,15 @@ test("shots", async ({ page }) => {
   await page.getByRole("button", { name: "Permissions" }).click();
   await page.screenshot({ path: "/tmp/shot-picker.png" });
 });
+
+test("settings shots", async ({ page }) => {
+  await page.goto("/#/settings");
+  await expect(page.getByRole("heading", { name: "General" })).toBeVisible();
+  await page.screenshot({ path: "/tmp/shot-settings.png" });
+  await page.getByRole("button", { name: "Agents" }).click();
+  await page.screenshot({ path: "/tmp/shot-settings-agents.png" });
+  await page.getByRole("button", { name: "shop" }).click();
+  await page.screenshot({ path: "/tmp/shot-settings-repo.png" });
+  await page.getByRole("textbox", { name: "Search settings" }).fill("park");
+  await page.screenshot({ path: "/tmp/shot-settings-search.png" });
+});
