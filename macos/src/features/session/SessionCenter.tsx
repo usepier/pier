@@ -19,6 +19,7 @@ import { confirmClose, FileEditor } from "@/features/files/FileEditor";
 import { DiffView } from "@/features/review/DiffView";
 import { TerminalView } from "@/features/terminal/TerminalView";
 import { confirm } from "@/lib/confirm";
+import { focusTarget } from "@/lib/focus";
 import { readable } from "@/lib/session";
 import { seenKey, useSeen } from "@/state/attention";
 import { bufferKey, useBuffers } from "@/state/buffers";
@@ -177,9 +178,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
     openDraft(s.id, { id, ...d });
     setActive(chatTab(id));
-    requestAnimationFrame(() =>
-      document.querySelector<HTMLTextAreaElement>("textarea[aria-label='Message']")?.focus(),
-    );
+    focusTarget("composer", { next: true });
   };
   const newTerminal = async () => {
     const w = await attempt(() => rpc.call("tmux.newWindow", { sessionId: s.id }));
@@ -233,9 +232,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
         enabled: () => chatIds.length > 0,
         run: () => {
           if (!isChatTab(active) && chatIds[0]) setActiveIn(s.id, chatTab(chatIds[0]));
-          requestAnimationFrame(() =>
-            document.querySelector<HTMLTextAreaElement>("textarea[aria-label='Message']")?.focus(),
-          );
+          focusTarget("composer");
         },
       },
     ]);

@@ -10,6 +10,7 @@ import {
 } from "react";
 import { rpc } from "@/api/client";
 import type { AgentModels, Attachment } from "@/api/protocol.gen";
+import { useFocusTarget } from "@/lib/focus";
 import { usePick } from "@/lib/usePick";
 import { useDrafts } from "@/state/drafts";
 import { usePrefs } from "@/state/prefs";
@@ -183,6 +184,7 @@ export function Composer({
   const sendKey = usePrefs((p) => p.sendKey);
   const followUp = usePrefs((p) => p.followUp);
   const area = useRef<HTMLTextAreaElement>(null);
+  useFocusTarget("composer", area);
   const picker = useRef<HTMLInputElement>(null);
   const [caret, setCaret] = useState(0);
 

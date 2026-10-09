@@ -73,3 +73,14 @@ test("a comment on lines of a file goes to the agent with the rest", async ({ pa
   await expect(page.getByText("Sent 1 comment to the agent")).toBeVisible();
   await expect(page.locator(".cm-commented")).toHaveCount(0);
 });
+
+test("commands put the focus where they say: a new chat's message box, the search field", async ({ page }) => {
+  await openSession(page, "i-01");
+  await page.getByRole("tab", { name: "Changes", exact: true }).click();
+  await page.keyboard.press("Meta+t");
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
+  await page.keyboard.press("Meta+Shift+f");
+  await expect(page.getByRole("textbox", { name: "Search the checkout" })).toBeFocused();
+  await page.keyboard.press("Meta+l");
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
+});

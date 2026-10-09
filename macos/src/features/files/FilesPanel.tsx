@@ -5,6 +5,7 @@ import { rpc } from "@/api/client";
 import { useWatch } from "@/api/live";
 import type { SearchResult, Session } from "@/api/protocol.gen";
 import { rank } from "@/features/chat/mentions";
+import { useFocusTarget } from "@/lib/focus";
 import { plural } from "@/lib/format";
 import { readable } from "@/lib/session";
 import { docId, useDocs } from "@/state/docs";
@@ -201,17 +202,9 @@ function ContentSearch({ session: s }: { session: Session }) {
     const t = setTimeout(() => setDebounced(query), 250);
     return () => clearTimeout(t);
   }, [query]);
-  // Focused as it opens, and again at each request to search.
-  useEffect(() => {
-    const show = () => {
-      input.current?.focus();
-      input.current?.select();
-    };
-    show();
-    return useInspector.subscribe((s, prev) => {
-      if (s.focusSearch !== prev.focusSearch) show();
-    });
-  }, []);
+  // Focused at each request to search (⇧⌘F), and as it opens.
+  useFocusTarget("search", input, { select: true });
+  useEffect(() => input.current?.focus(), []);
   // Matches stream in as the session finds them; a new query ends the old.
   const result = useWatch(
     "search",
