@@ -1,36 +1,58 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, Copy } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { inTauri } from "@/api/transport";
+import { highlight } from "@/lib/highlight";
 
 function open(href: string) {
   if (inTauri) void openUrl(href);
   else window.open(href, "_blank", "noopener");
 }
 
-/** A code block with a copy button. */
+/** A code block, highlighted, with a copy button. */
 export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   const [copied, setCopied] = useState(false);
+  const [html, setHtml] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void highlight(code, lang).then((h) => {
+      if (live) setHtml(h);
+    });
+    return () => {
+      live = false;
+    };
+  }, [code, lang]);
   return (
-    <div className="group relative my-2 overflow-hidden rounded-card border border-separator bg-raised">
-      {lang && <div className="border-b border-separator px-3 py-1 text-2xs text-tertiary">{lang}</div>}
-      <pre className="selectable overflow-x-auto px-3 py-2 font-mono text-sm leading-[1.45]">
-        <code>{code}</code>
-      </pre>
-      <button
-        type="button"
-        aria-label="Copy"
-        onClick={() => {
-          void navigator.clipboard.writeText(code);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        }}
-        className="absolute top-1 right-1 flex size-6 items-center justify-center rounded-ctl text-tertiary opacity-0 hover:bg-hover hover:text-label group-hover:opacity-100"
-      >
-        {copied ? <Check size={12} /> : <Copy size={12} />}
-      </button>
+    <div className="group relative my-2.5 overflow-hidden rounded-card border border-separator bg-raised">
+      <div className="flex h-7 items-center border-b border-separator px-3 text-xs text-tertiary">
+        <span className="flex-1 font-mono">{lang || "text"}</span>
+        <button
+          type="button"
+          aria-label="Copy code"
+          onClick={() => {
+            void navigator.clipboard.writeText(code);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          }}
+          className="flex h-5 items-center gap-1 rounded-[5px] px-1.5 text-tertiary opacity-0 transition-opacity hover:bg-hover hover:text-label group-hover:opacity-100"
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      {html ? (
+        <div
+          className="selectable overflow-x-auto px-3.5 py-2.5 text-[12.5px] leading-[1.55] [&_pre]:!bg-transparent"
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: Shiki's output, from the code's own text
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      ) : (
+        <pre className="selectable overflow-x-auto px-3.5 py-2.5 font-mono text-[12.5px] leading-[1.55]">
+          <code>{code}</code>
+        </pre>
+      )}
     </div>
   );
 }
@@ -53,7 +75,11 @@ const components: Components = {
     const lang = /language-(\w+)/.exec(className ?? "")?.[1];
     const text = String(children ?? "");
     if (lang || text.includes("\n")) return <CodeBlock code={text.replace(/\n$/, "")} lang={lang} />;
-    return <code className="rounded-[4px] bg-selected px-1 py-px font-mono text-[0.92em]">{children}</code>;
+    return (
+      <code className="rounded-[4px] border border-separator bg-raised px-1 py-px font-mono text-[0.88em]">
+        {children}
+      </code>
+    );
   },
   p: ({ children }) => <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => <ul className="my-1.5 list-disc pl-5">{children}</ul>,
@@ -81,7 +107,7 @@ const components: Components = {
 /** The agent's text: GitHub-flavoured markdown, selectable. */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
-    <div className="selectable leading-[1.55] break-words">
+    <div className="selectable text-[14px] leading-[1.6] break-words text-label">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {text}
       </ReactMarkdown>

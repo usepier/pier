@@ -13,11 +13,13 @@ import {
   SelectValue,
 } from "react-aria-components";
 import { rpc } from "@/api/client";
+import { RunPickers, type RunSettings, useModels } from "@/features/chat/Composer";
 import { linkCheckout } from "@/features/repos/link";
 import { branchProblem, plural } from "@/lib/format";
 import { trackJob } from "@/state/jobs";
 import { useOverview } from "@/state/overview";
 import { usePrefs } from "@/state/prefs";
+import { useChatDefaults } from "@/state/settings";
 import { attempt, toast } from "@/state/toasts";
 import { useUI } from "@/state/ui";
 import { Button } from "@/ui/Button";
@@ -30,11 +32,13 @@ const LINK = "\u0000link";
 /** New Session: which clone, which branch, and what travels with it. */
 export function NewSessionSheet() {
   const { open, repo: preset, preset: fill } = useUI((s) => s.newSession);
-  const defaultAgent = usePrefs((p) => p.defaultAgent);
+  const startWithChat = usePrefs((p) => p.startWithChat);
   const setPrefs = usePrefs((p) => p.set);
-  const [agent, setAgent] = useState(defaultAgent);
-  const [model, setModel] = useState("");
+  const defaults = useChatDefaults();
+  const [agent, setAgent] = useState("");
+  const [run, setRun] = useState<RunSettings>({ model: "", effort: "", mode: "" });
   const [prompt, setPrompt] = useState("");
+  const models = useModels(agent || "claude");
   const close = useUI((s) => s.closeNewSession);
   const o = useOverview();
   const navigate = useNavigate();
@@ -57,9 +61,10 @@ export function NewSessionSheet() {
     setBase("");
     setNoPool(false);
     setPrompt(fill?.prompt ?? "");
-    setModel("");
-    setAgent(fill?.prompt && !defaultAgent ? "claude" : defaultAgent);
-  }, [open, preset, checkouts, fill, defaultAgent]);
+    const d = defaults();
+    setAgent(startWithChat || fill?.prompt ? d.agent : "");
+    setRun({ model: d.model, effort: d.effort, mode: d.mode });
+  }, [open, preset, checkouts, fill, startWithChat, defaults]);
 
   const info = useQuery({
     queryKey: ["inspect", path],
@@ -82,14 +87,20 @@ export function NewSessionSheet() {
         branch,
         base: base || undefined,
         noPool: noPool || undefined,
-        agent: agent
-          ? { kind: agent, model: model.trim() || undefined, prompt: prompt.trim() || undefined }
+        chat: agent
+          ? {
+              agent,
+              model: run.model || undefined,
+              effort: run.effort || undefined,
+              mode: run.mode || undefined,
+              prompt: prompt.trim() || undefined,
+            }
           : undefined,
       }),
     );
     setBusy(false);
     if (!job) return;
-    setPrefs({ defaultAgent: agent });
+    setPrefs({ startWithChat: !!agent });
     trackJob(job);
     close();
     toast(`Creating ${branch}`, "info");
@@ -191,35 +202,42 @@ export function NewSessionSheet() {
           mono
           hint="Another branch or commit, if not your current HEAD. Uncommitted changes only travel with HEAD."
         />
-        <div className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-secondary">Agent</span>
-          <div className="flex items-center gap-2">
-            <fieldset aria-label="Agent" className="m-0 flex rounded-ctl border-0 bg-selected p-0.5 text-sm">
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-secondary">Start with a chat</span>
+          <div className="flex flex-wrap items-center gap-1">
+            <fieldset
+              aria-label="Agent"
+              className="m-0 flex rounded-[8px] border border-strong p-0.5 text-sm"
+            >
               {(
                 [
                   ["claude", "Claude"],
                   ["codex", "Codex"],
-                  ["", "None"],
+                  ["", "No chat"],
                 ] as const
               ).map(([k, label]) => (
                 <button
                   key={k || "none"}
                   type="button"
                   aria-pressed={agent === k}
-                  onClick={() => setAgent(k)}
-                  className={`rounded-[4px] px-3 py-0.5 ${agent === k ? "bg-control text-label shadow-sm" : "text-secondary"}`}
+                  onClick={() => {
+                    setAgent(k);
+                    if (k) {
+                      const d = defaults(k);
+                      setRun({ model: d.model, effort: d.effort, mode: d.mode });
+                    }
+                  }}
+                  className={`rounded-[6px] px-3 py-1 transition-colors ${agent === k ? "bg-selected text-label" : "text-secondary hover:text-label"}`}
                 >
                   {label}
                 </button>
               ))}
             </fieldset>
             {agent && (
-              <input
-                aria-label="Model"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="model (its default)"
-                className="selectable h-7 min-w-0 flex-1 rounded-ctl border border-separator bg-control px-2 font-mono text-sm outline-none placeholder:font-sans placeholder:text-tertiary focus:border-accent"
+              <RunPickers
+                models={models.data}
+                value={run}
+                onChange={(p) => setRun((r) => ({ ...r, ...p }))}
               />
             )}
           </div>

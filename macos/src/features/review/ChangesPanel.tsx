@@ -6,8 +6,8 @@ import type { Session } from "@/api/protocol.gen";
 import { composeInto } from "@/features/github/PRPanel";
 import { plural } from "@/lib/format";
 import { reviewMessage, useComments } from "@/state/comments";
+import { sendToAgent } from "@/state/currentChat";
 import { docId, useDocs } from "@/state/docs";
-import { sendPrompt } from "@/state/outbox";
 import { attempt, toast } from "@/state/toasts";
 import { Button } from "@/ui/Button";
 import { Spinner } from "@/ui/Spinner";
@@ -126,9 +126,8 @@ export function ChangesPanel({ session: s }: { session: Session }) {
               variant="primary"
               icon={<Send size={11} />}
               onPress={() => {
-                sendPrompt(s.id, reviewMessage(useComments.getState().comments[s.id] ?? []));
+                sendToAgent(s, reviewMessage(useComments.getState().comments[s.id] ?? []));
                 useComments.getState().clear(s.id);
-                useDocs.getState().setActive(s.id, "chat");
               }}
             >
               Send {plural(comments, "comment")}
@@ -154,7 +153,7 @@ export function ChangesPanel({ session: s }: { session: Session }) {
             <Button
               size="sm"
               icon={<GitPullRequest size={11} />}
-              onPress={() => void composeInto(s.id, "createPR")}
+              onPress={() => void composeInto(s, "createPR")}
             >
               Create PR…
             </Button>

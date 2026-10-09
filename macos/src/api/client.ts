@@ -13,7 +13,6 @@ export const rpc = new Rpc(
     return sidecar;
   },
   { name: "pier-mac", version: import.meta.env.VITE_APP_VERSION ?? "dev" },
-  true,
 );
 
 /** pier api's recent stderr, when it runs as the sidecar. */

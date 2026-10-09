@@ -123,8 +123,6 @@ export class Rpc {
   constructor(
     private readonly makeTransport: () => Transport,
     private readonly client: { name: string; version: string },
-    /** The client answers agents' permission requests (chat.decide). */
-    private readonly approvals = false,
   ) {}
 
   /** Connects and initializes; on loss, reconnects with backoff. */
@@ -139,7 +137,6 @@ export class Rpc {
       this.info = await this.call("initialize", {
         protocol: PROTOCOL_VERSION,
         client: this.client,
-        approvals: this.approvals,
       });
       if (this.info.protocol !== PROTOCOL_VERSION) {
         throw new Error(`pier speaks protocol ${this.info.protocol}, the app ${PROTOCOL_VERSION}`);

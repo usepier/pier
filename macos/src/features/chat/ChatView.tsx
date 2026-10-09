@@ -1,25 +1,30 @@
-import { MessageSquare, RotateCw, Trash2 } from "lucide-react";
+import { ArrowUpRight, MessageSquare, RotateCw, SquareTerminal, Trash2, X } from "lucide-react";
 import { useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { AgentDetail, QueuedPrompt, Session } from "@/api/protocol.gen";
-import { useSeen } from "@/state/attention";
+import { rpc } from "@/api/client";
+import type { Attachment, ChatInfo, QueuedPrompt, Session } from "@/api/protocol.gen";
+import { seenKey, useSeen } from "@/state/attention";
 import { useFocused } from "@/state/background";
 import { useChat } from "@/state/chat";
 import { useJob } from "@/state/jobs";
+import { type NewChat, useNewChats } from "@/state/newChats";
 import {
   discardPrompt,
   type Outgoing,
   retryPrompt,
+  sendPrompt,
   sentGraceMs,
   settleOutbox,
   useOutbox,
 } from "@/state/outbox";
+import { attempt } from "@/state/toasts";
 import { Banner } from "@/ui/Banner";
+import { Button, IconButton } from "@/ui/Button";
 import { Spinner } from "@/ui/Spinner";
-import { PendingCard, TerminalWaitCard } from "./Cards";
-import { Composer } from "./Composer";
+import { Tip } from "@/ui/Tooltip";
+import { PendingCard } from "./Cards";
+import { Composer, interruptChat, type RunSettings } from "./Composer";
 import { Transcript } from "./Transcript";
-import { Working } from "./Working";
 
 const agentNames: Record<string, string> = { claude: "Claude", codex: "Codex" };
 
@@ -27,7 +32,7 @@ export function agentName(kind?: string): string {
   return (kind && agentNames[kind]) || "The agent";
 }
 
-function running(s: Session) {
+export function running(s: Session) {
   return ["running", "working", "idle"].includes(s.state);
 }
 
@@ -41,125 +46,190 @@ function clock(iso?: string) {
 }
 
 /**
- * A session's agent conversation: what the agent wrote, read from its own
- * transcript, and a composer to talk to it. A parked session shows what
- * this Mac last saw, and sending to it wakes it.
+ * One chat of a session: the conversation, what the agent asks, and a
+ * composer with the chat's model, effort and permission pickers. A parked
+ * session shows what this Mac last saw, and sending to it wakes it. A chat
+ * not started yet (draft) starts with its first message.
  */
 export function ChatView({
   session: s,
+  chatId,
+  draft,
   visible = true,
-  onTerminal,
+  onTakeover,
 }: {
   session: Session;
+  chatId: string;
+  /** Set while the chat is only opened here, not started. */
+  draft?: NewChat;
   visible?: boolean;
-  /** Shows the agent's own terminal (for what only it can answer). */
-  onTerminal?: () => void;
+  /** Continues the chat in a terminal tab. */
+  onTakeover?: () => void;
 }) {
-  const chat = useChat(s.id);
+  const chat = useChat(s.id, chatId);
+  const info: ChatInfo | undefined =
+    chat.chat ?? (s.chats?.find((c) => c.id === chatId) as ChatInfo | undefined);
+  const agent = info?.agent ?? draft?.agent ?? "claude";
+  const name = agentName(agent);
   const live = chat.live && running(s);
-  const agent: AgentDetail | undefined = chat.agent ?? (s.agent ? { ...s.agent, queue: [] } : undefined);
-  const working = live && agent?.state === "working";
-  const name = agentName(agent?.kind);
+  const working = live && info?.state === "working";
   const focused = useFocused();
   const markSeen = useSeen((x) => x.markSeen);
+  const updateDraft = useNewChats((n) => n.update);
 
-  // Looking at the chat is seeing how the turn ended.
+  // Looking at the chat is seeing how its turn ended.
   useEffect(() => {
-    if (visible && focused && agent?.since) markSeen(s.id, agent.since);
-  }, [visible, focused, agent?.since, s.id, markSeen]);
+    if (visible && focused && info?.since) markSeen(seenKey(s.id, chatId), info.since);
+  }, [visible, focused, info?.since, s.id, chatId, markSeen]);
 
-  const outgoing = useOutbox(useShallow((o) => Object.values(o.items).filter((x) => x.sessionId === s.id)));
-  const queue = agent?.queue ?? [];
-  const queueKey = queue.map((q) => q.id).join(",");
+  const outgoing = useOutbox(useShallow((o) => Object.values(o.items).filter((x) => x.chatId === chatId)));
+  const queue = info?.queue ?? [];
+  const known = useMemo(() => {
+    const ids = new Set(queue.map((q) => q.id));
+    for (const i of chat.items) if (i.kind === "user") ids.add(i.id);
+    return ids;
+  }, [queue, chat.items]);
   useEffect(() => {
-    settleOutbox(s.id, new Set(queueKey ? queueKey.split(",") : []));
-    const t = setInterval(
-      () => settleOutbox(s.id, new Set(queueKey ? queueKey.split(",") : [])),
-      sentGraceMs / 4,
-    );
+    settleOutbox(chatId, known);
+    const t = setInterval(() => settleOutbox(chatId, known), sentGraceMs / 4);
     return () => clearInterval(t);
-  }, [s.id, queueKey]);
+  }, [chatId, known]);
+  const shown = outgoing.filter((o) => !known.has(o.id)).sort((a, b) => a.at - b.at);
 
-  const pending = useMemo(() => {
-    const inQueue = new Set(queue.map((q) => q.id));
-    return { outgoing: outgoing.filter((o) => !inQueue.has(o.id)).sort((a, b) => a.at - b.at), queue };
-  }, [outgoing, queue]);
+  const settings: RunSettings = {
+    model: info?.model ?? draft?.model ?? "",
+    effort: info?.effort ?? draft?.effort ?? "",
+    mode: info?.mode ?? draft?.mode ?? "",
+  };
+  const onSettings = (p: Partial<RunSettings>) => {
+    if (draft && !info) {
+      updateDraft(s.id, chatId, p);
+      return;
+    }
+    void attempt(() => rpc.call("chat.configure", { sessionId: s.id, chatId, ...p }));
+  };
+  const onSend = (text: string, attachments: Attachment[], mode: "steer" | "queue") => {
+    const create =
+      draft && !info
+        ? { agent, model: settings.model, effort: settings.effort, mode: settings.mode }
+        : undefined;
+    sendPrompt({ sessionId: s.id, chatId, text, attachments, mode, create });
+  };
 
-  const canSend = !!agent && (agent.state !== "ended" || s.state === "parked");
-  const placeholder = !agent
-    ? "No agent runs in this session"
-    : s.state === "parked"
+  const terminal = info?.state === "terminal";
+  const failed = info?.state === "error";
+  const canSend = s.hasKey && !["creating", "failed", "deleting"].includes(s.state);
+  const placeholder =
+    s.state === "parked"
       ? `Message ${name} — sending wakes the session`
-      : agent.state === "ended"
-        ? `${name} has exited — start it again in its terminal`
+      : terminal
+        ? `${name} goes on in a terminal — messages wait for it`
         : working
-          ? `Message ${name} — it reads it when this turn is done`
-          : `Message ${name}`;
+          ? `Message ${name}`
+          : info || draft
+            ? `Message ${name}`
+            : "";
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-surface">
       {!live && <OfflineStrip session={s} asOf={chat.asOf} loaded={chat.loaded} />}
-      {chat.partial && (
-        <Banner>
-          Part of this conversation couldn't be read here — the agent's terminal shows all of it.
+      {terminal && (
+        <Banner
+          actions={
+            onTakeover && (
+              <Button size="sm" variant="plain" icon={<SquareTerminal size={13} />} onPress={onTakeover}>
+                Show terminal
+              </Button>
+            )
+          }
+        >
+          This chat goes on in a terminal. It picks up what happens there when that program exits.
+        </Banner>
+      )}
+      {failed && (
+        <Banner tone="bad">
+          {name} keeps failing to start: {info?.error || "no reason given"}. Sending a message tries again.
         </Banner>
       )}
       <Transcript
         items={chat.items}
+        streaming={chat.streaming}
         more={chat.more}
         loadingOlder={chat.loadingOlder}
         onLoadOlder={chat.loadOlder}
         empty={
-          chat.loaded ? (
-            <div className="flex flex-col items-center gap-2 py-16 text-center text-secondary">
-              <MessageSquare size={24} strokeWidth={1.5} className="text-tertiary" />
-              <div className="text-sm">
-                {agent ? `Nothing yet. Tell ${name} what to do.` : "No conversation yet."}
+          chat.loaded || draft ? (
+            <div className="flex flex-col items-center gap-2 py-24 text-center text-secondary">
+              <MessageSquare size={26} strokeWidth={1.5} className="text-quaternary" />
+              <div className="text-base">
+                {draft && !info ? `New chat with ${name}` : "Nothing here yet."}
               </div>
+              <div className="text-sm text-tertiary">Tell {name} what to do.</div>
             </div>
           ) : (
-            <div className="flex justify-center py-16">
+            <div className="flex justify-center py-24">
               <Spinner />
             </div>
           )
         }
         footer={
           <>
-            {pending.queue.map((q) => (
-              <QueuedBubble key={q.id} q={q} free={live && agent?.state === "ready"} />
+            {queue.map((q) => (
+              <QueuedBubble key={q.id} sessionId={s.id} chatId={chatId} q={q} live={live} />
             ))}
-            {pending.outgoing.map((o) => (
+            {shown.map((o) => (
               <OutgoingBubble key={o.id} o={o} />
             ))}
-            {working && agent && <Working sessionId={s.id} since={agent.since} live={live} />}
+            {working && <WorkingLine since={info?.since} />}
           </>
         }
       />
-      <div className="shrink-0 px-5">
-        {live && agent?.pending && (
-          <PendingCard sessionId={s.id} req={agent.pending} agentName={name} onTerminal={onTerminal} />
-        )}
-        {live && agent?.state === "waiting" && !agent.pending && (
-          <TerminalWaitCard agentName={name} onTerminal={onTerminal} />
-        )}
-      </div>
+      {live && info?.pending && (
+        <div className="shrink-0 px-6">
+          <PendingCard sessionId={s.id} chatId={chatId} agent={agent} agentName={name} req={info.pending} />
+        </div>
+      )}
       <Composer
         sessionId={s.id}
+        draftKey={`${s.id}/${chatId}`}
+        agent={agent}
         live={live}
         working={!!working}
         canSend={canSend}
         placeholder={placeholder}
+        settings={settings}
+        onSettings={onSettings}
+        onSend={onSend}
+        onInterrupt={working || info?.state === "waiting" ? () => interruptChat(s.id, chatId) : undefined}
       />
     </div>
   );
 }
 
+function WorkingLine({ since }: { since?: string }) {
+  return (
+    <div className="flex items-center gap-2 py-1 text-sm">
+      <span className="size-1.5 animate-pulse-soft rounded-full bg-accent" />
+      <span className="shimmer font-medium">Working</span>
+      {since && <Elapsed since={since} />}
+    </div>
+  );
+}
+
+function Elapsed({ since }: { since: string }) {
+  const s = Math.max(0, Math.round((Date.now() - new Date(since).getTime()) / 1000));
+  return (
+    <span className="text-tertiary tabular-nums">
+      {s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}
+    </span>
+  );
+}
+
 function OfflineStrip({ session: s, asOf, loaded }: { session: Session; asOf?: string; loaded: boolean }) {
-  // A parked session's header has the Wake button.
   if (s.state === "parked") return <Banner>Parked{asOf ? ` — the chat as of ${clock(asOf)}` : ""}</Banner>;
   if (!loaded || running(s)) {
     return (
-      <div className="flex h-7 shrink-0 items-center justify-center gap-1.5 border-b border-separator text-xs text-secondary">
+      <div className="flex h-7 shrink-0 items-center justify-center gap-1.5 border-b border-separator text-sm text-secondary">
         <Spinner size={10} /> connecting{asOf ? ` — as of ${clock(asOf)}` : "…"}
       </div>
     );
@@ -167,19 +237,84 @@ function OfflineStrip({ session: s, asOf, loaded }: { session: Session; asOf?: s
   return null;
 }
 
-function Bubble({ text, note, tone = "" }: { text: string; note: React.ReactNode; tone?: string }) {
+function Bubble({
+  text,
+  note,
+  actions,
+  tone = "",
+}: {
+  text: string;
+  note: React.ReactNode;
+  actions?: React.ReactNode;
+  tone?: string;
+}) {
   return (
-    <div className="flex flex-col items-end gap-1">
-      <div className="selectable max-w-[85%] rounded-[14px] border border-dashed border-accent/40 px-3 py-2 whitespace-pre-wrap break-words text-label/80">
+    <div className="group flex flex-col items-end gap-1">
+      <div className="selectable max-w-[85%] rounded-[12px] border border-dashed border-strong px-3.5 py-2 text-[14px] whitespace-pre-wrap break-words text-secondary">
         {text}
       </div>
-      <div className={`flex items-center gap-1.5 text-2xs ${tone || "text-tertiary"}`}>{note}</div>
+      <div className={`flex items-center gap-2 text-xs ${tone || "text-tertiary"}`}>
+        {note}
+        {actions}
+      </div>
     </div>
   );
 }
 
-function QueuedBubble({ q, free }: { q: QueuedPrompt; free: boolean }) {
-  return <Bubble text={q.text} note={free ? "going in…" : "queued — goes in when the agent is free"} />;
+/** A prompt the session holds until the turn ends. */
+function QueuedBubble({
+  sessionId,
+  chatId,
+  q,
+  live,
+}: {
+  sessionId: string;
+  chatId: string;
+  q: QueuedPrompt;
+  live: boolean;
+}) {
+  return (
+    <Bubble
+      text={q.text}
+      note="queued — goes in when this turn ends"
+      actions={
+        live && (
+          <span className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <Tip content="Send it into this turn now">
+              <IconButton
+                label="Send now"
+                size="sm"
+                onPress={() =>
+                  void attempt(async () => {
+                    await rpc.call("chat.dequeue", { sessionId, chatId, promptId: q.id });
+                    await rpc.call("chat.send", {
+                      sessionId,
+                      chatId,
+                      prompt: { id: `${q.id}-now`, text: q.text, attachments: q.attachments },
+                      mode: "steer",
+                    });
+                  })
+                }
+              >
+                <ArrowUpRight size={12} />
+              </IconButton>
+            </Tip>
+            <Tip content="Take it back">
+              <IconButton
+                label="Remove from the queue"
+                size="sm"
+                onPress={() =>
+                  void attempt(() => rpc.call("chat.dequeue", { sessionId, chatId, promptId: q.id }))
+                }
+              >
+                <X size={12} />
+              </IconButton>
+            </Tip>
+          </span>
+        )
+      }
+    />
+  );
 }
 
 function OutgoingBubble({ o }: { o: Outgoing }) {
@@ -189,9 +324,9 @@ function OutgoingBubble({ o }: { o: Outgoing }) {
       <Bubble
         text={o.text}
         tone="text-bad"
-        note={
+        note={<>couldn't send{o.error ? `: ${o.error}` : ""}</>}
+        actions={
           <>
-            couldn't send{o.error ? `: ${o.error}` : ""}
             <button
               type="button"
               onClick={() => retryPrompt(o.id)}
@@ -232,7 +367,7 @@ function WakingBubble({ o }: { o: Outgoing }) {
   const job = useJob(o.jobId);
   const state = job?.job.state;
   useEffect(() => {
-    if (state === "done") discardPrompt(o.id);
+    if (state === "done") useOutbox.getState().patch(o.id, { state: "sent", sentAt: Date.now() });
     if (state === "failed" || state === "lost") {
       useOutbox.getState().patch(o.id, { state: "failed", error: job?.job.error || "the wake failed" });
     }

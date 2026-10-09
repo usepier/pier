@@ -1,4 +1,4 @@
-// What needs the user: an agent waiting on them, a turn they haven't seen
+// What needs the user: a chat waiting on them, a turn they haven't seen
 // finish, a setup or create that failed. pier says what needs input or
 // failed; what is unseen is this app's to know.
 import { create } from "zustand";
@@ -6,10 +6,12 @@ import { persist } from "zustand/middleware";
 import type { Session } from "@/api/protocol.gen";
 
 interface Seen {
-  /** Per session, the agent state (its since) last seen. */
+  /** Per chat ("<session>/<chat>"), the state (its since) last seen. */
   seen: Record<string, string>;
-  markSeen: (sessionId: string, since: string) => void;
+  markSeen: (key: string, since: string) => void;
 }
+
+export const seenKey = (sessionId: string, chatId: string) => `${sessionId}/${chatId}`;
 
 export const useSeen = create<Seen>()(
   persist(
@@ -46,11 +48,15 @@ export function attentionOf(s: Session, seen: Record<string, string>): Reason | 
   if (s.pooled) return undefined;
   const pier = s.attention && fromPier.has(s.attention) ? (s.attention as Reason) : undefined;
   if (pier === "needs_input" || pier === "create_failed" || pier === "setup_failed") return pier;
-  const a = s.agent;
-  // A finished turn leaves its last message; an agent that only started
-  // has none. An unseen one comes before what the pull request says.
-  if (a && a.state === "ready" && a.last && a.since > (seen[s.id] ?? "")) return "finished";
+  // A finished turn leaves its last message; a chat that only started has
+  // none. An unseen one comes before what the pull request says.
+  if (unseenChat(s, seen)) return "finished";
   return pier;
+}
+
+/** A chat of the session that finished a turn the user hasn't seen. */
+export function unseenChat(s: Session, seen: Record<string, string>) {
+  return s.chats?.find((c) => c.state === "ready" && c.last && c.since > (seen[seenKey(s.id, c.id)] ?? ""));
 }
 
 export const reasonText: Record<Reason, string> = {

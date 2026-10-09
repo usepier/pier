@@ -1,5 +1,5 @@
 // A question card's state, turned into the answers the agent reads: one
-// string per question, by question text.
+// string per question, by question id.
 import type { Question } from "@/api/protocol.gen";
 
 export interface QuestionState {
@@ -41,8 +41,9 @@ export function collect(questions: Question[], states: QuestionState[]) {
   questions.forEach((q, i) => {
     const st = states[i]!;
     const a = answerOf(q, st);
-    if (a !== undefined) answers[q.question] = a;
-    if (st.note.trim()) notes[q.question] = st.note.trim();
+    const key = q.id || q.question;
+    if (a !== undefined) answers[key] = a;
+    if (st.note.trim()) notes[key] = st.note.trim();
   });
   return { answers, notes };
 }

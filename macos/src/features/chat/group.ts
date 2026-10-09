@@ -15,7 +15,9 @@ function stepLike(i: ChatItem): boolean {
   return i.kind === "tool" && !["todo", "ask", "plan"].includes(i.tool?.view ?? "");
 }
 
-export function groupItems(items: ChatItem[]): Block[] {
+/** Blocks of a transcript; expand keeps every step in view (no folding). */
+export function groupItems(items: ChatItem[], expand = false): Block[] {
+  if (expand) return items.map((item) => ({ kind: "item", item }));
   const out: Block[] = [];
   let run: ChatItem[] = [];
   const flush = (last: boolean) => {

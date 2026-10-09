@@ -1,8 +1,10 @@
-// App preferences that live with the app, not in pier's config.
+// App preferences that live with the app, not in pier's config: what
+// Return does, whether a message sent mid-turn steers or waits, terminals,
+// diffs, cleanup.
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-interface Prefs {
+export interface Prefs {
   /** A hidden terminal tab detaches after this long (it keeps the session awake while attached). */
   hiddenDetachMs: number;
   /** Every terminal detaches once the app has been in the background this long. */
@@ -14,8 +16,15 @@ interface Prefs {
   autoRemoveMerged: boolean;
   /** Start the proxy (sessions as <session>.pier) when the app opens. */
   proxyOnLaunch: boolean;
-  /** The agent new sessions start with: claude, codex, or "" for none. */
-  defaultAgent: string;
+  /** Whether a new session starts with a chat (its agent comes from pier's agent settings). */
+  startWithChat: boolean;
+  /** enter: Return sends, ⇧Return breaks the line; cmdEnter: ⌘Return sends. */
+  sendKey: "enter" | "cmdEnter";
+  /** steer: a message sent mid-turn goes into the turn (⌘⇧Return queues);
+   * queue: it waits for the turn to end (⌘⇧Return steers). */
+  followUp: "steer" | "queue";
+  /** Tool calls stay in view instead of folding into a summary line. */
+  expandTools: boolean;
   set: (p: Partial<Omit<Prefs, "set">>) => void;
 }
 
@@ -28,7 +37,10 @@ export const usePrefs = create<Prefs>()(
       diffSplit: false,
       autoRemoveMerged: false,
       proxyOnLaunch: false,
-      defaultAgent: "claude",
+      startWithChat: true,
+      sendKey: "enter",
+      followUp: "steer",
+      expandTools: false,
       set: (p) => set(p),
     }),
     { name: "pier.prefs" },

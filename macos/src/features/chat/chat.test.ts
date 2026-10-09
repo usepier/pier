@@ -14,16 +14,37 @@ const tool = (id: string, view = "bash", status = "ok"): ChatItem => ({
 });
 
 describe("chat changes", () => {
-  it("appends, updates, resets and tracks the agent", () => {
+  it("appends, updates, resets and tracks the chat", () => {
     let st = fromSnapshot({ items: [user("a"), tool("b", "bash", "running")], more: true, live: true });
     st = applyChange(st, { op: "update", items: [tool("b")] });
     expect(st.items[1]!.tool!.status).toBe("ok");
     st = applyChange(st, { op: "append", items: [tool("b"), user("c")] });
     expect(st.items.map((i) => i.id)).toEqual(["a", "b", "c"]);
-    st = applyChange(st, { op: "agent", live: false, asOf: t });
+    st = applyChange(st, { op: "chat", live: false, asOf: t });
     expect([st.live, st.asOf]).toEqual([false, t]);
     st = applyChange(st, { op: "reset", items: [user("z")], more: false });
     expect([st.items.length, st.more]).toEqual([1, false]);
+  });
+  it("streams text in, and lets the finished item replace it", () => {
+    let st = fromSnapshot({ items: [user("a")], more: false, live: true, streaming: [] });
+    st = applyChange(st, { op: "delta", deltas: [{ id: "m:0", kind: "assistant", text: "Fix" }] });
+    st = applyChange(st, { op: "delta", deltas: [{ id: "m:0", kind: "assistant", text: "ed it." }] });
+    expect(st.streaming.map((i) => i.text)).toEqual(["Fixed it."]);
+    st = applyChange(st, {
+      op: "append",
+      items: [{ id: "m:0", kind: "assistant", time: t, text: "Fixed it." }],
+    });
+    expect([st.streaming.length, st.items.length]).toEqual([0, 2]);
+    // A late delta of a finished item changes nothing.
+    st = applyChange(st, { op: "delta", deltas: [{ id: "m:0", kind: "assistant", text: "!" }] });
+    expect(st.streaming).toEqual([]);
+    st = applyChange(st, { op: "streaming", items: [{ id: "m:1", kind: "thinking", time: t, text: "hmm" }] });
+    expect(st.streaming.map((i) => i.id)).toEqual(["m:1"]);
+    st = applyChange(st, {
+      op: "chat",
+      chat: { id: "c", agent: "claude", title: "", state: "ready", since: t, created: t, queue: [] },
+    });
+    expect(st.streaming).toEqual([]);
   });
   it("puts older pages in front once", () => {
     const st = prependPage({ ...emptyChat, items: [user("c")] }, [user("a"), user("b"), user("c")], false);
@@ -87,13 +108,22 @@ import { answerOf, collect, emptyState } from "./answers";
 
 describe("question answers", () => {
   const choice = {
+    id: "db",
     question: "Which DB?",
     kind: "choice",
     options: [{ label: "Postgres" }, { label: "SQLite" }],
   };
-  const multi = { ...choice, question: "Which features?", multiSelect: true };
-  const number = { question: "Workers?", kind: "number", min: 1, max: 8, default: 2, unit: "workers" };
-  const text = { question: "Anything else?", kind: "text" };
+  const multi = { ...choice, id: "features", question: "Which features?", multiSelect: true };
+  const number = {
+    id: "workers",
+    question: "Workers?",
+    kind: "number",
+    min: 1,
+    max: 8,
+    default: 2,
+    unit: "workers",
+  };
+  const text = { id: "else", question: "Anything else?", kind: "text" };
   it("reads each kind of question", () => {
     expect(answerOf(choice, { ...emptyState(choice), picked: ["SQLite"] })).toBe("SQLite");
     expect(answerOf(multi, { ...emptyState(multi), picked: ["Postgres", "SQLite"], other: "Redis" })).toBe(
@@ -107,7 +137,7 @@ describe("question answers", () => {
       [choice, text],
       [{ ...emptyState(choice), picked: ["Postgres"], note: "we run it" }, emptyState(text)],
     );
-    expect(answers).toEqual({ "Which DB?": "Postgres" });
-    expect(notes).toEqual({ "Which DB?": "we run it" });
+    expect(answers).toEqual({ db: "Postgres" });
+    expect(notes).toEqual({ db: "we run it" });
   });
 });

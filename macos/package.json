@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "check": "biome check . && tsc --noEmit",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "e2e": "playwright test",
+    "mock": "PIER_API_BIN=$PWD/mock/pier vite"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
@@ -51,10 +53,12 @@
     "react-markdown": "10.1.0",
     "react-resizable-panels": "4.14.3",
     "remark-gfm": "4.0.1",
+    "shiki": "4.5.0",
     "zustand": "5.0.15"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@playwright/test": "1.58.0",
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/cli": "2.12.1",
     "@types/react": "19.3.0",

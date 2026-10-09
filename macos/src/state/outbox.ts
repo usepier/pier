@@ -1,22 +1,36 @@
-// Prompts on their way to an agent. Each has an id made here, so sending it
-// again is harmless: the session queues an id once. A prompt stays in the
+// Prompts on their way to a chat. Each has an id made here, so sending it
+// again is harmless: the session takes an id once. A prompt stays in the
 // outbox — saved with the app's storage — until its session has it, so a
 // prompt sent just before the app quit or pier restarted goes out when the
-// app is back, and none is sent twice.
+// app is back, and none is sent twice. A new chat's first prompt goes the
+// same way, starting the chat as it arrives.
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { rpc } from "@/api/client";
+import type { Attachment } from "@/api/protocol.gen";
 import { Disconnected, RpcError } from "@/api/rpc";
 import { trackJob } from "./jobs";
+
+/** How a new chat runs, when the prompt starts one. */
+export interface NewChat {
+  agent: string;
+  model?: string;
+  effort?: string;
+  mode?: string;
+}
 
 export interface Outgoing {
   id: string;
   sessionId: string;
+  chatId: string;
   text: string;
-  /** "now" types it in mid-turn; otherwise it waits for the agent. */
-  mode?: "now";
+  attachments?: Attachment[];
+  /** steer: into the running turn; queue: after it. */
+  mode: "steer" | "queue";
+  /** Set when this prompt starts its chat. */
+  create?: NewChat;
   at: number;
-  /** sending: not acknowledged yet · sent: the session queued it · waking: a job wakes the session to deliver it · failed. */
+  /** sending: not acknowledged yet · sent: the session has it · waking: a job wakes the session to deliver it · failed. */
   state: "sending" | "sent" | "waking" | "failed";
   error?: string;
   jobId?: string;
@@ -43,14 +57,21 @@ export const useOutbox = create<Outbox>()(
           return { items: rest };
         }),
     }),
-    { name: "pier.outbox" },
+    { name: "pier.outbox.v2" },
   ),
 );
 
-/** Sends a prompt to a session's agent. */
-export function sendPrompt(sessionId: string, text: string, mode?: "now"): string {
+/** Sends a prompt to a chat (starting it, with create). */
+export function sendPrompt(p: {
+  sessionId: string;
+  chatId: string;
+  text: string;
+  attachments?: Attachment[];
+  mode: "steer" | "queue";
+  create?: NewChat;
+}): string {
   const id = crypto.randomUUID();
-  useOutbox.getState().put({ id, sessionId, text, mode, at: Date.now(), state: "sending" });
+  useOutbox.getState().put({ ...p, id, at: Date.now(), state: "sending" });
   void deliver(id);
   return id;
 }
@@ -60,13 +81,11 @@ async function deliver(id: string) {
   if (!o) return;
   const { patch } = useOutbox.getState();
   patch(id, { state: "sending", error: undefined });
+  const prompt = { id: o.id, text: o.text, attachments: o.attachments };
   try {
-    const r = await rpc.call("chat.send", {
-      sessionId: o.sessionId,
-      promptId: o.id,
-      text: o.text,
-      mode: o.mode,
-    });
+    const r = o.create
+      ? await rpc.call("chat.create", { sessionId: o.sessionId, chatId: o.chatId, ...o.create, prompt })
+      : await rpc.call("chat.send", { sessionId: o.sessionId, chatId: o.chatId, prompt, mode: o.mode });
     if (r.job) {
       trackJob(r.job);
       patch(id, { state: "waking", jobId: r.job.id });
@@ -98,17 +117,17 @@ export function flushOutbox() {
   }
 }
 
-/** How long a sent prompt stays shown before the session reports it. */
+/** How long a sent prompt stays shown before the chat reports it. */
 export const sentGraceMs = 20_000;
 
 /**
- * Settles a session's outbox against what the session reports: a prompt
- * its queue holds, or one sent a while ago, is the session's to show now.
+ * Settles a chat's outbox against what the chat reports: a prompt it has
+ * (in its items or queue), or one sent a while ago, is the chat's to show.
  */
-export function settleOutbox(sessionId: string, queued: Set<string>, now = Date.now()) {
+export function settleOutbox(chatId: string, has: Set<string>, now = Date.now()) {
   const { items, remove } = useOutbox.getState();
   for (const o of Object.values(items)) {
-    if (o.sessionId !== sessionId || o.state !== "sent") continue;
-    if (queued.has(o.id) || now - (o.sentAt ?? o.at) > sentGraceMs) remove(o.id);
+    if (o.chatId !== chatId || o.state !== "sent") continue;
+    if (has.has(o.id) || now - (o.sentAt ?? o.at) > sentGraceMs) remove(o.id);
   }
 }

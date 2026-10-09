@@ -3,6 +3,7 @@ package chat
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,5 +299,40 @@ func TestUnwrapShell(t *testing.T) {
 		if got := UnwrapShell(in); got != want {
 			t.Errorf("UnwrapShell(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+var updateMock = flag.Bool("update-mock", false, "write the app's mock chats from the recorded streams")
+
+// TestMockChats keeps the app's mock backend (macos/mock) on chats read
+// from the real recorded streams: `go test ./pkg/pier/chat -run
+// MockChats -update-mock` writes them.
+func TestMockChats(t *testing.T) {
+	out := map[string][]wire.ChatItem{}
+	for _, name := range []string{"claude-tools", "claude-plan", "claude-question", "claude-interrupt"} {
+		out[name] = claudeFold(t, name+".jsonl").items
+	}
+	for _, name := range []string{"codex-tools", "codex-question", "codex-interrupt"} {
+		f, _ := codexFold(t, name+".jsonl")
+		out[name] = f.items
+	}
+	for name, items := range out {
+		if len(items) == 0 {
+			t.Errorf("%s: no items", name)
+		}
+	}
+	if !*updateMock {
+		return
+	}
+	b, err := json.MarshalIndent(out, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "..", "macos", "mock", "chats.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

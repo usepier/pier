@@ -21,7 +21,7 @@ import type { PRCheck, PRDetail, Session } from "@/api/protocol.gen";
 import { RpcError } from "@/api/rpc";
 import { inTauri } from "@/api/transport";
 import { confirm } from "@/lib/confirm";
-import { useDocs } from "@/state/docs";
+import { currentChat, showChat } from "@/state/currentChat";
 import { useDrafts } from "@/state/drafts";
 import { attempt, toast, toastError } from "@/state/toasts";
 import { Badge } from "@/ui/Badge";
@@ -35,12 +35,13 @@ function open(url: string) {
   else window.open(url, "_blank", "noopener");
 }
 
-/** Puts a prompt pier wrote in the session's composer, for you to read and send. */
-async function composeInto(sessionId: string, kind: "fixCI" | "addressComments" | "createPR") {
-  const r = await attempt(() => rpc.call("chat.compose", { sessionId, kind }));
+/** Puts a prompt pier wrote in the current chat's composer, for you to read and send. */
+async function composeInto(s: Session, kind: "fixCI" | "addressComments" | "createPR") {
+  const r = await attempt(() => rpc.call("chat.compose", { sessionId: s.id, kind }));
   if (!r) return;
-  useDrafts.getState().setDraft(sessionId, r.text);
-  useDocs.getState().setActive(sessionId, "chat");
+  const t = currentChat(s);
+  useDrafts.getState().setDraft(`${s.id}/${t.chatId}`, r.text);
+  showChat(s.id, t.chatId);
   toast("In the message box — read it over and send", "info");
 }
 
@@ -79,7 +80,7 @@ export function PRPanel({ session: s }: { session: Session }) {
           {onGitHub ? `No pull request for ${s.branch} yet.` : "This repository isn't on GitHub."}
         </div>
         {onGitHub && (
-          <Button size="sm" onPress={() => void composeInto(s.id, "createPR")}>
+          <Button size="sm" onPress={() => void composeInto(s, "createPR")}>
             Ask the agent to open one…
           </Button>
         )}
@@ -150,7 +151,7 @@ function Detail({ session: s, pr }: { session: Session; pr: PRDetail }) {
               size="sm"
               variant="primary"
               icon={<Wrench size={11} />}
-              onPress={() => void composeInto(s.id, "fixCI")}
+              onPress={() => void composeInto(s, "fixCI")}
             >
               Fix CI…
             </Button>
@@ -159,7 +160,7 @@ function Detail({ session: s, pr }: { session: Session; pr: PRDetail }) {
             <Button
               size="sm"
               icon={<MessageSquare size={11} />}
-              onPress={() => void composeInto(s.id, "addressComments")}
+              onPress={() => void composeInto(s, "addressComments")}
             >
               Address comments…
             </Button>

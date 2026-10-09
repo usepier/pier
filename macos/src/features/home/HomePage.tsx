@@ -1,8 +1,9 @@
 import { useNavigate } from "@tanstack/react-router";
 import { Anchor } from "lucide-react";
+import type { Session } from "@/api/protocol.gen";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { ago, hourly, monthly } from "@/lib/format";
-import { needingAttention, reasonText, reasonTone, useSeen } from "@/state/attention";
+import { needingAttention, reasonText, reasonTone, unseenChat, useSeen } from "@/state/attention";
 import { useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview } from "@/state/overview";
 import { useUI } from "@/state/ui";
@@ -88,15 +89,15 @@ export function HomePage() {
                       {reasonText[reason]}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-xs text-secondary">
-                      {reason === "finished" || reason === "needs_input"
-                        ? s.agent?.last
-                        : reason === "create_failed" || reason === "setup_failed"
-                          ? s.failReason
-                          : s.pr && `#${s.pr.number} ${s.pr.title}`}
+                      {reason === "finished"
+                        ? unseenChat(s, seen)?.last
+                        : reason === "needs_input"
+                          ? s.chats?.find((c) => c.state === "waiting")?.ask
+                          : reason === "create_failed" || reason === "setup_failed"
+                            ? s.failReason
+                            : s.pr && `#${s.pr.number} ${s.pr.title}`}
                     </span>
-                    <span className="shrink-0 text-xs text-tertiary">
-                      {s.agent ? ago(s.agent.since) : ""}
-                    </span>
+                    <span className="shrink-0 text-xs text-tertiary">{lastActive(s)}</span>
                   </button>
                 </li>
               ))}
@@ -147,4 +148,13 @@ export function HomePage() {
       </div>
     </div>
   );
+}
+
+/** When the session's chats last changed state, as "5m ago". */
+function lastActive(s: Session): string {
+  const since = (s.chats ?? [])
+    .map((c) => c.since)
+    .sort()
+    .at(-1);
+  return since ? ago(since) : "";
 }

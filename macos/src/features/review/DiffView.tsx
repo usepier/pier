@@ -6,8 +6,8 @@ import { useMemo, useState } from "react";
 import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
 import { type Comment, reviewMessage, useComments } from "@/state/comments";
+import { sendToAgent } from "@/state/currentChat";
 import { type Doc, useDocs } from "@/state/docs";
-import { sendPrompt } from "@/state/outbox";
 import { usePrefs } from "@/state/prefs";
 import { toast } from "@/state/toasts";
 import { Button } from "@/ui/Button";
@@ -62,9 +62,8 @@ export function DiffView({ session: s, doc, visible }: { session: Session; doc: 
 
   const sendAll = () => {
     if (!all.length) return;
-    sendPrompt(s.id, reviewMessage(all));
+    sendToAgent(s, reviewMessage(all));
     useComments.getState().clear(s.id);
-    useDocs.getState().setActive(s.id, "chat");
     toast(`Sent ${all.length} ${all.length === 1 ? "comment" : "comments"} to the agent`, "ok");
   };
 
