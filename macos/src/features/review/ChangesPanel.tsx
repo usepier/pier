@@ -5,13 +5,13 @@ import { useWatch } from "@/api/live";
 import type { Session } from "@/api/protocol.gen";
 import { composeInto } from "@/features/github/PRPanel";
 import { plural } from "@/lib/format";
-import { reviewMessage, useComments } from "@/state/comments";
-import { sendToAgent } from "@/state/currentChat";
+import { useComments } from "@/state/comments";
 import { docId, useDocs } from "@/state/docs";
 import { attempt, toast } from "@/state/toasts";
 import { Button } from "@/ui/Button";
 import { Spinner } from "@/ui/Spinner";
 import { CommitSheet } from "./CommitSheet";
+import { sendReview } from "./sendReview";
 import { StatusMark, splitPath, totals } from "./status";
 
 /** What the session's branch changed against its base, and the ways to ship it. */
@@ -110,15 +110,7 @@ export function ChangesPanel({ session: s }: { session: Session }) {
       {c.live && (
         <div className="flex shrink-0 flex-wrap gap-1.5 border-t border-separator p-2.5">
           {comments > 0 && (
-            <Button
-              size="sm"
-              variant="primary"
-              icon={<Send size={11} />}
-              onPress={() => {
-                sendToAgent(s, reviewMessage(useComments.getState().comments[s.id] ?? []));
-                useComments.getState().clear(s.id);
-              }}
-            >
+            <Button size="sm" variant="primary" icon={<Send size={11} />} onPress={() => void sendReview(s)}>
               Send {plural(comments, "comment")}
             </Button>
           )}

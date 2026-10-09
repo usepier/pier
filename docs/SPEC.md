@@ -662,8 +662,11 @@ in-flight work three seconds to see its cancellation.
   ready to merge. `pr.get` reads one in full, `pr.log` a check's log,
   `pr.rerun` re-runs failed jobs; `pr.merge` merges only at the head that
   was reviewed (kind `head_moved` otherwise). `chat.compose` writes the
-  prompt for fixing CI (with the failing logs) or addressing review
-  comments, for the composer. `sessions.removeMerged` removes a merged
+  prompt for fixing CI (with the failing logs), addressing review comments
+  or opening a pull request, for the composer. Those prompts, the
+  onboarding one and the heading of review comments are the user's to
+  word (`prompts.get`, `prompts.set`; `[prompts]` in config.toml), for
+  every repo or one (`[prompts.repos.<repo>]`). `sessions.removeMerged` removes a merged
   session only when everything in it is committed and its head is the
   merged one.
 - **Setup.** `pier setup`'s steps, for a form: `setup.detect` (tools,

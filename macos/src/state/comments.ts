@@ -49,11 +49,14 @@ export const useComments = create<Comments>()(
   ),
 );
 
+/** What heads review comments unless the user's prompts say otherwise. */
+export const reviewHeader = "Review comments on your changes — please address each one:";
+
 /** The comments as one message for the agent, file by file. */
-export function reviewMessage(comments: Comment[]): string {
+export function reviewMessage(comments: Comment[], header = reviewHeader): string {
   const byPath = new Map<string, Comment[]>();
   for (const c of comments) byPath.set(c.path, [...(byPath.get(c.path) ?? []), c]);
-  const parts = ["Review comments on your changes — please address each one:"];
+  const parts = [header.trim()];
   for (const [path, list] of byPath) {
     for (const c of list.sort((a, b) => a.line - b.line)) {
       const where = c.endLine && c.endLine !== c.line ? `${c.line}-${c.endLine}` : `${c.line}`;

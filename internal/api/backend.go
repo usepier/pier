@@ -31,6 +31,8 @@ type Account interface {
 	Config() config.Config
 	Settings() []pier.SettingValue
 	Set(key, value string) error
+	Prompts(repo string) []pier.Prompt
+	SetPrompt(repo, key, text string) error
 	Doctor(ctx context.Context) []pier.Check
 	ReauthCommand(err error) *exec.Cmd
 	Headroom(ctx context.Context) (pier.Quota, error)

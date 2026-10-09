@@ -6,16 +6,15 @@ import { useMemo, useState } from "react";
 import { rpc } from "@/api/client";
 import { useWatch } from "@/api/live";
 import type { Session } from "@/api/protocol.gen";
-import { type Comment, reviewMessage, useComments } from "@/state/comments";
-import { sendToAgent } from "@/state/currentChat";
+import { type Comment, useComments } from "@/state/comments";
 import { type Doc, useDocs } from "@/state/docs";
 import { usePrefs } from "@/state/prefs";
-import { toast } from "@/state/toasts";
 import { Button } from "@/ui/Button";
 import { Empty } from "@/ui/Empty";
 import { Spinner } from "@/ui/Spinner";
 import { CommentEditor, CommentNote } from "./CommentBox";
 import { linesFromPatch } from "./patch";
+import { sendReview } from "./sendReview";
 
 type Note = { comment?: Comment; draft?: { side: Comment["side"]; line: number; endLine?: number } };
 
@@ -104,12 +103,7 @@ export function DiffView({ session: s, doc, visible }: { session: Session; doc: 
     setDraft({ side, line: a, endLine: b !== a ? b : undefined });
   };
 
-  const sendAll = () => {
-    if (!all.length) return;
-    sendToAgent(s, reviewMessage(all));
-    useComments.getState().clear(s.id);
-    toast(`Sent ${all.length} ${all.length === 1 ? "comment" : "comments"} to the agent`, "ok");
-  };
+  const sendAll = () => void sendReview(s);
 
   if (diff.error) return <Empty title={doc.path} detail={(diff.error as Error).message} />;
   if (!diff.data) {

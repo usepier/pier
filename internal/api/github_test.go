@@ -29,6 +29,19 @@ func TestPullRequests(t *testing.T) {
 	if !strings.Contains(text, "PR #7") || !strings.Contains(text, "--- FAIL: TestLogin") {
 		t.Errorf("fixCI prompt = %q", text)
 	}
+	// The user's own wording leads, for the repo where it's set.
+	c.call("prompts.set", map[string]any{"repo": "shop", "key": "fixCI", "text": "Checks broke on #{pr}."})
+	resp, _ = c.call("chat.compose", map[string]any{"sessionId": "i-1", "kind": "fixCI"})
+	text, _ = resp["result"].(map[string]any)["text"].(string)
+	if !strings.HasPrefix(text, "Checks broke on #7.\n") || !strings.Contains(text, "--- FAIL: TestLogin") {
+		t.Errorf("own fixCI prompt = %q", text)
+	}
+	resp, _ = c.call("prompts.get", map[string]any{"repo": "shop"})
+	var ps wire.Prompts
+	remarshal(t, resp["result"], &ps)
+	if len(ps.Prompts) != 5 || ps.Prompts[0].Own != "Checks broke on #{pr}." {
+		t.Errorf("prompts = %+v", ps)
+	}
 	resp, _ = c.call("chat.compose", map[string]any{"sessionId": "i-1", "kind": "addressComments"})
 	text, _ = resp["result"].(map[string]any)["text"].(string)
 	if !strings.Contains(text, "a.go:3\nrev: rename this") {

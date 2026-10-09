@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/github"
 	"github.com/usepier/pier/pkg/pier"
 	"github.com/usepier/pier/pkg/pier/wire"
@@ -189,16 +190,14 @@ func wirePRDetail(d pier.PRDetail) wire.PRDetail {
 	return w
 }
 
-const createPRPrompt = "Open a pull request for this branch: commit anything outstanding, push, then create it with `gh pr create` — a clear title, and a body that sums up what changed and why."
-
 // compose writes a prompt for the agent from the pull request's state.
 func compose(ctx context.Context, be Backend, sess pier.Session, d pier.PRDetail, kind string) (string, error) {
 	switch kind {
 	case "createPR":
-		return createPRPrompt, nil
+		return be.Config().Prompt(sess.Repo, "createPR"), nil
 	case "fixCI":
 		var b strings.Builder
-		fmt.Fprintf(&b, "CI is failing on PR #%d. Find out why, fix it, and push.\n", d.Number)
+		b.WriteString(config.FillPrompt(be.Config().Prompt(sess.Repo, "fixCI"), d.Number) + "\n")
 		logs := 0
 		for _, c := range d.Checks {
 			if c.State != "failing" {
@@ -220,7 +219,7 @@ func compose(ctx context.Context, be Backend, sess pier.Session, d pier.PRDetail
 		return b.String(), nil
 	case "addressComments":
 		var b strings.Builder
-		fmt.Fprintf(&b, "Address the review feedback on PR #%d, then push. Reply to nothing — just make the changes.\n", d.Number)
+		b.WriteString(config.FillPrompt(be.Config().Prompt(sess.Repo, "addressComments"), d.Number) + "\n")
 		for _, r := range d.Reviews {
 			if r.State == "changes_requested" && strings.TrimSpace(r.Body) != "" {
 				fmt.Fprintf(&b, "\n%s asked for changes:\n%s\n", r.Author, strings.TrimSpace(r.Body))
@@ -304,12 +303,12 @@ func init() {
 		})
 	handle("chat.compose", "A prompt for the agent from the pull request — fixCI (with the failing logs), addressComments, createPR — for the composer, not sent.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.ComposeParams) (wire.Composed, error) {
-			if p.Kind == "createPR" {
-				return wire.Composed{Text: createPRPrompt}, nil
-			}
 			be, sess, err := s.sessionFor(ctx, p.SessionID)
 			if err != nil {
 				return wire.Composed{}, err
+			}
+			if p.Kind == "createPR" {
+				return wire.Composed{Text: be.Config().Prompt(sess.Repo, "createPR")}, nil
 			}
 			pr, err := s.prFor(ctx, be, sess)
 			if err != nil {

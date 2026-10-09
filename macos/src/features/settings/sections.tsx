@@ -11,6 +11,7 @@ import {
   Globe,
   KeyRound,
   MessageSquare,
+  MessageSquareText,
   Moon,
   Palette,
   Rocket,
@@ -38,6 +39,7 @@ import { Spinner } from "@/ui/Spinner";
 import { Switch } from "@/ui/Switch";
 import type { Item, Section } from "./model";
 import { codeSpans, pierItem, type Save } from "./PierSetting";
+import { RepoPrompts, usePromptItems } from "./PromptItems";
 
 const icon = (I: typeof Bot) => <I size={15} strokeWidth={1.75} />;
 
@@ -338,6 +340,14 @@ function useRepoSections(): Section[] {
               {r.baking ? "Baking…" : r.image ? "Bake again" : "Bake"}
             </Button>
           ),
+        },
+        {
+          id: `${r.name}.prompts`,
+          title: "Prompts",
+          description:
+            "What pier asks the agent in this repo's sessions. Empty ones use your prompts for every repo.",
+          text: "prompt wording fix ci address review comments create pull request onboard",
+          children: <RepoPrompts repo={r.name} />,
         },
         {
           id: `${r.name}.cockpit`,
@@ -651,9 +661,29 @@ export function useSections(): {
   const pier = usePierSections(q.data, save);
   const repos = useRepoSections();
   const more = useMoreSections();
+  const promptItems = usePromptItems("");
+  const prompts: Section[] = promptItems.length
+    ? [
+        {
+          id: "prompts",
+          title: "Prompts",
+          group: "pier",
+          icon: icon(MessageSquareText),
+          description: "What pier asks the agent for you. A repository can have its own.",
+          items: promptItems,
+        },
+      ]
+    : [];
   const appearance = pier.filter((s) => s.group === "This app");
   return {
-    sections: [...app, ...appearance, ...pier.filter((s) => s.group === "pier"), ...repos, ...more.sections],
+    sections: [
+      ...app,
+      ...appearance,
+      ...pier.filter((s) => s.group === "pier"),
+      ...prompts,
+      ...repos,
+      ...more.sections,
+    ],
     loading: q.isLoading,
     error: q.error,
     extra: more.sheet,

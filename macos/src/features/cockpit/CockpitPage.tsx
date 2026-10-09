@@ -13,6 +13,7 @@ import { useLoadHistory } from "@/state/history";
 import { trackJob, useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview, useRepo, useRepoSessions } from "@/state/overview";
 import { poolState } from "@/state/pool";
+import { promptFor } from "@/state/prompts";
 import { useSetting } from "@/state/settings";
 import { attempt, toast } from "@/state/toasts";
 import { useUI } from "@/state/ui";
@@ -67,7 +68,12 @@ export function CockpitPage() {
             <Button
               size="sm"
               variant="primary"
-              onPress={() => openNew(repo.name, { branch: "pier-onboard", prompt: onboardPrompt })}
+              onPress={async () =>
+                openNew(repo.name, {
+                  branch: "pier-onboard",
+                  prompt: await promptFor(repo.name, "onboard", onboardPrompt),
+                })
+              }
             >
               Set it up with an agent…
             </Button>

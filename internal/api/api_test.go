@@ -41,14 +41,37 @@ type fake struct {
 	decided []string
 	follows int
 	// gitStates are what FollowGit pushes; kept what KeepSnapshot got.
-	gitStates []pier.GitState
-	kept      []pier.GitState
-	following map[string]int // sessions whose checkout is followed now
-	prReads   int
+	gitStates  []pier.GitState
+	kept       []pier.GitState
+	following  map[string]int // sessions whose checkout is followed now
+	prReads    int
+	ownPrompts config.Prompts
 }
 
-func (f *fake) Cloud() string         { return "AWS test-1" }
-func (f *fake) Config() config.Config { return config.Default() }
+func (f *fake) Cloud() string { return "AWS test-1" }
+func (f *fake) Config() config.Config {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := config.Default()
+	c.Prompts = f.ownPrompts
+	return c
+}
+func (f *fake) Prompts(repo string) []pier.Prompt {
+	cfg := f.Config()
+	var out []pier.Prompt
+	for _, k := range config.PromptKinds {
+		out = append(out, pier.Prompt{Key: k.Key, Title: k.Title, Own: cfg.PromptOverride(repo, k.Key), Effective: cfg.Prompt(repo, k.Key)})
+	}
+	return out
+}
+func (f *fake) SetPrompt(repo, key, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := config.Config{Prompts: f.ownPrompts}
+	err := c.SetPrompt(repo, key, text)
+	f.ownPrompts = c.Prompts
+	return err
+}
 func (f *fake) ListSessions(context.Context) ([]pier.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

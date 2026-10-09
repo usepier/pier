@@ -25,6 +25,7 @@ type Config struct {
 	Pool          Pool    `toml:"pool"`
 	Speed         Speed   `toml:"speed"`
 	Agents        Agents  `toml:"agents"`
+	Prompts       Prompts `toml:"prompts,omitempty"`
 	Theme         string  `toml:"theme,omitempty"` // accent color; see Themes
 	Secrets       Secrets `toml:"secrets"`
 	// Images records what each repo's session image was baked from — when,

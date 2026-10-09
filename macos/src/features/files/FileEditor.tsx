@@ -7,12 +7,12 @@ import { rpc } from "@/api/client";
 import type { FileContent, Session } from "@/api/protocol.gen";
 import { Disconnected, RpcError } from "@/api/rpc";
 import { CommentEditor } from "@/features/review/CommentBox";
+import { sendReview } from "@/features/review/sendReview";
 import { ask } from "@/lib/confirm";
 import { bytes } from "@/lib/format";
 import { readable } from "@/lib/session";
 import { bufferKey, useBuffers } from "@/state/buffers";
-import { type Comment, reviewMessage, useComments } from "@/state/comments";
-import { sendToAgent } from "@/state/currentChat";
+import { type Comment, useComments } from "@/state/comments";
 import { type Doc, useDocs } from "@/state/docs";
 import { toast, toastError } from "@/state/toasts";
 import { Button } from "@/ui/Button";
@@ -197,12 +197,7 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
     setCommenting(undefined);
     v.focus();
   };
-  const sendAll = () => {
-    if (!all.length) return;
-    sendToAgent(s, reviewMessage(all));
-    useComments.getState().clear(s.id);
-    toast(`Sent ${all.length} ${all.length === 1 ? "comment" : "comments"} to the agent`, "ok");
-  };
+  const sendAll = () => void sendReview(s);
 
   // Show the line a search hit pointed at — again for each new request, and
   // once the editor exists.

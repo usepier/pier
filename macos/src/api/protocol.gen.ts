@@ -921,6 +921,38 @@ export interface ProgressParams {
   event: Event;
 }
 
+/** PromptSetParams sets a prompt; empty text falls back again. */
+export interface PromptSetParams {
+  repo?: string;
+  key: string;
+  text: string;
+}
+
+/** Prompts are a level's prompts. */
+export interface Prompts {
+  prompts: Prompt[];
+}
+
+/** Prompt is one prompt pier sends agents, as settings edit it. */
+export interface Prompt {
+  /** fixCI | addressComments | createPR | onboard | review */
+  key: string;
+  title: string;
+  description: string;
+  /**
+   * Own is this level's text ("" for none); Inherited what it falls back
+   * to; Effective what is sent. {pr} is the pull request's number.
+   */
+  own: string;
+  inherited: string;
+  effective: string;
+}
+
+/** PromptsParams names whose prompts: a repo's, or ("") every repo's. */
+export interface PromptsParams {
+  repo?: string;
+}
+
 /**
  * ProxyState is the local proxy: every running session as <name>.pier,
  * its listening ports mirrored on this Mac.
@@ -1633,6 +1665,10 @@ export interface Methods {
   "pr.merge": { params: PRMergeParams; result: null };
   /** Re-runs a workflow run's failed jobs. */
   "pr.rerun": { params: PRRerunParams; result: null };
+  /** The prompts pier sends agents (fix CI, address comments, create a PR, onboard, review comments) for a repo, or every repo: each with its own text, what it falls back to, and what is sent. */
+  "prompts.get": { params: PromptsParams; result: Prompts };
+  /** Sets a prompt for a repo, or every repo; empty text falls back again. */
+  "prompts.set": { params: PromptSetParams; result: null };
   /** Serves every running session as <session>.pier with its ports mirrored on this Mac. The first time, macOS asks for an administrator's password (local names and addresses). */
   "proxy.start": { params: Empty; result: ProxyState };
   /** Stops the proxy; sessions' names and mirrored ports go away. */

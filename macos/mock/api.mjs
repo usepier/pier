@@ -157,6 +157,16 @@ function edited(id, path, added) {
   else files.push({ path, status: "untracked", added, removed: 0, uncommitted: true, stamp: "1" });
   emit("git", id, changes(id));
 }
+// What pier asks the agent: its own wording, the user's, a repo's.
+const promptKinds = [
+  { key: "fixCI", title: "Fix CI", desc: "Starts the message that sends the failing checks' logs to the agent.", def: "CI is failing on PR #{pr}. Find out why, fix it, and push." },
+  { key: "addressComments", title: "Address review comments", desc: "Starts the message that sends the pull request's open review feedback to the agent.", def: "Address the review feedback on PR #{pr}, then push." },
+  { key: "createPR", title: "Create a pull request", desc: "What Create PR asks the agent.", def: "Open a pull request for this branch." },
+  { key: "onboard", title: "Set a repo up for pier", desc: "The first message of the session that onboards a repository.", def: "Set this repository up for pier, using the pier-onboard skill." },
+  { key: "review", title: "Review comments", desc: "Heads your diff and file comments when they go to the agent.", def: "Review comments on your changes — please address each one:" },
+];
+const globalPrompts = {};
+const repoPrompts = new Map();
 const repoFiles = ["src/checkout/PayButton.tsx", "src/checkout/Summary.tsx", "src/api/charges.ts", "src/api/charges.test.ts", "package.json", "README.md"];
 const fileText = (path) => `// ${path}\nexport function PayButton() {\n  return null;\n}\n`;
 
@@ -508,6 +518,18 @@ const handlers = {
     reviews: [{ author: "maria", state: "changes_requested", body: "Close — one thing about the cookie name." }] }),
   "pr.log": () => ({ text: "Run pnpm test\n FAIL src/auth/mw.test.ts\nError: Process completed with exit code 1." }),
   "cli.status": () => ({ link: "/usr/local/bin/pier", installed: false }),
+  "prompts.get": (p) => ({
+    prompts: promptKinds.map((k) => {
+      const own = (p.repo ? repoPrompts.get(p.repo)?.[k.key] : globalPrompts[k.key]) ?? "";
+      const inherited = p.repo ? globalPrompts[k.key] || k.def : k.def;
+      return { key: k.key, title: k.title, description: k.desc, own, inherited, effective: own || inherited };
+    }),
+  }),
+  "prompts.set": (p) => {
+    const set = p.repo ? (repoPrompts.get(p.repo) ?? repoPrompts.set(p.repo, {}).get(p.repo)) : globalPrompts;
+    set[p.key] = p.text.trim();
+    return null;
+  },
   "setup.detect": () => ({
     configured: true,
     draft: { cloud: "aws-ec2", awsProfile: "dev", awsRegion: "eu-central-1", machine: "t4g.medium", diskGib: 30, idleTimeout: "30m", unattendedCap: "8h", speed: "fast", manifest: [] },
