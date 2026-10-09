@@ -1,22 +1,27 @@
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileWarning } from "lucide-react";
+import { FileWarning, MessageSquarePlus, Send, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { rpc } from "@/api/client";
 import type { FileContent, Session } from "@/api/protocol.gen";
 import { Disconnected, RpcError } from "@/api/rpc";
+import { CommentEditor } from "@/features/review/CommentBox";
 import { ask } from "@/lib/confirm";
 import { bytes } from "@/lib/format";
 import { readable } from "@/lib/session";
 import { bufferKey, useBuffers } from "@/state/buffers";
+import { type Comment, reviewMessage, useComments } from "@/state/comments";
+import { sendToAgent } from "@/state/currentChat";
 import { type Doc, useDocs } from "@/state/docs";
 import { toast, toastError } from "@/state/toasts";
 import { Button } from "@/ui/Button";
 import { Empty } from "@/ui/Empty";
 import { Spinner } from "@/ui/Spinner";
-import { editorExtensions, languageFor } from "./codemirror";
+import { editorExtensions, languageFor, markCommented } from "./codemirror";
 import { setActiveSave } from "./save";
+
+const noComments: Comment[] = [];
 
 /**
  * A file of the session's checkout in an editor. Edits are kept on this Mac
@@ -41,6 +46,14 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
   const [saving, setSaving] = useState(false);
   const dirty = useBuffers((b) => !!b.buffers[key]);
   const reveal = useDocs((d) => d.reveal);
+  // The lines selected (or the cursor's), for a comment on them.
+  const [sel, setSel] = useState<{ line: number; endLine: number }>();
+  const [commenting, setCommenting] = useState<{ line: number; endLine: number }>();
+  const all = useComments((c) => c.comments[s.id] ?? noComments);
+  const mine = useMemo(
+    () => all.filter((c) => c.path === doc.path && c.side === "additions"),
+    [all, doc.path],
+  );
 
   const save = useCallback(async () => {
     const v = view.current;
@@ -132,6 +145,12 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
           lang.current.of([]),
           ...(kept ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
           EditorView.updateListener.of((u) => {
+            if (u.selectionSet || u.docChanged) {
+              const r = u.state.selection.main;
+              const a = u.state.doc.lineAt(r.from).number;
+              const b = u.state.doc.lineAt(r.empty ? r.from : r.to - (r.to > r.from ? 1 : 0)).number;
+              setSel({ line: Math.min(a, b), endLine: Math.max(a, b) });
+            }
             if (!u.docChanged) return;
             const text = u.state.doc.toString();
             const saved = qc.getQueryData<FileContent>(queryKey);
@@ -150,6 +169,40 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
       view.current = null;
     };
   }, [shown, kept, doc.path, s.id, qc, queryKey]);
+
+  // The lines this file's comments are about stand out.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: data makes the editor anew
+  useEffect(() => {
+    const lines = mine.flatMap((c) =>
+      Array.from({ length: (c.endLine ?? c.line) - c.line + 1 }, (_, i) => c.line + i),
+    );
+    view.current?.dispatch({ effects: markCommented.of(lines) });
+  }, [mine, data]);
+
+  const addComment = (text: string) => {
+    const at = commenting;
+    const v = view.current;
+    if (!at || !v) return;
+    const doc_ = v.state.doc;
+    const code = doc_.sliceString(doc_.line(at.line).from, doc_.line(Math.min(at.endLine, doc_.lines)).to);
+    useComments.getState().add(s.id, {
+      id: crypto.randomUUID(),
+      path: doc.path,
+      side: "additions",
+      line: at.line,
+      endLine: at.endLine !== at.line ? at.endLine : undefined,
+      text,
+      code,
+    });
+    setCommenting(undefined);
+    v.focus();
+  };
+  const sendAll = () => {
+    if (!all.length) return;
+    sendToAgent(s, reviewMessage(all));
+    useComments.getState().clear(s.id);
+    toast(`Sent ${all.length} ${all.length === 1 ? "comment" : "comments"} to the agent`, "ok");
+  };
 
   // Show the line a search hit pointed at — again for each new request, and
   // once the editor exists.
@@ -204,6 +257,20 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-separator px-3 text-xs text-secondary">
         <span className="min-w-0 flex-1 truncate font-mono">{doc.path}</span>
         {data.missing && <span className="text-tertiary">new file</span>}
+        <Button
+          size="sm"
+          variant="plain"
+          icon={<MessageSquarePlus size={11} />}
+          isDisabled={!sel}
+          onPress={() => setCommenting(sel)}
+        >
+          Comment
+        </Button>
+        {all.length > 0 && (
+          <Button size="sm" variant="primary" icon={<Send size={11} />} onPress={sendAll}>
+            Send {all.length} to agent
+          </Button>
+        )}
         {kept ? (
           <span className="text-tertiary">as of the last look · read-only</span>
         ) : (
@@ -220,6 +287,50 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
           </>
         )}
       </div>
+      {commenting && (
+        <CommentEditor
+          title={
+            commenting.endLine !== commenting.line
+              ? `Lines ${commenting.line}–${commenting.endLine}`
+              : `Line ${commenting.line}`
+          }
+          onSave={addComment}
+          onCancel={() => setCommenting(undefined)}
+        />
+      )}
+      {mine.length > 0 && (
+        <ul className="max-h-32 shrink-0 overflow-y-auto border-b border-separator">
+          {mine.map((c) => (
+            <li key={c.id} className="flex items-start gap-2 px-3 py-1 text-xs">
+              <button
+                type="button"
+                className="shrink-0 font-mono text-tertiary hover:text-label"
+                onClick={() => {
+                  const v = view.current;
+                  if (!v) return;
+                  const at = v.state.doc.line(Math.min(c.line, v.state.doc.lines)).from;
+                  v.dispatch({
+                    selection: { anchor: at },
+                    effects: EditorView.scrollIntoView(at, { y: "center" }),
+                  });
+                  v.focus();
+                }}
+              >
+                {c.endLine ? `${c.line}–${c.endLine}` : c.line}
+              </button>
+              <span className="selectable min-w-0 flex-1 whitespace-pre-wrap text-secondary">{c.text}</span>
+              <button
+                type="button"
+                aria-label="Delete comment"
+                onClick={() => useComments.getState().remove(s.id, c.id)}
+                className="shrink-0 text-tertiary hover:text-bad"
+              >
+                <Trash2 size={11} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <div ref={host} className="selectable min-h-0 flex-1 overflow-hidden" />
     </div>
   );

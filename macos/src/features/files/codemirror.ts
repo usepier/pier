@@ -9,8 +9,10 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import type { Extension } from "@codemirror/state";
+import { type Extension, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import {
+  Decoration,
+  type DecorationSet,
   drawSelection,
   EditorView,
   highlightActiveLine,
@@ -70,6 +72,35 @@ const theme = EditorView.theme({
   ".cm-searchMatch": { backgroundColor: "color-mix(in oklch, var(--color-warn) 30%, transparent)" },
   ".cm-panels": { backgroundColor: "var(--raised)", color: "var(--label)", borderColor: "var(--separator)" },
   ".cm-foldGutter span": { color: "var(--tertiary-label)" },
+  ".cm-commented": {
+    backgroundColor: "color-mix(in oklch, var(--accent) 11%, transparent)",
+    boxShadow: "inset 2px 0 0 var(--accent)",
+  },
+});
+
+/** Marks the lines review comments are about (1-based). */
+export const markCommented = StateEffect.define<number[]>();
+
+const commentedLine = Decoration.line({ class: "cm-commented" });
+
+const commented = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    let out = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(markCommented)) continue;
+      const b = new RangeSetBuilder<Decoration>();
+      for (const n of [...new Set(e.value)].sort((x, y) => x - y)) {
+        if (n >= 1 && n <= tr.state.doc.lines) {
+          const at = tr.state.doc.line(n).from;
+          b.add(at, at, commentedLine);
+        }
+      }
+      out = b.finish();
+    }
+    return out;
+  },
+  provide: (f) => EditorView.decorations.from(f),
 });
 
 /** Everything an editor has, bar its document and language. */
@@ -87,6 +118,7 @@ export function editorExtensions(onSave: () => void): Extension[] {
     highlightSelectionMatches(),
     syntaxHighlighting(highlight),
     theme,
+    commented,
     keymap.of([
       {
         key: "Mod-s",

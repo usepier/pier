@@ -55,3 +55,21 @@ test("a parked session shows its files as of the last look, read-only", async ({
   await page.getByRole("button", { name: "Summary.tsx" }).click();
   await expect(page.getByText("Only changed files are kept", { exact: false })).toBeVisible();
 });
+
+test("a comment on lines of a file goes to the agent with the rest", async ({ page }) => {
+  await openSession(page, "i-01");
+  await inspector(page, "Files");
+  await page.getByRole("button", { name: "src", exact: true }).click();
+  await page.getByRole("button", { name: "checkout", exact: true }).click();
+  await page.getByRole("button", { name: "PayButton.tsx" }).click();
+  await page.getByText("return null;").click();
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(page.getByText("Line 3")).toBeVisible();
+  await page.getByPlaceholder("What should change here?").fill("Return the button");
+  await page.getByPlaceholder("What should change here?").press("Meta+Enter");
+  await expect(page.locator(".cm-commented")).toHaveCount(1);
+  await expect(page.getByText("Return the button")).toBeVisible();
+  await page.getByRole("button", { name: "Send 1 to agent" }).click();
+  await expect(page.getByText("Sent 1 comment to the agent")).toBeVisible();
+  await expect(page.locator(".cm-commented")).toHaveCount(0);
+});
