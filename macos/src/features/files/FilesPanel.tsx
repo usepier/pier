@@ -196,17 +196,22 @@ function ContentSearch({ session: s }: { session: Session }) {
   const [regex, setRegex] = useState(false);
   const [caseSensitive, setCase] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  const focus = useInspector((i) => i.focusSearch);
   const openDoc = useDocs((d) => d.open);
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 250);
     return () => clearTimeout(t);
   }, [query]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each request to search focuses the field
+  // Focused as it opens, and again at each request to search.
   useEffect(() => {
-    input.current?.focus();
-    input.current?.select();
-  }, [focus]);
+    const show = () => {
+      input.current?.focus();
+      input.current?.select();
+    };
+    show();
+    return useInspector.subscribe((s, prev) => {
+      if (s.focusSearch !== prev.focusSearch) show();
+    });
+  }, []);
   // Matches stream in as the session finds them; a new query ends the old.
   const result = useWatch(
     "search",

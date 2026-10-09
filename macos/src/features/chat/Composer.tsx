@@ -1,8 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUp, FileText, Gauge, Paperclip, ShieldCheck, Square, X } from "lucide-react";
-import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
+import {
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { rpc } from "@/api/client";
 import type { AgentModels, Attachment } from "@/api/protocol.gen";
+import { usePick } from "@/lib/usePick";
 import { useDrafts } from "@/state/drafts";
 import { usePrefs } from "@/state/prefs";
 import { attempt, toast } from "@/state/toasts";
@@ -177,7 +185,7 @@ export function Composer({
   const area = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const [caret, setCaret] = useState(0);
-  const [pick, setPick] = useState(0);
+
   const [dismissed, setDismissed] = useState<number | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -193,16 +201,20 @@ export function Composer({
   const mentionOpen = !!at && dismissed !== at.start && live;
   const matches = mentionOpen ? rank(files.data?.paths ?? [], at.query) : [];
 
-  // Grow with the text, up to a third of the window.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: measures again whenever the text changes
-  useEffect(() => {
+  const [pick, setPick] = usePick(at?.query);
+
+  // Grow with the text, up to a third of the window; empty, back to one
+  // line without measuring.
+  useLayoutEffect(() => {
     const el = area.current;
     if (!el) return;
+    if (!text) {
+      el.style.height = "";
+      return;
+    }
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, Math.max(120, window.innerHeight / 3))}px`;
   }, [text]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new query starts at the top match
-  useEffect(() => setPick(0), [at?.query]);
 
   const uploading = pending.some((a) => !a.attachment && !a.failed);
 

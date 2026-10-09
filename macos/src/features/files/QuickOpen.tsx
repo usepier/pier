@@ -6,6 +6,7 @@ import { create } from "zustand";
 import { rpc } from "@/api/client";
 import { rank } from "@/features/chat/mentions";
 import { splitPath } from "@/features/review/status";
+import { usePick } from "@/lib/usePick";
 import { useDocs } from "@/state/docs";
 
 export const useQuickOpen = create<{ session?: string; show: (session: string) => void; hide: () => void }>(
@@ -20,7 +21,7 @@ export function QuickOpen() {
   const session = useQuickOpen((q) => q.session);
   const hide = useQuickOpen((q) => q.hide);
   const [query, setQuery] = useState("");
-  const [pick, setPick] = useState(0);
+
   const files = useQuery({
     queryKey: ["files", session],
     queryFn: () => rpc.call("files.list", { sessionId: session! }),
@@ -28,8 +29,7 @@ export function QuickOpen() {
     staleTime: 30_000,
   });
   const matches = rank(files.data?.paths ?? [], query, 50);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new query starts at the top match
-  useEffect(() => setPick(0), [query]);
+  const [pick, setPick] = usePick(query);
   useEffect(() => {
     if (session) setQuery("");
   }, [session]);

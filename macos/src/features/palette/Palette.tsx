@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Dialog, Modal, ModalOverlay } from "react-aria-components";
 import { create } from "zustand";
 import { allCommands } from "@/app/commands";
+import { usePick } from "@/lib/usePick";
 import { sessionTone, useOverview } from "@/state/overview";
 import { StateDot } from "@/ui/StateDot";
 import { type Entry, rankEntries } from "./rank";
@@ -34,14 +35,13 @@ function prettyShortcut(s?: string) {
 export function Palette() {
   const { open, query: initial, hide } = usePalette();
   const [query, setQuery] = useState("");
-  const [pick, setPick] = useState(0);
+  // Closed, nothing is picked: it opens at the top.
+  const [pick, setPick] = usePick(open ? query : null);
+
   const o = useOverview();
   const navigate = useNavigate();
   useEffect(() => {
-    if (open) {
-      setQuery(initial);
-      setPick(0);
-    }
+    if (open) setQuery(initial);
   }, [open, initial]);
 
   const entries = useMemo<Entry[]>(() => {
@@ -82,8 +82,6 @@ export function Palette() {
     return out;
   }, [open, o, navigate]);
   const list = rankEntries(entries, query);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new query starts at the top match
-  useEffect(() => setPick(0), [query]);
   const sessions = new Map((o?.sessions ?? []).map((s) => [s.id, s]));
   const choose = (e?: Entry) => {
     if (!e) return;

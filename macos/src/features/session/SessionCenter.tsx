@@ -61,6 +61,7 @@ function ChatMark({ c, unread }: { c?: ChatSummary; unread: boolean }) {
 }
 
 function Tab({
+  id,
   on,
   onSelect,
   icon,
@@ -70,6 +71,8 @@ function Tab({
   closeLabel,
   hint,
 }: {
+  /** What setActive takes to show it. */
+  id: string;
   on: boolean;
   onSelect: () => void;
   icon?: ReactNode;
@@ -82,6 +85,7 @@ function Tab({
   return (
     <div
       title={hint}
+      data-tab-id={id}
       className={`group flex h-[30px] max-w-[220px] min-w-[120px] shrink items-center rounded-[7px] transition-colors ${on ? "bg-selected" : "hover:bg-hover"}`}
     >
       <button
@@ -264,10 +268,10 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
 
   const activeChat = isChatTab(active) ? active!.slice(5) : undefined;
   // The active tab stays in view however many there are.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new active tab is the trigger
   useEffect(() => {
+    if (!active) return;
     strip.current
-      ?.querySelector('[aria-selected="true"]')
+      ?.querySelector(`[data-tab-id="${CSS.escape(active)}"]`)
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [active]);
   return (
@@ -285,6 +289,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
           {chats.map((c) => (
             <Tab
               key={c.id}
+              id={chatTab(c.id)}
               on={active === chatTab(c.id)}
               onSelect={() => setActive(chatTab(c.id))}
               icon={<AgentGlyph agent={c.agent} />}
@@ -302,6 +307,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
           {openDrafts.map((d) => (
             <Tab
               key={d.id}
+              id={chatTab(d.id)}
               on={active === chatTab(d.id)}
               onSelect={() => setActive(chatTab(d.id))}
               icon={<AgentGlyph agent={d.agent} />}
@@ -318,6 +324,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
             return (
               <Tab
                 key={w.id}
+                id={w.id}
                 on={w.id === active}
                 onSelect={() => setActive(w.id)}
                 icon={<Icon size={13} className={w.name === "setup-failed" ? "text-bad" : ""} />}
@@ -334,6 +341,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
             return (
               <Tab
                 key={d.id}
+                id={d.id}
                 on={d.id === active}
                 onSelect={() => setActive(d.id)}
                 icon={<Icon size={13} />}

@@ -2,7 +2,7 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileWarning, MessageSquarePlus, Send, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { rpc } from "@/api/client";
 import type { FileContent, Session } from "@/api/protocol.gen";
 import { Disconnected, RpcError } from "@/api/rpc";
@@ -41,11 +41,11 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
   });
   const key = bufferKey(s.id, doc.path);
   const host = useRef<HTMLDivElement>(null);
-  const view = useRef<EditorView | null>(null);
+  // The editor, once made (state: effects that need it run when it is).
+  const [editor, setEditor] = useState<EditorView | null>(null);
   const lang = useRef(new Compartment());
   const [saving, setSaving] = useState(false);
   const dirty = useBuffers((b) => !!b.buffers[key]);
-  const reveal = useDocs((d) => d.reveal);
   // The lines selected (or the cursor's), for a comment on them.
   const [sel, setSel] = useState<{ line: number; endLine: number }>();
   const [commenting, setCommenting] = useState<{ line: number; endLine: number }>();
@@ -56,7 +56,7 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
   );
 
   const save = useCallback(async () => {
-    const v = view.current;
+    const v = editor;
     const f = qc.getQueryData<FileContent>(queryKey);
     if (!v || !f || f.asOf) return;
     const text = v.state.doc.toString();
@@ -116,7 +116,7 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
     } finally {
       setSaving(false);
     }
-  }, [qc, s.id, doc.path, key, queryKey]);
+  }, [qc, s.id, doc.path, key, queryKey, editor]);
 
   // ⌘S from the menu bar saves the editor in view.
   useEffect(() => {
@@ -129,19 +129,19 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
   const data = file.data;
   const shown = !!data && !data.binary && !data.tooLarge;
   const kept = !!data?.asOf;
-  const saveRef = useRef(save);
-  saveRef.current = save;
-  const textRef = useRef(data?.text ?? "");
-  textRef.current = data?.text ?? "";
+  // What the editor reads when it is made, and does on ⌘S, as they are
+  // then — not reasons to make it again.
+  const onSave = useEffectEvent(() => void save());
+  const textNow = useEffectEvent(() => data?.text ?? "");
   useEffect(() => {
     if (!host.current || !shown) return;
     const buf = kept ? undefined : useBuffers.getState().buffers[bufferKey(s.id, doc.path)];
     const v = new EditorView({
       parent: host.current,
       state: EditorState.create({
-        doc: buf?.text ?? textRef.current,
+        doc: buf?.text ?? textNow(),
         extensions: [
-          ...editorExtensions(() => void saveRef.current()),
+          ...editorExtensions(() => onSave()),
           lang.current.of([]),
           ...(kept ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
           EditorView.updateListener.of((u) => {
@@ -162,26 +162,25 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
         ],
       }),
     });
-    view.current = v;
+    setEditor(v);
     void languageFor(doc.path).then((ext) => v.dispatch({ effects: lang.current.reconfigure(ext) }));
     return () => {
       v.destroy();
-      view.current = null;
+      setEditor(null);
     };
   }, [shown, kept, doc.path, s.id, qc, queryKey]);
 
   // The lines this file's comments are about stand out.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: data makes the editor anew
   useEffect(() => {
     const lines = mine.flatMap((c) =>
       Array.from({ length: (c.endLine ?? c.line) - c.line + 1 }, (_, i) => c.line + i),
     );
-    view.current?.dispatch({ effects: markCommented.of(lines) });
-  }, [mine, data]);
+    editor?.dispatch({ effects: markCommented.of(lines) });
+  }, [mine, editor]);
 
   const addComment = (text: string) => {
     const at = commenting;
-    const v = view.current;
+    const v = editor;
     if (!at || !v) return;
     const doc_ = v.state.doc;
     const code = doc_.sliceString(doc_.line(at.line).from, doc_.line(Math.min(at.endLine, doc_.lines)).to);
@@ -199,19 +198,27 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
   };
   const sendAll = () => void sendReview(s);
 
-  // Show the line a search hit pointed at — again for each new request, and
-  // once the editor exists.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reveal and data are the triggers
-  useEffect(() => {
-    const v = view.current;
-    if (!v || !doc.line || !visible) return;
-    const line = v.state.doc.line(Math.min(doc.line, v.state.doc.lines));
-    v.dispatch({
+  // Show the line a search hit pointed at: once the editor exists, and
+  // again at each request to (the same line, a second time).
+  const revealLine = useEffectEvent(() => {
+    if (!editor || !doc.line || !visible) return;
+    const line = editor.state.doc.line(Math.min(doc.line, editor.state.doc.lines));
+    editor.dispatch({
       selection: { anchor: line.from },
       effects: EditorView.scrollIntoView(line.from, { y: "center" }),
     });
-    v.focus();
-  }, [doc.line, reveal, visible, data]);
+    editor.focus();
+  });
+  useEffect(() => {
+    if (editor && doc.line && visible) revealLine();
+  }, [editor, doc.line, visible]);
+  useEffect(
+    () =>
+      useDocs.subscribe((st, prev) => {
+        if (st.reveal !== prev.reveal) revealLine();
+      }),
+    [],
+  );
 
   if (file.error) {
     const parked = file.error instanceof RpcError && file.error.kind === "parked";
@@ -301,7 +308,7 @@ export function FileEditor({ session: s, doc, visible }: { session: Session; doc
                 type="button"
                 className="shrink-0 font-mono text-tertiary hover:text-label"
                 onClick={() => {
-                  const v = view.current;
+                  const v = editor;
                   if (!v) return;
                   const at = v.state.doc.line(Math.min(c.line, v.state.doc.lines)).from;
                   v.dispatch({
