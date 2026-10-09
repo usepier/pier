@@ -787,7 +787,7 @@ function DoneStep({ result }: { result: SetupResult }) {
         <Button variant="primary" onPress={async () => (await linkCheckout()) && navigate({ to: "/" })}>
           Link a repository…
         </Button>
-        {cli.data && !cli.data.installed && (
+        {cli.data && !cli.data.installed && !cli.data.provided && (
           <Button
             onPress={async () => {
               const r = await attempt(() => rpc.call("cli.install", {}));

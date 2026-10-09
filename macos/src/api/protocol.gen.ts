@@ -28,13 +28,31 @@ export interface BakeParams {
   includeRepo?: boolean;
 }
 
+/**
+ * CLIInstallParams installs the pier command; Quiet never asks for an
+ * administrator (the answer then says it isn't installed).
+ */
+export interface CLIInstallParams {
+  quiet?: boolean;
+}
+
 /** CLIStatus is the pier command on this Mac. */
 export interface CLIStatus {
   /** where the command goes */
   link: string;
   /** it is this app's pier */
   installed: boolean;
-  /** Other is another pier the shell finds first (a Homebrew one). */
+  /**
+   * Provided is a pier on PATH that is this app's by another way (the
+   * link a Homebrew cask makes): nothing to install.
+   */
+  provided?: string;
+  /**
+   * Stale: Link points at an app's pier that moved or is gone; install
+   * again to repair it.
+   */
+  stale?: boolean;
+  /** Other is another pier the shell finds first (a Homebrew formula's). */
   other?: string;
 }
 
@@ -1627,9 +1645,9 @@ export interface Methods {
   "chats.watch": { params: SessionRef; result: WatchResult<ChatsSnapshot> };
   /** Opens the session's chats, live and read-only, in a terminal window of their own (made if missing); the result is the window to open a terminal tab on. */
   "chats.window": { params: SessionRef; result: WindowRef };
-  /** Installs the pier command (a link to this app's pier); macOS asks for an administrator's password if needed. */
-  "cli.install": { params: Empty; result: CLIStatus };
-  /** Whether the pier command in the shell is this app's pier. */
+  /** Installs (or repairs) the pier command, a link to this app's pier; macOS asks for an administrator's password if needed — unless quiet, which then leaves it as it is. */
+  "cli.install": { params: CLIInstallParams; result: CLIStatus };
+  /** Whether the pier command in the shell is this app's pier: installed, provided another way (Homebrew), or a link left behind by a moved app. */
   "cli.status": { params: Empty; result: CLIStatus };
   /** Starts, stops or restarts one of a session's containers. */
   "containers.action": { params: ContainerParams; result: null };

@@ -13,6 +13,7 @@ import { useJobsBootstrap } from "@/state/jobs";
 import { useActivityReporting, useLoadRecorder } from "@/state/overview";
 import { usePrefs } from "@/state/prefs";
 import { startProxy } from "@/state/proxy";
+import { toast } from "@/state/toasts";
 import { Toasts } from "@/ui/Toasts";
 import { useAppCommands } from "./appCommands";
 import { useAttentionEffects } from "./attention";
@@ -37,6 +38,22 @@ export function Root() {
     if (status !== "ready" || rpc.info?.configured || sentToSetup) return;
     sentToSetup = true;
     void router.navigate({ to: "/setup" });
+  }, [status]);
+  // The app moved since the pier command went in: put the link right,
+  // when that needs no password; else say where to.
+  useEffect(() => {
+    if (status !== "ready") return;
+    void (async () => {
+      const st = await rpc.call("cli.status", {}).catch(() => undefined);
+      if (!st?.stale) return;
+      const after = await rpc.call("cli.install", { quiet: true }).catch(() => undefined);
+      toast(
+        after?.installed
+          ? "The pier command follows the app to where it is now"
+          : "The pier command points at where the app was — repair it in Settings › Command line",
+        after?.installed ? "ok" : "info",
+      );
+    })();
   }, [status]);
   const proxyOnLaunch = usePrefs((p) => p.proxyOnLaunch);
   useEffect(() => {

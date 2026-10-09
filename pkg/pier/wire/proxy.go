@@ -37,6 +37,18 @@ type PortForward struct {
 type CLIStatus struct {
 	Link      string `json:"link"`      // where the command goes
 	Installed bool   `json:"installed"` // it is this app's pier
-	// Other is another pier the shell finds first (a Homebrew one).
+	// Provided is a pier on PATH that is this app's by another way (the
+	// link a Homebrew cask makes): nothing to install.
+	Provided string `json:"provided,omitempty"`
+	// Stale: Link points at an app's pier that moved or is gone; install
+	// again to repair it.
+	Stale bool `json:"stale,omitempty"`
+	// Other is another pier the shell finds first (a Homebrew formula's).
 	Other string `json:"other,omitempty"`
+}
+
+// CLIInstallParams installs the pier command; Quiet never asks for an
+// administrator (the answer then says it isn't installed).
+type CLIInstallParams struct {
+	Quiet bool `json:"quiet,omitempty"`
 }

@@ -291,30 +291,34 @@ func init() {
 			return append([]wire.PortForward{}, s.ports.list...), nil
 		})
 
-	handle("cli.status", "Whether the pier command in the shell is this app's pier.",
+	handle("cli.status", "Whether the pier command in the shell is this app's pier: installed, provided another way (Homebrew), or a link left behind by a moved app.",
 		func(ctx context.Context, s *Server, _ *Call, _ wire.Empty) (wire.CLIStatus, error) {
 			self, err := selfPath()
 			if err != nil {
 				return wire.CLIStatus{}, err
 			}
-			st := pier.CLIInstallStatus(self)
-			return wire.CLIStatus{Link: st.Link, Installed: st.Installed, Other: st.Other}, nil
+			return wireCLI(pier.CLIInstallStatus(self)), nil
 		})
-	handle("cli.install", "Installs the pier command (a link to this app's pier); macOS asks for an administrator's password if needed.",
-		func(ctx context.Context, s *Server, _ *Call, _ wire.Empty) (wire.CLIStatus, error) {
+	handle("cli.install", "Installs (or repairs) the pier command, a link to this app's pier; macOS asks for an administrator's password if needed — unless quiet, which then leaves it as it is.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.CLIInstallParams) (wire.CLIStatus, error) {
 			self, err := selfPath()
 			if err != nil {
 				return wire.CLIStatus{}, err
 			}
-			if err := pier.InstallCLI(self); err != nil {
-				if errors.Is(err, pier.ErrAdminCancelled) {
-					return wire.CLIStatus{}, rpcErr(codeFailed, wire.ErrCancelled, err.Error())
-				}
+			err = pier.InstallCLI(self, !p.Quiet)
+			switch {
+			case errors.Is(err, pier.ErrNeedsAdmin):
+			case errors.Is(err, pier.ErrAdminCancelled):
+				return wire.CLIStatus{}, rpcErr(codeFailed, wire.ErrCancelled, err.Error())
+			case err != nil:
 				return wire.CLIStatus{}, err
 			}
-			st := pier.CLIInstallStatus(self)
-			return wire.CLIStatus{Link: st.Link, Installed: st.Installed, Other: st.Other}, nil
+			return wireCLI(pier.CLIInstallStatus(self)), nil
 		})
+}
+
+func wireCLI(st pier.CLIStatus) wire.CLIStatus {
+	return wire.CLIStatus{Link: st.Link, Installed: st.Installed, Provided: st.Provided, Stale: st.Stale, Other: st.Other}
 }
 
 // selfPath is this pier binary, links resolved.

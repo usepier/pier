@@ -82,35 +82,55 @@ type CLIStatus struct {
 	Link string
 	// Installed: Link points at the bundled pier.
 	Installed bool
-	// Other is another pier the shell finds first, if any (a Homebrew one).
+	// Provided is a pier on PATH that is the bundled one by another way
+	// (the link a Homebrew cask makes): nothing to install.
+	Provided string
+	// Stale: Link points at an app's pier that moved or is gone (the app
+	// was moved or replaced); installing again repairs it.
+	Stale bool
+	// Other is another pier the shell finds first, if any (a Homebrew
+	// formula's).
 	Other string
 }
 
-// CLILink is where InstallCLI puts the pier command.
-const CLILink = "/usr/local/bin/pier"
+// CLILink is where InstallCLI puts the pier command; a var so tests put
+// it elsewhere.
+var CLILink = "/usr/local/bin/pier"
+
+// ErrNeedsAdmin: putting the command in place needs an administrator, and
+// asking wasn't allowed.
+var ErrNeedsAdmin = errors.New("installing the pier command needs an administrator")
 
 // CLIInstallStatus says whether self (the bundled pier) is the pier
 // command.
 func CLIInstallStatus(self string) CLIStatus {
 	st := CLIStatus{Link: CLILink}
-	if target, err := filepath.EvalSymlinks(CLILink); err == nil {
-		if want, err := filepath.EvalSymlinks(self); err == nil && target == want {
+	want, _ := filepath.EvalSymlinks(self)
+	if fi, err := os.Lstat(CLILink); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(CLILink)
+		real, err := filepath.EvalSymlinks(CLILink)
+		switch {
+		case err == nil && real == want:
 			st.Installed = true
+		case strings.Contains(target, ".app/Contents/MacOS/"):
+			// An app's pier, but not this one, or not there any more.
+			st.Stale = err != nil || real != want
 		}
 	}
 	if found, err := exec.LookPath("pier"); err == nil && found != CLILink {
-		if real, _ := filepath.EvalSymlinks(found); real != "" {
-			if want, _ := filepath.EvalSymlinks(self); real != want {
-				st.Other = found
-			}
+		if real, _ := filepath.EvalSymlinks(found); real != "" && real == want {
+			st.Provided = found
+		} else if real != "" {
+			st.Other = found
 		}
 	}
 	return st
 }
 
-// InstallCLI links CLILink to self, the bundled pier, asking for admin
-// rights when /usr/local/bin isn't writable.
-func InstallCLI(self string) error {
+// InstallCLI links CLILink to self, the bundled pier. When
+// /usr/local/bin isn't writable it asks for admin rights — or, when it
+// mayn't ask, fails with ErrNeedsAdmin.
+func InstallCLI(self string, mayAsk bool) error {
 	if !filepath.IsAbs(self) {
 		return fmt.Errorf("%q isn't an absolute path", self)
 	}
@@ -122,6 +142,9 @@ func InstallCLI(self string) error {
 			return nil
 		}
 		_ = os.Remove(tmp)
+	}
+	if !mayAsk {
+		return ErrNeedsAdmin
 	}
 	return AdminShell("mkdir -p "+shellQuote(dir)+" && ln -sfn "+shellQuote(self)+" "+shellQuote(CLILink),
 		"pier wants to install the pier command in "+dir+".")

@@ -553,21 +553,25 @@ function useMoreSections(): { sections: Section[]; sheet: React.ReactNode } {
         {
           id: "cli.link",
           title: "The pier command",
-          description: cli.data?.installed
-            ? `Installed at ${cli.data.link}${cli.data.other ? ` — but your shell finds ${cli.data.other} first` : ""}.`
-            : `Puts this app's pier at ${cli.data?.link ?? "/usr/local/bin/pier"}, for your terminal.`,
-          text: "cli command install terminal",
+          description: cli.data?.provided
+            ? `Your terminal's pier is this app's — Homebrew put it at ${cli.data.provided}.`
+            : cli.data?.stale
+              ? `${cli.data.link} points at a copy of the app that moved or is gone.`
+              : cli.data?.installed
+                ? `Installed at ${cli.data.link}${cli.data.other ? ` — but your shell finds ${cli.data.other} first` : ""}.`
+                : `Puts this app's pier at ${cli.data?.link ?? "/usr/local/bin/pier"}, for your terminal.`,
+          text: "cli command install terminal repair",
           control:
-            cli.data && !cli.data.installed ? (
+            cli.data && !cli.data.installed && !cli.data.provided ? (
               <Button
                 size="sm"
                 onPress={async () => {
                   const r = await attempt(() => rpc.call("cli.install", {}));
-                  if (r?.installed) toast("Installed", "ok");
+                  if (r?.installed) toast(cli.data?.stale ? "Repaired" : "Installed", "ok");
                   void cli.refetch();
                 }}
               >
-                Install…
+                {cli.data.stale ? "Repair…" : "Install…"}
               </Button>
             ) : undefined,
         },

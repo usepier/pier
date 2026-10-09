@@ -578,6 +578,7 @@ const handlers = {
     return { created: [], existed: ["security group pier", "instance profile pier"], checks: [{ name: "aws login", status: "ok", detail: "dev" }], skills: [".claude"], adopted: {} };
   },
   "cli.status": () => ({ link: "/usr/local/bin/pier", installed: true }),
+  "cli.install": () => ({ link: "/usr/local/bin/pier", installed: true }),
   "proxy.start": () => {
     proxyState.running = true;
     emit("proxy", "", proxyState);
