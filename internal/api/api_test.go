@@ -231,8 +231,10 @@ func (f *fake) Decide(_ context.Context, _ pier.Session, chatID, id string, d pi
 	f.decided = append(f.decided, note)
 	return nil
 }
-func (f *fake) ConfigureChat(context.Context, pier.Session, string, pier.ChatConfig) error { return nil }
-func (f *fake) CloseChat(context.Context, pier.Session, string) error                     { return nil }
+func (f *fake) ConfigureChat(context.Context, pier.Session, string, pier.ChatConfig) error {
+	return nil
+}
+func (f *fake) CloseChat(context.Context, pier.Session, string) error { return nil }
 func (f *fake) ChatPage(context.Context, pier.Session, string, string, int) ([]wire.ChatItem, bool, error) {
 	return []wire.ChatItem{{ID: "old", Kind: wire.ChatUser, Text: "from the session"}}, false, nil
 }

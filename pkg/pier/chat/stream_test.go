@@ -291,10 +291,10 @@ func TestCodexQuestions(t *testing.T) {
 
 func TestUnwrapShell(t *testing.T) {
 	for in, want := range map[string]string{
-		`/bin/zsh -lc 'ls'`:                 "ls",
-		`/bin/bash -lc "printf 'hi' > x"`:   "printf 'hi' > x",
+		`/bin/zsh -lc 'ls'`:                  "ls",
+		`/bin/bash -lc "printf 'hi' > x"`:    "printf 'hi' > x",
 		`/bin/zsh -lc 'echo '\''quoted'\'''`: "echo 'quoted'",
-		"make test":                         "make test",
+		"make test":                          "make test",
 	} {
 		if got := UnwrapShell(in); got != want {
 			t.Errorf("UnwrapShell(%q) = %q, want %q", in, got, want)

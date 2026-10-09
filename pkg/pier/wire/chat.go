@@ -223,9 +223,9 @@ type ChatSnapshot struct {
 type ChatOp string
 
 const (
-	ChatAppend ChatOp = "append" // new items at the end
-	ChatUpdate ChatOp = "update" // items replacing ones with the same id
-	ChatReset  ChatOp = "reset"  // the conversation started over: replace everything
+	ChatAppend    ChatOp = "append"    // new items at the end
+	ChatUpdate    ChatOp = "update"    // items replacing ones with the same id
+	ChatReset     ChatOp = "reset"     // the conversation started over: replace everything
 	ChatState     ChatOp = "chat"      // only the chat's state changed
 	ChatDeltas    ChatOp = "delta"     // text the agent is writing
 	ChatStreaming ChatOp = "streaming" // Items replace what is being written

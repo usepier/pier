@@ -15,8 +15,8 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
-	"github.com/usepier/pier/pkg/pier/wire"
 	"github.com/usepier/pier/internal/tombstone"
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 // Sessions is the one list every surface shows: the cloud's sessions with
