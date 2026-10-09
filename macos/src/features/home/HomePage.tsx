@@ -3,6 +3,7 @@ import { Anchor } from "lucide-react";
 import type { Session } from "@/api/protocol.gen";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { ago, hourly, monthly } from "@/lib/format";
+import { billed } from "@/lib/session";
 import { needingAttention, reasonText, reasonTone, unseenChat, useSeen } from "@/state/attention";
 import { useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview } from "@/state/overview";
@@ -36,9 +37,7 @@ export function HomePage() {
   const jobs = useRunningJobs();
   const seen = useSeen((s) => s.seen);
   if (!o) return <Empty icon={<Anchor size={28} strokeWidth={1.5} />} title="Connecting to pier…" />;
-  const live = o.sessions.filter(
-    (s) => !s.pooled && ["creating", "running", "working", "idle"].includes(s.state),
-  );
+  const live = o.sessions.filter((s) => !s.pooled && billed(s));
   const q = o.quota;
   const inbox = needingAttention(o.sessions, seen);
   return (

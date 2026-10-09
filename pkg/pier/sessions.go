@@ -457,17 +457,27 @@ func ParsePortPair(s string) ([2]int, error) {
 	return p, nil
 }
 
+// Running reports a session whose VM is up — whatever its supervisor says
+// it is doing (working, idle).
+func Running(s Session) bool {
+	switch s.State {
+	case driver.StateRunning, driver.StateWorking, driver.StateIdle:
+		return true
+	}
+	return false
+}
+
 // Label is the one word a session's row shows: starting, running, parked,
 // deleting or create failed. The supervisor's finer activity reading
 // (attached, working, idle) changes every few seconds and is detail, not
 // state — Activity has it.
 func Label(s Session) string {
-	switch s.State {
-	case driver.StateCreating:
+	switch {
+	case s.State == driver.StateCreating:
 		return "starting"
-	case driver.StateRunning, driver.StateWorking, driver.StateIdle:
+	case Running(s):
 		return "running"
-	case driver.StateFailed:
+	case s.State == driver.StateFailed:
 		// "create failed", never a bare "failed": a running session whose
 		// setup script died reads "setup failed", and the two mean very
 		// different things — one has a VM, this one does not.
@@ -505,8 +515,7 @@ func CarryStatus(prev, next []Session) []Session {
 		if !ok || s.ID == "" || s.State != driver.StateRunning {
 			continue
 		}
-		switch p.State {
-		case driver.StateRunning, driver.StateWorking, driver.StateIdle:
+		if Running(p) {
 			next[i].State, next[i].Attached = p.State, p.Attached
 			next[i].Strained, next[i].Setup = p.Strained, p.Setup
 			next[i].Res, next[i].Ports = p.Res, p.Ports

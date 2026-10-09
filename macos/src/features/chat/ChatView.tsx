@@ -3,6 +3,7 @@ import { useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { rpc } from "@/api/client";
 import type { Attachment, ChatInfo, QueuedPrompt, Session } from "@/api/protocol.gen";
+import { running } from "@/lib/session";
 import { seenKey, useSeen } from "@/state/attention";
 import { useFocused } from "@/state/background";
 import { useChat } from "@/state/chat";
@@ -30,10 +31,6 @@ const agentNames: Record<string, string> = { claude: "Claude", codex: "Codex" };
 
 export function agentName(kind?: string): string {
   return (kind && agentNames[kind]) || "The agent";
-}
-
-export function running(s: Session) {
-  return ["running", "working", "idle"].includes(s.state);
 }
 
 function clock(iso?: string) {

@@ -14,11 +14,12 @@ import { rpc } from "@/api/client";
 import { useWatch } from "@/api/live";
 import type { ChatSummary, Session, Window } from "@/api/protocol.gen";
 import { registerCommands } from "@/app/commands";
-import { agentName, ChatView, running } from "@/features/chat/ChatView";
+import { agentName, ChatView } from "@/features/chat/ChatView";
 import { confirmClose, FileEditor } from "@/features/files/FileEditor";
 import { DiffView } from "@/features/review/DiffView";
 import { TerminalView } from "@/features/terminal/TerminalView";
 import { confirm } from "@/lib/confirm";
+import { readable } from "@/lib/session";
 import { seenKey, useSeen } from "@/state/attention";
 import { bufferKey, useBuffers } from "@/state/buffers";
 import { useChats } from "@/state/chat";
@@ -114,7 +115,7 @@ function Tab({
  * either agent, or a terminal.
  */
 export function SessionCenter({ session: s, openWindow }: { session: Session; openWindow?: string }) {
-  const live = running(s) && s.hasKey;
+  const live = readable(s);
   const env = useWatch("env", { id: s.id }, { enabled: live });
   const windows = useMemo(() => [...(env.data?.windows ?? [])].sort((a, b) => a.index - b.index), [env.data]);
   const list = useChats(s.id);

@@ -421,7 +421,7 @@ func (f *chatFollower) run(ctx context.Context) {
 	}()
 	for attempt := 0; ctx.Err() == nil; {
 		be, sess, err := f.s.sessionFor(ctx, f.id)
-		if err != nil || !running(sess) || !be.HasKey(sess) {
+		if err != nil || !pier.Running(sess) || !be.HasKey(sess) {
 			if err == nil && !f.isLive() {
 				f.fromBeacon(sess)
 			}
@@ -500,15 +500,6 @@ func (f *chatFollower) fromBeacon(sess pier.Session) {
 	if changed || len(sess.Chats) > 0 {
 		f.setChats(sess, chats, false)
 	}
-}
-
-// running reports a session whose VM runs: one to follow.
-func running(s pier.Session) bool {
-	switch s.State {
-	case pier.StateRunning, pier.StateWorking, pier.StateIdle:
-		return true
-	}
-	return false
 }
 
 // chatRecheck is how often a chat whose session isn't running looks again.
@@ -755,7 +746,7 @@ func init() {
 			var items []wire.ChatItem
 			var more bool
 			err := s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) (err error) {
-				if !running(sess) {
+				if !pier.Running(sess) {
 					return nil
 				}
 				items, more, err = be.ChatPage(ctx, sess, p.ChatID, p.Before, p.Limit)
@@ -897,7 +888,7 @@ func init() {
 			}
 			var sess *pier.Session
 			if p.SessionID != "" {
-				if got, err := s.overview.session(ctx, p.SessionID); err == nil && running(got) {
+				if got, err := s.overview.session(ctx, p.SessionID); err == nil && pier.Running(got) {
 					sess = &got
 				}
 			}
@@ -914,7 +905,7 @@ func init() {
 				return wire.Attachment{}, err
 			}
 			name := filepath.Base(p.Name)
-			if !running(sess) {
+			if !pier.Running(sess) {
 				dir := filepath.Join(stagedDir(), pier.NewID())
 				if err := os.MkdirAll(dir, 0o700); err != nil {
 					return wire.Attachment{}, err

@@ -4,6 +4,7 @@ import { rpc } from "@/api/client";
 import { useWatch } from "@/api/live";
 import type { Session } from "@/api/protocol.gen";
 import { bytes } from "@/lib/format";
+import { readable } from "@/lib/session";
 import { recordLoad, useLoadHistory } from "@/state/history";
 import { openPort, useProxy } from "@/state/proxy";
 import { attempt } from "@/state/toasts";
@@ -35,7 +36,7 @@ export function EnvironmentPanel({
 }) {
   const proxy = useProxy();
   const served = proxy?.running ? proxy.sessions.find((x) => x.id === s.id) : undefined;
-  const live = ["running", "working", "idle"].includes(s.state) && s.hasKey;
+  const live = readable(s);
   const env = useWatch("env", { id: s.id }, { enabled: live });
   const hist = useLoadHistory(s.id);
   useEffect(() => recordLoad(s.id, env.data?.resources), [env.data, s.id]);

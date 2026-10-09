@@ -10,6 +10,7 @@ import { PRPanel } from "@/features/github/PRPanel";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { ChangesPanel } from "@/features/review/ChangesPanel";
 import { age } from "@/lib/format";
+import { readable, running } from "@/lib/session";
 import { type InspectorTab, useInspector } from "@/state/inspector";
 import { useRunningJobs } from "@/state/jobs";
 import { useSession } from "@/state/overview";
@@ -34,7 +35,7 @@ export function SessionPage() {
   const layout = useDefaultLayout({ id: "pier.session", storage: localStorage });
   const resizing = useRunningJobs((j) => j.kind === "resize" && j.session === s?.name)[0]?.id ?? resizeJob;
   if (!s) return <Empty title="Session" detail="Gone, or still loading." />;
-  const live = ["running", "working", "idle"].includes(s.state);
+  const live = running(s);
   return (
     <div className="flex h-full flex-col">
       <SessionHeader session={s} onResize={setResizeJob} />
@@ -162,15 +163,15 @@ function Details({ session: s }: { session: Session }) {
 }
 
 function SetupLog({ session: s }: { session: Session }) {
-  const readable =
-    ["running", "working", "idle", "failed"].includes(s.state) && (s.hasKey || s.state === "failed");
+  // A failed create's log is on this Mac; a running session's in it.
+  const canRead = s.state === "failed" || readable(s);
   const log = useQuery({
     queryKey: ["setup-log", s.id],
     queryFn: () => rpc.call("logs.setup", { id: s.id, lines: 2000 }),
-    enabled: readable,
+    enabled: canRead,
     refetchInterval: s.setup === "running" ? 4000 : false,
   });
-  if (!readable) {
+  if (!canRead) {
     return (
       <div className="p-4 text-sm text-secondary">
         {s.state === "parked" ? "Parked — wake it to read its setup log." : "Not readable yet."}

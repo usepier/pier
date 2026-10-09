@@ -7,6 +7,7 @@ import { JobProgress } from "@/features/jobs/JobProgress";
 import { linkCheckout } from "@/features/repos/link";
 import { confirm } from "@/lib/confirm";
 import { age, bytes, hourly, monthly, plural, until } from "@/lib/format";
+import { billed, running } from "@/lib/session";
 import { useLoadHistory } from "@/state/history";
 import { trackJob, useRunningJobs } from "@/state/jobs";
 import { sessionTone, useOverview, useRepo, useRepoSessions } from "@/state/overview";
@@ -30,7 +31,7 @@ export function CockpitPage() {
   const sessions = useRepoSessions(name);
   const openNew = useUI((s) => s.openNewSession);
   if (!repo) return <Empty title={name} detail="Loading…" />;
-  const running = sessions.filter((s) => ["creating", "running", "working", "idle"].includes(s.state)).length;
+  const up = sessions.filter(billed).length;
   const parked = sessions.filter((s) => s.state === "parked").length;
   return (
     <div className="h-full overflow-y-auto">
@@ -74,7 +75,7 @@ export function CockpitPage() {
         )}
 
         <div className="grid grid-cols-2 gap-4 rounded-card border border-separator bg-raised/60 p-4 md:grid-cols-5">
-          <Stat label="Running" value={running} />
+          <Stat label="Running" value={up} />
           <Stat label="Parked" value={parked} />
           <Stat label="Burning now" value={hourly(repo.hourlyUsd)} />
           <Stat label="Idle cost" value={monthly(repo.idleMonthlyUsd)} hint="disks, pool and image" />
@@ -89,7 +90,7 @@ export function CockpitPage() {
 
         <PullRequestsPanel sessions={sessions.filter((s) => s.pr)} />
 
-        <ResourcesPanel sessions={sessions.filter((s) => ["running", "working", "idle"].includes(s.state))} />
+        <ResourcesPanel sessions={sessions.filter(running)} />
 
         <div className="grid gap-4 lg:grid-cols-3">
           <PoolPanel repo={repo} />

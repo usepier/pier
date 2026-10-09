@@ -6,14 +6,11 @@ import { useWatch } from "@/api/live";
 import type { SearchResult, Session } from "@/api/protocol.gen";
 import { rank } from "@/features/chat/mentions";
 import { plural } from "@/lib/format";
+import { readable } from "@/lib/session";
 import { docId, useDocs } from "@/state/docs";
 import { useInspector } from "@/state/inspector";
 import { Spinner } from "@/ui/Spinner";
 import { buildTree, type Node } from "./tree";
-
-function running(s: Session) {
-  return ["running", "working", "idle"].includes(s.state) && s.hasKey;
-}
 
 const changeTone: Record<string, string> = {
   added: "text-ok",
@@ -30,7 +27,7 @@ const changeTone: Record<string, string> = {
 export function FilesPanel({ session: s }: { session: Session }) {
   const mode = useInspector((i) => i.filesMode);
   const setMode = useInspector((i) => i.setFilesMode);
-  if (!running(s)) {
+  if (!readable(s)) {
     return (
       <div className="flex h-full flex-col">
         <div className="shrink-0 border-b border-separator px-3 py-2 text-xs text-secondary">
@@ -84,7 +81,7 @@ function Tree({ session: s }: { session: Session }) {
   const changes = useWatch("git", { id: s.id });
   const version = listVersion(changes.data?.files);
   const files = useQuery({
-    queryKey: ["files", s.id, version, running(s)],
+    queryKey: ["files", s.id, version, readable(s)],
     queryFn: () => rpc.call("files.list", { sessionId: s.id }),
     staleTime: 60_000,
     placeholderData: (prev) => prev,

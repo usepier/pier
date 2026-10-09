@@ -7,6 +7,7 @@ import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
 import { confirm } from "@/lib/confirm";
 import { until } from "@/lib/format";
+import { running } from "@/lib/session";
 import { trackJob } from "@/state/jobs";
 import { sessionTone } from "@/state/overview";
 import { attempt, toast } from "@/state/toasts";
@@ -25,7 +26,7 @@ export function SessionHeader({
 }) {
   const navigate = useNavigate();
   const [waking, setWaking] = useState(false);
-  const live = ["running", "working", "idle"].includes(s.state);
+  const live = running(s);
   const wake = async () => {
     setWaking(true);
     await attempt(() => rpc.call("sessions.resume", { id: s.id }));

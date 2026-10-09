@@ -172,11 +172,11 @@ func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched b
 			o.Totals.HourlyUSD += w.HourlyUSD
 			continue
 		}
-		switch s.State {
-		case pier.StateCreating, pier.StateRunning, pier.StateWorking, pier.StateIdle:
+		switch {
+		case s.State == pier.StateCreating || pier.Running(s):
 			o.Totals.Running++
 			o.Totals.HourlyUSD += w.HourlyUSD
-		case pier.StateParked:
+		case s.State == pier.StateParked:
 			o.Totals.Parked++
 			o.Totals.IdleMonthlyUSD += disk
 		}

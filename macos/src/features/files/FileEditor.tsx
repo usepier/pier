@@ -8,6 +8,7 @@ import type { FileContent, Session } from "@/api/protocol.gen";
 import { Disconnected, RpcError } from "@/api/rpc";
 import { ask } from "@/lib/confirm";
 import { bytes } from "@/lib/format";
+import { readable } from "@/lib/session";
 import { bufferKey, useBuffers } from "@/state/buffers";
 import { type Doc, useDocs } from "@/state/docs";
 import { toast, toastError } from "@/state/toasts";
@@ -16,10 +17,6 @@ import { Empty } from "@/ui/Empty";
 import { Spinner } from "@/ui/Spinner";
 import { editorExtensions, languageFor } from "./codemirror";
 import { setActiveSave } from "./save";
-
-function readable(s: Session) {
-  return ["running", "working", "idle"].includes(s.state) && s.hasKey;
-}
 
 /**
  * A file of the session's checkout in an editor. Edits are kept on this Mac

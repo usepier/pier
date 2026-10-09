@@ -81,11 +81,11 @@ func (m model) header() string {
 	if m.loaded {
 		running, parked, hourly := 0, 0, 0.0
 		for _, s := range m.sessions {
-			switch s.State {
-			case pier.StateRunning, pier.StateWorking, pier.StateIdle, pier.StateCreating:
+			switch {
+			case s.State == pier.StateCreating || pier.Running(s):
 				running++
 				hourly += pier.HourlyUSD(s)
-			case pier.StateParked:
+			case s.State == pier.StateParked:
 				parked++
 			}
 		}
