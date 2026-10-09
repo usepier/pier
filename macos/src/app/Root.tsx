@@ -8,6 +8,7 @@ import { NewSessionSheet } from "@/features/newSession/NewSessionSheet";
 import { Palette } from "@/features/palette/Palette";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { applyAccent } from "@/lib/theme";
+import { useForgetGone } from "@/state/forget";
 import { useJobsBootstrap } from "@/state/jobs";
 import { useActivityReporting, useLoadRecorder } from "@/state/overview";
 import { usePrefs } from "@/state/prefs";
@@ -26,6 +27,7 @@ export function Root() {
   useAppCommands();
   useActivityReporting();
   useLoadRecorder();
+  useForgetGone();
   useJobsBootstrap();
   useAttentionEffects();
   useDeepLinks();
