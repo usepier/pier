@@ -11,7 +11,6 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -26,14 +25,8 @@
           "x": 18,
           "y": 22
         },
-        "transparent": true,
-        "windowEffects": {
-          "effects": [
-            "sidebar"
-          ],
-          "state": "followsWindowActiveState"
-        },
-        "backgroundThrottling": "disabled"
+        "backgroundThrottling": "disabled",
+        "backgroundColor": "#191919"
       }
     ],
     "security": {

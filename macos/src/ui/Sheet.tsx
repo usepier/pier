@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Dialog, Heading, Modal, ModalOverlay } from "react-aria-components";
 
-/** A modal sheet that slides down from the top of the window, like a Mac sheet. */
+/** A modal dialog over the window. */
 export function Sheet({
   open,
   onOpenChange,
@@ -20,14 +20,14 @@ export function Sheet({
       isOpen={open}
       onOpenChange={onOpenChange}
       isDismissable
-      className="fixed inset-0 z-50 flex justify-center bg-black/15"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[12vh] backdrop-blur-[1px]"
     >
       <Modal
         style={{ width }}
-        className="mt-[52px] max-h-[80vh] self-start overflow-auto rounded-b-card border border-t-0 border-separator bg-surface shadow-2xl outline-none"
+        className="pop-in max-h-[76vh] overflow-auto rounded-[12px] border border-strong bg-popover shadow-2xl outline-none"
       >
         <Dialog className="outline-none">
-          <Heading slot="title" className="px-5 pt-4 text-md font-semibold">
+          <Heading slot="title" className="px-5 pt-5 font-display text-md font-semibold">
             {title}
           </Heading>
           <div className="px-5 pt-3 pb-5">{children}</div>

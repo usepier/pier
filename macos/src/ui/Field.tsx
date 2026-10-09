@@ -31,20 +31,20 @@ export function Field({
       autoFocus={autoFocus}
       className="flex flex-col gap-1"
     >
-      <Label className="text-xs font-medium text-secondary">{label}</Label>
+      <Label className="text-sm font-medium text-secondary">{label}</Label>
       <Input
         placeholder={placeholder}
         onKeyDown={(e) => {
           if (e.key === "Enter" && onEnter) onEnter();
         }}
-        className={`selectable h-7 rounded-ctl border border-separator bg-control px-2 text-base text-label outline-none placeholder:text-tertiary focus:border-accent focus:ring-2 focus:ring-accent/25 data-invalid:border-bad ${mono ? "font-mono text-sm" : ""}`}
+        className={`selectable h-[30px] rounded-ctl border border-strong bg-control px-2.5 text-base text-label outline-none transition-colors placeholder:text-tertiary hover:border-quaternary focus:border-accent focus:ring-2 focus:ring-accent/20 data-invalid:border-bad ${mono ? "font-mono text-sm" : ""}`}
       />
       {error ? (
-        <Text slot="errorMessage" className="text-xs text-bad">
+        <Text slot="errorMessage" className="text-sm text-bad">
           {error}
         </Text>
       ) : hint ? (
-        <Text slot="description" className="text-xs text-secondary">
+        <Text slot="description" className="text-sm text-tertiary">
           {hint}
         </Text>
       ) : null}
