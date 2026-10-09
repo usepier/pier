@@ -364,3 +364,29 @@ func (c *Client) Deliver(ctx context.Context, s Session, d Delivery, progress Pr
 	}
 	return err
 }
+
+// ChatWindow opens the session's chats in its tmux: the read-only live
+// view of its chats (made if missing, selected), or — takeover — a window
+// continuing chatID in the terminal. It returns the tmux window id.
+func (c *Client) ChatWindow(ctx context.Context, s Session, chatID string, takeover bool) (string, error) {
+	if err := CheckReady(s); err != nil {
+		return "", err
+	}
+	// An older supervisor has no chats (and would take the command for a
+	// start of its loop): asking its version brings it up to this pier's.
+	if _, err := c.Op(ctx, s, "version", nil); err != nil {
+		return "", err
+	}
+	script := "pier-supervisor chat window"
+	if takeover {
+		script += " --takeover"
+	}
+	if chatID != "" {
+		script += " " + shellQuote(chatID)
+	}
+	out, err := c.exec(ctx, s.ID, script)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}

@@ -65,6 +65,7 @@ type Backend interface {
 	CloseChat(ctx context.Context, s pier.Session, chatID string) error
 	ChatPage(ctx context.Context, s pier.Session, chatID, before string, limit int) ([]wire.ChatItem, bool, error)
 	Models(ctx context.Context, s *pier.Session, agent string) (wire.AgentModels, error)
+	ChatWindow(ctx context.Context, s pier.Session, chatID string, takeover bool) (string, error)
 	Upload(ctx context.Context, s pier.Session, name string, data []byte) (string, error)
 	ListFiles(ctx context.Context, s pier.Session) ([]string, bool, error)
 	Changes(ctx context.Context, s pier.Session) (gitview.Changes, error)

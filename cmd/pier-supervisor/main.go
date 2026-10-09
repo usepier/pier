@@ -111,6 +111,14 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "stream" {
 		os.Exit(streamMain())
 	}
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		// Agents an earlier supervisor launched in tmux still run its hooks
+		// until they exit: no opinion, never an error.
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "chat" {
+		os.Exit(chatMain(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "install-agents" {
 		// The pinned agent programs, now (a bake keeps them in its image).
 		home, _ := os.UserHomeDir()
@@ -119,6 +127,12 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "op" {
 		os.Exit(opMain(os.Args[2:]))
+	}
+	if len(os.Args) > 1 {
+		// Only systemd starts the supervisor itself, with no arguments: a
+		// command this one doesn't know must not start a second one.
+		fmt.Fprintln(os.Stderr, "pier-supervisor: unknown command", os.Args[1])
+		os.Exit(2)
 	}
 
 	// A stop from outside (the cloud stopping the instance, a resize) shuts
@@ -159,6 +173,7 @@ func main() {
 	h.host = host
 	var touchedAt atomic.Int64
 	registerChatOps(host, func() { touchedAt.Store(time.Now().UnixNano()) })
+	registerTakeoverOps(host)
 	host.notify = func() { h.publish("chats", host.topic()) }
 	host.deltas = h.deltas
 	host.setupRunning = func() bool { return setupState() == "running" }
@@ -187,6 +202,7 @@ func main() {
 		attached := tmuxAttached() || tunnels > 0
 		host.load()
 		host.reap()
+		host.reapTakeovers()
 		busy := setup == "running" || host.turnOpen() || agentBusy() || ptyActive()
 		// Someone acting on a chat from a frontend (a prompt, an answer)
 		// is a human in the loop: the runaway clock starts over.

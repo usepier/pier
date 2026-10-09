@@ -366,6 +366,9 @@ func (h *hub) op(r request) (json.RawMessage, error) {
 // when the supervisor's chat host starts.
 var ops = map[string]func(args json.RawMessage) (any, error){
 	"container": containerOp,
+	// version says which stream protocol this supervisor speaks; one that
+	// doesn't know the op is older than any that does.
+	"version": func(json.RawMessage) (any, error) { return map[string]int{"proto": streamProto}, nil },
 }
 
 func runOp(name string, args json.RawMessage) (json.RawMessage, error) {

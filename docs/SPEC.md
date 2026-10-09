@@ -220,7 +220,13 @@ their conversation on the next prompt; one that keeps failing puts its chat
 in an error state instead of restarting forever. A chat cut off by a park
 or a supervisor restart says so and goes on with the next prompt.
 Agents started by hand in a terminal stay plain terminal programs: pier
-doesn't follow or drive them.
+doesn't follow or drive them. The chats show in tmux too: `pier attach
+--agent` (or `c` in the TUI) opens a window following them live and
+read-only, and `t` there continues the chat shown in the agent's own
+interface (`claude --resume`, `codex resume`) — the chat waits meanwhile,
+queues what is sent to it, and takes back what happened in the terminal
+when the program exits, read from the agent's own record of the
+conversation.
 
 The stream carries the chats' state (`chats` topic: what each waits on,
 its queue) and, per chat a frontend follows, its log from the offset the

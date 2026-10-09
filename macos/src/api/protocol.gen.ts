@@ -1494,6 +1494,11 @@ export interface WindowParams {
   window: string;
 }
 
+/** WindowRef names a tmux window of a session: a terminal tab opens on it. */
+export interface WindowRef {
+  windowId: string;
+}
+
 export const PROTOCOL_VERSION = 1;
 
 /** Answer of a <topic>.watch: the subscription and its first data. */
@@ -1529,10 +1534,14 @@ export interface Methods {
   "chat.interrupt": { params: ChatRef; result: null };
   /** Sends a prompt to a chat, once per prompt id. A parked session is woken by a background job that delivers it. */
   "chat.send": { params: ChatSendParams; result: ChatSendResult };
+  /** Opens a terminal window in the session that continues a chat in its agent's own interface; the chat waits, and takes back what happens there when it exits. The result is the window to open a terminal tab on. */
+  "chat.takeover": { params: ChatRef; result: WindowRef };
   /** A chat's conversation: the newest items, then changes as the agent writes them (text streams in as deltas). Parked sessions answer from this machine's copy. */
   "chat.watch": { params: ChatRef; result: WatchResult<ChatSnapshot> };
   /** A session's chats: their state, what they wait on, their queues. Parked sessions answer from this machine's copy. */
   "chats.watch": { params: SessionRef; result: WatchResult<ChatsSnapshot> };
+  /** Opens the session's chats, live and read-only, in a terminal window of their own (made if missing); the result is the window to open a terminal tab on. */
+  "chats.window": { params: SessionRef; result: WindowRef };
   /** Installs the pier command (a link to this app's pier); macOS asks for an administrator's password if needed. */
   "cli.install": { params: Empty; result: CLIStatus };
   /** Whether the pier command in the shell is this app's pier. */

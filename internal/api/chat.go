@@ -868,6 +868,24 @@ func init() {
 		func(ctx context.Context, s *Server, _ *Call, p wire.ChatRef) (*wire.Empty, error) {
 			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error { return be.CloseChat(ctx, sess, p.ChatID) })
 		})
+	handle("chat.takeover", "Opens a terminal window in the session that continues a chat in its agent's own interface; the chat waits, and takes back what happens there when it exits. The result is the window to open a terminal tab on.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.ChatRef) (wire.WindowRef, error) {
+			var w wire.WindowRef
+			err := s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) (err error) {
+				w.WindowID, err = be.ChatWindow(ctx, sess, p.ChatID, true)
+				return err
+			})
+			return w, err
+		})
+	handle("chats.window", "Opens the session's chats, live and read-only, in a terminal window of their own (made if missing); the result is the window to open a terminal tab on.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.SessionRef) (wire.WindowRef, error) {
+			var w wire.WindowRef
+			err := s.withSession(ctx, p.ID, func(be Backend, sess pier.Session) (err error) {
+				w.WindowID, err = be.ChatWindow(ctx, sess, "", false)
+				return err
+			})
+			return w, err
+		})
 	handle("agents.models", "What an agent offers — models with their efforts, permission modes — as a running session's agent says, else as last heard.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.ModelsParams) (wire.AgentModels, error) {
 			be, err := s.backend()

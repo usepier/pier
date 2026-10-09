@@ -85,6 +85,7 @@ var helpSections = []helpSection{
 			{"  --model <model>", "the agent's model"},
 			{"pier ls [--json]", "list sessions"},
 			{"pier attach <session>", "attach; a parked session resumes with its tmux restored"},
+			{"  -a, --agent", "open on the session's chats, live (t continues one in the terminal)"},
 			{"pier logs <session> [-f]", "show or follow the setup log"},
 			{"pier keep <session>", "never park this session when idle"},
 			{"pier park <session>", "park a session now (attach wakes it)"},
@@ -600,13 +601,33 @@ func resumeIfParked(c *pier.Client, s pier.Session) {
 }
 
 func cmdAttach(args []string) {
-	if len(args) != 1 {
-		fatal(fmt.Errorf("usage: pier attach <session>"))
+	agent := false
+	var pos []string
+	for _, a := range args {
+		if a == "--agent" || a == "-a" {
+			agent = true
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) != 1 {
+		fatal(fmt.Errorf("usage: pier attach [--agent] <session>"))
 	}
 	c := open()
-	s := match(c, args[0])
+	s := match(c, pos[0])
 	requireReady(s)
 	resumeIfParked(c, s)
+	if agent {
+		// The session's chats, live, in a window of their own.
+		if s.State == pier.StateParked {
+			if err := c.WaitReachable(context.Background(), s, 4*time.Minute); err != nil {
+				fatal(err)
+			}
+		}
+		if _, err := c.ChatWindow(context.Background(), s, "", false); err != nil {
+			fatal(err)
+		}
+	}
 	attach(c, s)
 }
 

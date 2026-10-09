@@ -35,6 +35,7 @@ type Backend interface {
 	Machines(s pier.Session) []pier.Machine
 	Attach(ctx context.Context, s pier.Session) (*exec.Cmd, func(), error)
 	WaitReachable(ctx context.Context, s pier.Session, timeout time.Duration) error
+	ChatWindow(ctx context.Context, s pier.Session, chatID string, takeover bool) (string, error)
 	SetupLog(ctx context.Context, s pier.Session, lines int) (string, error)
 	SpawnCreate(repoRoot, branch string) (string, error)
 	SpawnBake(repoRoot string) (string, error)
@@ -135,6 +136,8 @@ type model struct {
 	attaching     string
 	attachStart   time.Time
 	attachRetried bool
+	// attachChats: the attach opens on the session's chats window.
+	attachChats bool
 
 	machines []pier.Machine
 	pickIdx  int
@@ -388,6 +391,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		msg.s.State = pier.StateRunning
+		if m.attachChats {
+			return m, m.reachable(msg.s, 4*time.Minute)
+		}
 		return m.execAttach(msg.s)
 
 	case attachDoneMsg:
@@ -554,6 +560,10 @@ func (m model) keySessions(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch k.String() {
 	case "enter":
+		m.attachChats = false
+		return m.startAttach(s)
+	case "c":
+		m.attachChats = true
 		return m.startAttach(s)
 	case "d":
 		q := "destroy " + s.Name + " and its disk?"
@@ -620,8 +630,19 @@ func (m model) startAttach(s pier.Session) (tea.Model, tea.Cmd) {
 	// terminal to an ssh that's still connecting (or will fail) looks like
 	// pier quit, and its errors land outside the app.
 	m.note("connecting to " + s.Name + "…")
-	return m, func() tea.Msg {
-		return reachableMsg{s, m.be.WaitReachable(context.Background(), s, 90*time.Second)}
+	return m, m.reachable(s, 90*time.Second)
+}
+
+// reachable waits for the session to answer — and, for an attach to its
+// chats, opens their window — before the terminal is handed over.
+func (m model) reachable(s pier.Session, timeout time.Duration) tea.Cmd {
+	chats := m.attachChats
+	return func() tea.Msg {
+		err := m.be.WaitReachable(context.Background(), s, timeout)
+		if err == nil && chats {
+			_, err = m.be.ChatWindow(context.Background(), s, "", false)
+		}
+		return reachableMsg{s, err}
 	}
 }
 

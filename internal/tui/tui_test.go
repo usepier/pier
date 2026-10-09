@@ -83,6 +83,9 @@ func (f *fake) Resize(context.Context, pier.Session, string) error { return nil 
 func (f *fake) Machines(pier.Session) []pier.Machine {
 	return []pier.Machine{{Type: "t4g.medium", CPU: "2", Mem: "4", Cost: "~$0.03/h"}, {Type: "t4g.xlarge", CPU: "4", Mem: "16", Cost: "~$0.13/h"}}
 }
+func (f *fake) ChatWindow(context.Context, pier.Session, string, bool) (string, error) {
+	return "@9", nil
+}
 func (f *fake) Attach(context.Context, pier.Session) (*exec.Cmd, func(), error) {
 	return exec.Command("true"), func() {}, nil
 }

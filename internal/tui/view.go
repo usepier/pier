@@ -532,7 +532,7 @@ func (m model) footer() string {
 	case m.authErr != nil:
 		k = []string{"enter", "sign in", "q", "quit"}
 	case m.tab == tabSessions:
-		k = []string{"enter", "attach", "n", "new", "l", "logs", "m", "resize", "p", "keep", "d", "delete", "tab", "repos"}
+		k = []string{"enter", "attach", "c", "chats", "n", "new", "l", "logs", "m", "resize", "p", "keep", "d", "delete", "tab", "repos"}
 	case m.tab == tabRepos:
 		k = []string{"b", "bake", "+/-", "pool size", "f", "fill", "x", "drain", "tab", "settings"}
 	default:

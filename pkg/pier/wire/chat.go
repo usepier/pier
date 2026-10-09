@@ -355,6 +355,11 @@ type DecideParams struct {
 	Mode  string            `json:"mode,omitempty"`
 }
 
+// WindowRef names a tmux window of a session: a terminal tab opens on it.
+type WindowRef struct {
+	WindowID string `json:"windowId"`
+}
+
 // ModelsParams asks what an agent offers.
 type ModelsParams struct {
 	Agent string `json:"agent"` // claude | codex

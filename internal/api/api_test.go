@@ -236,6 +236,12 @@ func (f *fake) CloseChat(context.Context, pier.Session, string) error           
 func (f *fake) ChatPage(context.Context, pier.Session, string, string, int) ([]wire.ChatItem, bool, error) {
 	return []wire.ChatItem{{ID: "old", Kind: wire.ChatUser, Text: "from the session"}}, false, nil
 }
+func (f *fake) ChatWindow(_ context.Context, _ pier.Session, chatID string, takeover bool) (string, error) {
+	if takeover {
+		return "@7", nil
+	}
+	return "@6", nil
+}
 func (f *fake) Models(_ context.Context, s *pier.Session, agent string) (wire.AgentModels, error) {
 	return wire.AgentModels{Agent: agent, Models: []wire.ModelInfo{{ID: "opus", Name: "Opus"}}, Modes: pier.AgentModes(agent)}, nil
 }

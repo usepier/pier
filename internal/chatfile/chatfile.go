@@ -34,6 +34,18 @@ type Record struct {
 	Waiting string          `json:"waiting,omitempty"`
 	Last    string          `json:"last,omitempty"`
 	Error   string          `json:"error,omitempty"`
+	// Takeover is set while the chat goes on in a terminal.
+	Takeover *Takeover `json:"takeover,omitempty"`
+}
+
+// Takeover is a chat continued in a terminal: the program running there,
+// and where the agent's own record of the conversation stood when it
+// started (what it adds there comes back into the chat when it exits).
+type Takeover struct {
+	PID        int       `json:"pid"`
+	Transcript string    `json:"transcript,omitempty"`
+	Offset     int64     `json:"offset"`
+	Started    time.Time `json:"started"`
 }
 
 // Prompt is a prompt for a chat: queue/<id>.json until delivered, then
