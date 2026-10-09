@@ -37,6 +37,9 @@ type gitFollower struct {
 	keepSess pier.Session
 	keepBe   Review
 	kick     chan struct{}
+	// recheck asks the follower to look at its session again now (it
+	// parked, it woke).
+	recheck chan struct{}
 }
 
 func (s *Server) gitFollower(id string) (*gitFollower, func()) {
@@ -46,7 +49,7 @@ func (s *Server) gitFollower(id string) (*gitFollower, func()) {
 	if f == nil {
 		ctx, cancel := context.WithCancel(s.root)
 		f = &gitFollower{s: s, id: id, listeners: map[int]func(wire.Changes){}, cancel: cancel,
-			ready: make(chan struct{}), kick: make(chan struct{}, 1)}
+			ready: make(chan struct{}), kick: make(chan struct{}, 1), recheck: make(chan struct{}, 1)}
 		s.gits[id] = f
 		go f.run(ctx)
 		go f.keeper(ctx)
@@ -116,7 +119,19 @@ func (f *gitFollower) run(ctx context.Context) {
 		case !readable(be, sess):
 			f.offline(be, sess)
 		default:
-			err = be.FollowGit(ctx, sess, func(g pier.GitState) {
+			// A recheck (the session parked) ends the follow at once: its
+			// connection could take a minute to notice.
+			fctx, stop := context.WithCancel(ctx)
+			rechecked := make(chan struct{})
+			go func() {
+				select {
+				case <-f.recheck:
+					close(rechecked)
+					stop()
+				case <-fctx.Done():
+				}
+			}()
+			err = be.FollowGit(fctx, sess, func(g pier.GitState) {
 				attempt = 0
 				if g.Changes == nil {
 					f.fail(g.Err)
@@ -127,8 +142,14 @@ func (f *gitFollower) run(ctx context.Context) {
 				f.set(w)
 				f.queueKeep(be, sess, g)
 			})
+			stop()
 			if ctx.Err() != nil {
 				return
+			}
+			select {
+			case <-rechecked:
+				continue // look at the session again now
+			default:
 			}
 			f.s.logf("following %s's checkout: %v", f.id, err)
 			f.fail(err)
@@ -139,6 +160,8 @@ func (f *gitFollower) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
+		case <-f.recheck:
+			attempt = 0
 		}
 	}
 }
@@ -190,7 +213,9 @@ func (f *gitFollower) subscribe(fn func(wire.Changes)) (*wire.Changes, error, fu
 }
 
 // keepSnapshots follows every running session's checkout (not just the
-// watched ones), so a session that parks still shows what it had.
+// watched ones), so a session that parks still shows what it had. A
+// session that stopped being readable (it parked) or became so has its
+// follower look again at once, rather than when its retry comes round.
 func (s *Server) keepSnapshots(be Sessions, sessions []pier.Session) {
 	want := map[string]bool{}
 	for _, sess := range sessions {
@@ -198,6 +223,19 @@ func (s *Server) keepSnapshots(be Sessions, sessions []pier.Session) {
 			want[sess.ID] = true
 		}
 	}
+	s.chatMu.Lock()
+	for id, f := range s.gits {
+		f.mu.Lock()
+		live := f.state != nil && f.state.Live
+		f.mu.Unlock()
+		if live != want[id] {
+			select {
+			case f.recheck <- struct{}{}:
+			default:
+			}
+		}
+	}
+	s.chatMu.Unlock()
 	s.keepMu.Lock()
 	defer s.keepMu.Unlock()
 	for id, release := range s.keeping {

@@ -206,3 +206,42 @@ func TestTeardownNarrates(t *testing.T) {
 		t.Errorf("progress = %v", msgs)
 	}
 }
+
+// A watched session that parks goes over to its kept snapshot at once,
+// not when its connection notices.
+func TestGitWatchFollowsAPark(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{sessions: []pier.Session{{ID: "i-1", Name: "fix", State: pier.StateRunning}}}
+	live := gitview.Changes{Files: []gitview.File{{Path: "a.go", Status: gitview.Modified, Added: 1}}}
+	f.gitStates = []pier.GitState{{Changes: &live, Stamps: map[string]string{"a.go": "s1"}}}
+	c := start(t, f)
+	c.call("overview.watch", nil)
+	resp, _ := c.call("git.watch", map[string]any{"id": "i-1"})
+	var snap wire.WatchResult[wire.Changes]
+	remarshal(t, resp["result"], &snap)
+	if !snap.Snapshot.Live {
+		t.Fatalf("snapshot = %+v", snap.Snapshot)
+	}
+	dir := pier.MirrorDir("i-1")
+	os.MkdirAll(dir, 0o700)
+	os.WriteFile(filepath.Join(dir, "changes.json"), []byte(`{"Files":[{"Path":"a.go","Status":"modified","Added":1}]}`), 0o600)
+	f.mu.Lock()
+	f.sessions[0].State = pier.StateParked
+	f.mu.Unlock()
+	c.send(map[string]any{"method": "client.activity", "params": map[string]any{"focused": true}})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ev := c.next("sub.event")
+		p := ev["params"].(map[string]any)
+		if p["topic"] == "git" {
+			var ch wire.Changes
+			remarshal(t, p["data"], &ch)
+			if !ch.Live && ch.AsOf != nil {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the watch never went over to the kept snapshot")
+		}
+	}
+}
