@@ -189,6 +189,30 @@ func (f *gitFollower) subscribe(fn func(wire.Changes)) (*wire.Changes, error, fu
 	}
 }
 
+// keepSnapshots follows every running session's checkout (not just the
+// watched ones), so a session that parks still shows what it had.
+func (s *Server) keepSnapshots(be Backend, sessions []pier.Session) {
+	want := map[string]bool{}
+	for _, sess := range sessions {
+		if readable(be, sess) && sess.PoolGen == "" {
+			want[sess.ID] = true
+		}
+	}
+	s.keepMu.Lock()
+	defer s.keepMu.Unlock()
+	for id, release := range s.keeping {
+		if !want[id] {
+			release()
+			delete(s.keeping, id)
+		}
+	}
+	for id := range want {
+		if s.keeping[id] == nil {
+			_, s.keeping[id] = s.gitFollower(id)
+		}
+	}
+}
+
 func init() {
 	watch("git", "Everything a session's branch changed against its base, pushed as it changes. A session that can't be read answers with what this machine kept (live false, asOf), and goes live once it can be.",
 		func(ctx context.Context, s *Server, p wire.SessionRef, sub *Sub[wire.Changes]) (wire.Changes, error) {

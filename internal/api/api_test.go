@@ -43,6 +43,7 @@ type fake struct {
 	// gitStates are what FollowGit pushes; kept what KeepSnapshot got.
 	gitStates []pier.GitState
 	kept      []pier.GitState
+	following map[string]int // sessions whose checkout is followed now
 }
 
 func (f *fake) Cloud() string         { return "AWS test-1" }
@@ -266,7 +267,16 @@ func (f *fake) Diff(_ context.Context, _ pier.Session, file gitview.File, _ int)
 func (f *fake) FollowGit(ctx context.Context, s pier.Session, fn func(pier.GitState)) error {
 	f.mu.Lock()
 	states := f.gitStates
+	if f.following == nil {
+		f.following = map[string]int{}
+	}
+	f.following[s.ID]++
 	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.following[s.ID]--
+		f.mu.Unlock()
+	}()
 	for _, g := range states {
 		fn(g)
 	}

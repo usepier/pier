@@ -3,6 +3,8 @@ package api
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +37,49 @@ func TestReview(t *testing.T) {
 	remarshal(t, resp["result"], &fc)
 	if fc.Text != "package old\n" {
 		t.Errorf("at base = %+v", resp)
+	}
+}
+
+// Every running session's checkout is followed, watched or not, so a
+// session that parks shows what it had; pool members and parked sessions
+// aren't.
+func TestKeepsEveryRunningSession(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{sessions: []pier.Session{
+		{ID: "i-1", Name: "feat", State: pier.StateRunning},
+		{ID: "i-2", Name: "old", State: pier.StateParked},
+		{ID: "i-3", Name: "pool-x", State: pier.StateRunning, PoolGen: "g"},
+	}}
+	c := start(t, f)
+	c.call("overview.watch", nil)
+	following := func() string {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		var ids []string
+		for id, n := range f.following {
+			if n > 0 {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		return strings.Join(ids, " ")
+	}
+	waitFor(t, func() bool { return following() == "i-1" }, func() string { return "following " + following() })
+	f.mu.Lock()
+	f.sessions[0].State = pier.StateParked
+	f.mu.Unlock()
+	c.send(map[string]any{"method": "client.activity", "params": map[string]any{"focused": true}})
+	waitFor(t, func() bool { return following() == "" }, func() string { return "still following " + following() })
+}
+
+func waitFor(t *testing.T, ok func() bool, why func() string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal(why())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
