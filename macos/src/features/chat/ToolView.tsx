@@ -59,6 +59,9 @@ function Status({ t }: { t: ToolCall }) {
     case "running":
       return <Spinner size={11} />;
     case "error":
+      // A plan or questions declined were the user's answer, not a failure.
+      if (t.view === "plan") return <Badge tone="warn">sent back</Badge>;
+      if (t.view === "ask") return <Badge>skipped</Badge>;
       return <Badge tone="bad">failed</Badge>;
     case "denied":
       return <Badge tone="warn">denied</Badge>;

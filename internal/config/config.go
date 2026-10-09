@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1038,9 +1039,9 @@ func Set(c *Config, key, val string) error {
 		}
 	case "agents.claude_effort", "agents.codex_effort":
 		val = strings.TrimSpace(val)
-		ok := map[string]bool{"": true, "minimal": key == "agents.codex_effort", "low": true, "medium": true, "high": true, "xhigh": true, "max": key == "agents.claude_effort"}
-		if !ok[val] {
-			return fmt.Errorf("%s: not an effort this agent has (got %q)", key, val)
+		// Agents add effort levels with their models: any plain word.
+		if val != "" && !effortWord.MatchString(val) {
+			return fmt.Errorf("%s: an effort is a word like low, high or max (got %q)", key, val)
 		}
 		if key == "agents.claude_effort" {
 			c.Agents.ClaudeEffort = val
@@ -1067,6 +1068,8 @@ func Set(c *Config, key, val string) error {
 	}
 	return nil
 }
+
+var effortWord = regexp.MustCompile(`^[a-z]{2,16}$`)
 
 // validRegionish is a lenient guard for AWS regions and GCP zones: a lowercase
 // token with a hyphen and a digit (us-east-1, europe-west3-a, us-gov-west-1).

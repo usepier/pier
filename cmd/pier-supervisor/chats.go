@@ -185,6 +185,7 @@ func (h *chatHost) open(id string) (*chatState, error) {
 	// Whatever ran when the supervisor last stopped is gone with it.
 	switch rec.State {
 	case wire.AgentWorking:
+		c.log.put(cutOff(l)...)
 		c.log.put(wire.ChatItem{ID: newOpID(), Kind: wire.ChatStatus, Time: time.Now(), Text: "interrupted when the session stopped"})
 	case wire.AgentWaiting:
 		c.log.put(wire.ChatItem{ID: newOpID(), Kind: wire.ChatStatus, Time: time.Now(), Text: "the session stopped while waiting for your answer — send a message to go on"})
@@ -196,6 +197,25 @@ func (h *chatHost) open(id string) (*chatState, error) {
 	c.rec.Log = filepath.Base(l.path())
 	h.save(c)
 	return c, nil
+}
+
+// cutOff is a log's tool calls still running, marked interrupted: their
+// program is gone.
+func cutOff(l *chatLog) []wire.ChatItem {
+	items, _, err := readItems(l.path())
+	if err != nil {
+		return nil
+	}
+	var out []wire.ChatItem
+	for _, it := range items {
+		if it.Tool != nil && it.Tool.Status == wire.ToolRunning {
+			t := *it.Tool
+			t.Status = wire.ToolInterrupted
+			it.Tool = &t
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // save writes a chat's record. Called with mu held or before the chat is
@@ -536,9 +556,6 @@ func (h *chatHost) apply(c *chatState, ev chat.Event) {
 	if ev.Session != "" && !c.rec.Started {
 		c.rec.Started = true
 	}
-	if ev.Model != "" {
-		c.rec.Model = modelOr(c.rec.Model, ev.Model)
-	}
 	c.activity = time.Now()
 	ended := ev.TurnEnd != nil
 	if ended {
@@ -563,15 +580,6 @@ func (h *chatHost) apply(c *chatState, ev chat.Event) {
 	if ended {
 		go h.deliver(c)
 	}
-}
-
-// modelOr keeps the model a chat asked for (an alias like "opus") over the
-// full name the agent resolved it to; the resolved one when none was asked.
-func modelOr(asked, resolved string) string {
-	if asked != "" {
-		return asked
-	}
-	return resolved
 }
 
 // exited records a program's end. Called by the program's waiter.

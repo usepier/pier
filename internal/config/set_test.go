@@ -98,7 +98,7 @@ func TestAgentSettings(t *testing.T) {
 		t.Errorf("claude defaults = %s %s %s", m, e, mode)
 	}
 	for k, v := range map[string]string{"agents.default": "gemini", "agents.codex_mode": "acceptEdits", "agents.claude_mode": "readOnly",
-		"agents.codex_effort": "max", "agents.claude_model": "opus; rm -rf /"} {
+		"agents.codex_effort": "very high", "agents.claude_model": "opus; rm -rf /"} {
 		if err := Set(&cfg, k, v); err == nil {
 			t.Errorf("%s=%s was accepted", k, v)
 		}

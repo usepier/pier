@@ -254,6 +254,13 @@ UNIT
 # Agents run headless under the supervisor now; the hooks file earlier
 # supervisors installed for agents in tmux is no longer read.
 sudo rm -f /etc/pier/claude-hooks.json
+# Agent sandboxes (codex's bwrap, browsers') need user namespaces, which
+# Ubuntu's AppArmor keeps from unprivileged users. A session is a machine
+# of its own user's: let them.
+if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+  echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-pier-userns.conf >/dev/null
+  sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+fi
 sudo systemctl daemon-reload
 # restart, not enable --now: a baked image boots its own (older) supervisor
 # before this runs, and --now leaves a running unit alone — the session

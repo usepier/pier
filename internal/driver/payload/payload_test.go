@@ -715,4 +715,7 @@ func TestScriptsLeaveAgentsToTheSupervisor(t *testing.T) {
 	if !strings.Contains(installSupervisor, "rm -f /etc/pier/claude-hooks.json") {
 		t.Error("an upgraded session drops the old hooks file")
 	}
+	if !strings.Contains(installSupervisor, "apparmor_restrict_unprivileged_userns=0") {
+		t.Error("agent sandboxes need user namespaces")
+	}
 }

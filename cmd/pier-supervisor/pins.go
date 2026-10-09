@@ -32,6 +32,11 @@ type pin struct {
 	URL    map[string]string
 	SHA256 map[string]string
 	Member map[string]string
+	// Package: the download is a whole install (the program and what it
+	// runs beside it), unpacked as it is; Member is the program in it.
+	// Skip leaves out parts the session never uses.
+	Package bool
+	Skip    []string
 }
 
 var pins = map[string]pin{
@@ -47,19 +52,20 @@ var pins = map[string]pin{
 		},
 	},
 	"codex": {
+		// The full package: codex runs commands through the host program
+		// and sandbox beside it.
 		Name: "codex", Version: "0.159.3",
 		URL: map[string]string{
-			"arm64": "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-aarch64-unknown-linux-musl.tar.gz",
-			"amd64": "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-x86_64-unknown-linux-musl.tar.gz",
+			"arm64": "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-package-aarch64-unknown-linux-musl.tar.gz",
+			"amd64": "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-package-x86_64-unknown-linux-musl.tar.gz",
 		},
 		SHA256: map[string]string{
-			"arm64": "cd5f307b3fcd6080773e684b86c3114a67d4f1c61dc447be09876b552eb4bea7",
-			"amd64": "b48ca1b2d6b1bf42b944e02c3d937c898e24651916684cdc35fdedf31b291bcb",
+			"arm64": "20b7d673cf2b64b6c6208fa4fda06feb9dac0572da9987294b48cde1dab9d001",
+			"amd64": "3930f31ac5fca861ea3e444e2683f261190d96b63fba58e0a40a879174369cdf",
 		},
-		Member: map[string]string{
-			"arm64": "codex-aarch64-unknown-linux-musl",
-			"amd64": "codex-x86_64-unknown-linux-musl",
-		},
+		Member:  map[string]string{"arm64": "bin/codex", "amd64": "bin/codex"},
+		Package: true,
+		Skip:    []string{"codex-resources/voice/"},
 	},
 	"rg": {
 		Name: "rg", Version: "15.1.0",
@@ -81,6 +87,14 @@ var pins = map[string]pin{
 // pinDir is where a pinned program lives.
 func pinDir(home string, p pin) string {
 	return filepath.Join(home, ".local", "share", "pier", "agents", p.Name, p.Version)
+}
+
+// pinBin is where a pinned program's executable lands.
+func pinBin(home string, p pin) string {
+	if p.Package {
+		return filepath.Join(pinDir(home, p), filepath.FromSlash(p.Member[runtime.GOARCH]))
+	}
+	return filepath.Join(pinDir(home, p), p.Name)
 }
 
 // pinned installs pinned programs, one download at a time per program.
@@ -109,7 +123,7 @@ func (p *pinned) path(name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no pinned %s", name)
 	}
-	bin := filepath.Join(pinDir(p.home, pn), pn.Name)
+	bin := pinBin(p.home, pn)
 	if fi, err := os.Stat(bin); err == nil && fi.Mode()&0o111 != 0 {
 		return bin, nil
 	}
@@ -181,6 +195,22 @@ func install(pn pin, bin string) error {
 	if got := hex.EncodeToString(h.Sum(nil)); got != sum {
 		return fmt.Errorf("%s: checksum %s, want %s", url, got, sum)
 	}
+	if pn.Package {
+		// Unpack beside, then move into place whole: the program exists
+		// only once everything it needs does.
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		root := pinDirOf(bin, pn)
+		stage := root + ".new"
+		os.RemoveAll(stage)
+		if err := untarAll(tmp, stage, pn.Skip); err != nil {
+			os.RemoveAll(stage)
+			return err
+		}
+		os.RemoveAll(root)
+		return os.Rename(stage, root)
+	}
 	out := bin + ".new"
 	if member := pn.Member[arch]; member != "" {
 		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
@@ -199,6 +229,67 @@ func install(pn pin, bin string) error {
 		return err
 	}
 	return os.Rename(out, bin)
+}
+
+// pinDirOf is the pin's directory, from its program's path.
+func pinDirOf(bin string, pn pin) string {
+	dir := bin
+	for range strings.Split(pn.Member[runtime.GOARCH], "/") {
+		dir = filepath.Dir(dir)
+	}
+	return dir
+}
+
+// untarAll unpacks a .tar.gz into dir, leaving out paths under skip and
+// refusing any that would land outside it.
+func untarAll(r io.Reader, dir string, skip []string) error {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := strings.TrimPrefix(hdr.Name, "./")
+		skipped := false
+		for _, s := range skip {
+			skipped = skipped || strings.HasPrefix(name, s)
+		}
+		if skipped || name == "" {
+			continue
+		}
+		dst := filepath.Join(dir, filepath.FromSlash(name))
+		if !strings.HasPrefix(dst, filepath.Clean(dir)+string(filepath.Separator)) {
+			return fmt.Errorf("%s leaves the package", hdr.Name)
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o755|0o600)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return err
+			}
+			if err := f.Close(); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func untarMember(r io.Reader, member, out string) error {

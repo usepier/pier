@@ -1,6 +1,9 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -413,12 +416,13 @@ func TestChatAfterARestart(t *testing.T) {
 	h.mu.Lock()
 	h.setState(h.chats["c"], wire.AgentWorking, "")
 	h.mu.Unlock()
+	h.logOf("c").put(wire.ChatItem{ID: "t1", Kind: wire.ChatTool, Tool: &wire.ToolCall{Name: "Bash", Status: wire.ToolRunning}})
 
 	h2 := newChatHost(home)
 	h2.load()
 	c, _ := chatInfo(h2, "c")
 	items, _ := chatItems(h2, "c")
-	if c.State != wire.AgentReady || len(items) != 1 || !strings.Contains(items[0].Text, "interrupted") {
+	if c.State != wire.AgentReady || len(items) != 2 || items[0].Tool.Status != wire.ToolInterrupted || !strings.Contains(items[1].Text, "interrupted") {
 		t.Errorf("after a restart: %+v %+v", c, items)
 	}
 }
@@ -570,5 +574,47 @@ func TestUserMessage(t *testing.T) {
 	in := codexInput(prompt{Text: "look", Attachments: []wire.Attachment{{Name: "shot.png", Path: png, Mime: "image/png"}}})
 	if len(in) != 2 || in[1]["type"] != "localImage" {
 		t.Errorf("codex input = %+v", in)
+	}
+}
+
+// A packaged program unpacks whole, leaving out what is skipped and
+// anything that would land outside its directory.
+func TestUntarAll(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	add := func(name, body string) {
+		tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg})
+		tw.Write([]byte(body))
+	}
+	add("bin/codex", "x")
+	add("codex-resources/bwrap", "y")
+	add("codex-resources/voice/host", "z")
+	tw.Close()
+	gz.Close()
+	dir := filepath.Join(t.TempDir(), "codex")
+	if err := untarAll(bytes.NewReader(buf.Bytes()), dir, []string{"codex-resources/voice/"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bin", "codex")); err != nil {
+		t.Error("the program is unpacked")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "codex-resources", "voice")); err == nil {
+		t.Error("skipped parts are left out")
+	}
+	buf.Reset()
+	gz = gzip.NewWriter(&buf)
+	tw = tar.NewWriter(gz)
+	add("../escape", "!")
+	tw.Close()
+	gz.Close()
+	if err := untarAll(bytes.NewReader(buf.Bytes()), t.TempDir(), nil); err == nil {
+		t.Error("a path out of the package was written")
+	}
+	if got := pinBin("/home/agent", pins["codex"]); got != "/home/agent/.local/share/pier/agents/codex/0.159.3/bin/codex" {
+		t.Errorf("codex lands at %s", got)
+	}
+	if got := pinDirOf(pinBin("/h", pins["codex"]), pins["codex"]); got != "/h/.local/share/pier/agents/codex/0.159.3" {
+		t.Errorf("its directory is %s", got)
 	}
 }
