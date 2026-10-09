@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,10 +21,25 @@ import (
 
 // streamProto is the supervisor stream protocol this pier speaks; a
 // supervisor reporting an older one is replaced.
-const streamProto = 3
+const streamProto = 4
 
 // errNoStream: the session's supervisor predates the stream.
 var errNoStream = errors.New("no stream socket")
+
+// errOtherBuild: the session's supervisor speaks this pier's protocol but
+// isn't its build; it is replaced while nothing would be cut off.
+var errOtherBuild = errors.New("another supervisor build")
+
+// supervisorBuild names this pier's supervisor for a machine type, as the
+// supervisor names itself (a hash of the binary).
+func (c *Client) supervisorBuild(ctx context.Context, machineType string) string {
+	bin, err := c.drv.Supervisor(ctx, machineType)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(bin)
+	return hex.EncodeToString(sum[:])[:16]
+}
 
 // errUpgradeLater: replacing an outdated supervisor now would cut off a
 // chat's turn (its agent runs as the supervisor's child).
@@ -68,6 +85,16 @@ func busyChats(s Session) bool {
 
 func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage)) error {
 	err := c.follow(ctx, s, topics, extra, fn)
+	if errors.Is(err, errOtherBuild) {
+		// Same protocol: a busy session keeps its supervisor for now.
+		if busyChats(s) {
+			return c.followAs(ctx, s, topics, extra, fn, true)
+		}
+		if uerr := c.UpgradeSupervisor(ctx, s); uerr != nil {
+			return fmt.Errorf("upgrading the session's supervisor: %w", uerr)
+		}
+		return c.follow(ctx, s, topics, extra, fn)
+	}
 	if errors.Is(err, errNoStream) {
 		if busyChats(s) {
 			return errUpgradeLater
@@ -81,6 +108,12 @@ func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string
 }
 
 func (c *Client) follow(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage)) error {
+	return c.followAs(ctx, s, topics, extra, fn, false)
+}
+
+// followAs follows a session; anyBuild takes whatever supervisor build
+// answers, as long as it speaks this pier's protocol.
+func (c *Client) followAs(ctx context.Context, s Session, topics []string, extra []any, fn func(string, json.RawMessage), anyBuild bool) error {
 	conn, err := c.Conn(ctx, s)
 	if err != nil {
 		return err
@@ -117,11 +150,17 @@ func (c *Client) follow(ctx context.Context, s Session, topics []string, extra [
 	var hello struct {
 		Ev   string `json:"ev"`
 		Data struct {
-			Proto int `json:"proto"`
+			Proto int    `json:"proto"`
+			Build string `json:"build"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(sc.Bytes(), &hello) != nil || hello.Ev != "hello" || hello.Data.Proto < streamProto {
 		return errNoStream
+	}
+	if !anyBuild && hello.Data.Build != "" {
+		if want := c.supervisorBuild(ctx, s.InstanceType); want != "" && want != hello.Data.Build {
+			return errOtherBuild
+		}
 	}
 	for _, req := range append([]any{map[string]any{"op": "subscribe", "topics": topics}}, extra...) {
 		b, _ := json.Marshal(req)

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +36,7 @@ var sockPath = "/run/pier/supervisor.sock"
 const (
 	// streamProto goes up with every change to the stream protocol; a
 	// frontend that needs newer replaces the supervisor.
-	streamProto = 3
+	streamProto = 4
 )
 
 type message struct {
@@ -94,6 +96,21 @@ func (c *client) send(m message) error {
 	return c.w.Flush()
 }
 
+// selfBuild names this supervisor binary (a hash of it): a frontend whose
+// pier carries another replaces it once no chat is mid-turn.
+var selfBuild = sync.OnceValue(func() string {
+	f, err := os.Open("/proc/self/exe")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+})
+
 func newHub() *hub {
 	return &hub{subs: map[*client]bool{}, running: map[string]chan struct{}{}, boot: bootID()}
 }
@@ -124,7 +141,7 @@ func (h *hub) serve() error {
 func (h *hub) handle(conn net.Conn) {
 	defer conn.Close()
 	c := &client{w: bufio.NewWriter(conn), topics: map[string]bool{}, tails: map[string]chan struct{}{}}
-	hello, _ := json.Marshal(map[string]any{"proto": streamProto, "boot": h.boot})
+	hello, _ := json.Marshal(map[string]any{"proto": streamProto, "boot": h.boot, "build": selfBuild()})
 	if c.send(message{Ev: "hello", Data: hello}) != nil {
 		return
 	}
