@@ -56,6 +56,10 @@ func (f *fake) Config() config.Config {
 	c.Prompts = f.ownPrompts
 	return c
 }
+func (f *fake) Teardown(_ context.Context, progress pier.Progress) error {
+	progress(pier.Event{Kind: pier.EventStep, Message: "draining the pool of shop"})
+	return nil
+}
 func (f *fake) Prompts(repo string) []pier.Prompt {
 	cfg := f.Config()
 	var out []pier.Prompt
@@ -554,6 +558,7 @@ func TestErrorKinds(t *testing.T) {
 		{&github.Error{Status: 401, Message: "refused"}, wire.ErrGitHubAuth},
 		{fmt.Errorf("pull requests: %w", &github.Error{Status: 429, Message: "slow down"}), wire.ErrRateLimited},
 		{&pier.OpError{Code: "no_checkout", Message: "the session has no checkout yet"}, wire.ErrNoCheckout},
+		{&pier.MFAError{Profile: "dev", Device: "arn:aws:iam::1:mfa/dev"}, wire.ErrMFARequired},
 		{errors.New("boom"), wire.ErrFailed},
 	} {
 		e := toRPCError(c.err)

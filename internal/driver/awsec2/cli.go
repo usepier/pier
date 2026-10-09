@@ -61,6 +61,10 @@ func loginFix(stderr, profile string) []string {
 	msg := strings.ToLower(stderr)
 	var login []string
 	switch {
+	case strings.Contains(msg, "enter mfa code"):
+		// The role's session lapsed: a terminal asks for the code, and the
+		// CLI keeps the session it buys.
+		login = []string{"aws", "sts", "get-caller-identity"}
 	case strings.Contains(msg, "session has expired") && strings.Contains(msg, "aws login"):
 		login = []string{"aws", "login"}
 	case strings.Contains(msg, "aws sso login"), strings.Contains(msg, "sso session"),

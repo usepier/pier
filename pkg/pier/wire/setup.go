@@ -53,6 +53,21 @@ type SetupCheckParams struct {
 	Cloud   string `json:"cloud"`
 	Profile string `json:"profile,omitempty"` // aws
 	Project string `json:"project,omitempty"` // gcp
+	// MFACode answers an AWS profile that asks for one (kind mfa_required).
+	MFACode string `json:"mfaCode,omitempty"`
+}
+
+// RegionsParams asks where sessions can run: AWS regions for a profile,
+// or GCP zones for a project.
+type RegionsParams struct {
+	Cloud   string `json:"cloud"`
+	Profile string `json:"profile,omitempty"`
+	Project string `json:"project,omitempty"`
+}
+
+// Regions are the regions (AWS) or zones (GCP) to pick from.
+type Regions struct {
+	Regions []string `json:"regions"`
 }
 
 // SetupIdentity is who the login is, and the region the AWS profile uses.

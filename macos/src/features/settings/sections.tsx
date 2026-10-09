@@ -21,8 +21,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { rpc } from "@/api/client";
-import type { LocalPurpose, Settings } from "@/api/protocol.gen";
-import { LocalTerminalSheet } from "@/features/setup/LocalTerminalSheet";
+import type { Settings } from "@/api/protocol.gen";
 import { confirm } from "@/lib/confirm";
 import { ago } from "@/lib/format";
 import { applyAccent } from "@/lib/theme";
@@ -40,6 +39,7 @@ import { Switch } from "@/ui/Switch";
 import type { Item, Section } from "./model";
 import { codeSpans, pierItem, type Save } from "./PierSetting";
 import { RepoPrompts, usePromptItems } from "./PromptItems";
+import { TeardownSheet } from "./TeardownSheet";
 
 const icon = (I: typeof Bot) => <I size={15} strokeWidth={1.75} />;
 
@@ -391,7 +391,7 @@ function useMoreSections(): { sections: Section[]; sheet: React.ReactNode } {
   });
   const cli = useQuery({ queryKey: ["cli"], queryFn: () => rpc.call("cli.status", {}) });
   const navigate = useNavigate();
-  const [terminal, setTerminal] = useState<LocalPurpose>();
+  const [tearingDown, setTearingDown] = useState(false);
   const updates = useUpdates();
   const toggle = async () => {
     setBusy(true);
@@ -579,7 +579,7 @@ function useMoreSections(): { sections: Section[]; sheet: React.ReactNode } {
                     { ok: "Continue", destructive: true },
                   )
                 )
-                  setTerminal("teardown");
+                  setTearingDown(true);
               }}
             >
               Remove…
@@ -631,13 +631,7 @@ function useMoreSections(): { sections: Section[]; sheet: React.ReactNode } {
   ];
   return {
     sections,
-    sheet: (
-      <LocalTerminalSheet
-        purpose={terminal}
-        title="Remove pier from the account"
-        onClose={() => setTerminal(undefined)}
-      />
-    ),
+    sheet: <TeardownSheet open={tearingDown} onClose={() => setTearingDown(false)} />,
   };
 }
 

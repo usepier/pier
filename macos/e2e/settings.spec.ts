@@ -43,3 +43,25 @@ test("review comments go to the agent under the user's own heading", async ({ pa
   await page.getByRole("button", { name: "Send 1 to agent" }).click();
   await expect(page.getByText("Please look at these:", { exact: false })).toBeVisible();
 });
+
+test("an AWS profile that asks for an MFA code takes one in setup", async ({ page }) => {
+  await page.goto("/#/setup");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel("AWS profile").fill("mfa");
+  await page.getByRole("button", { name: "Check the sign-in" }).click();
+  await expect(page.getByText("asks for a code from arn:aws:iam::111122223333:mfa/dev")).toBeVisible();
+  await page.getByLabel("MFA code").fill("123456");
+  await page.getByRole("button", { name: "Use code" }).click();
+  await expect(page.getByText("arn:aws:iam::111122223333:user/dev (mfa)")).toBeVisible();
+});
+
+test("removing pier from the account shows each step", async ({ page }) => {
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "Account" }).click();
+  // The confirmation is the browser's own dialog outside the app.
+  page.once("dialog", (d) => void d.accept());
+  await page.getByRole("button", { name: "Remove…" }).click();
+  await expect(page.getByText("deleting the security group pier")).toBeVisible();
+  await expect(page.getByText("the account is clean")).toBeVisible();
+  await page.getByRole("button", { name: "Done" }).click();
+});

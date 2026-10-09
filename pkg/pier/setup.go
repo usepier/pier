@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
@@ -102,14 +104,37 @@ func SSOExpired(msg string) bool {
 	return strings.Contains(low, "sso") && (strings.Contains(low, "expired") || strings.Contains(low, "refresh"))
 }
 
+// ErrMFARequired: the AWS profile assumes a role that asks for an MFA
+// code (an *MFAError says which device).
+var ErrMFARequired = errors.New("the AWS profile asks for an MFA code")
+
+// MFAError is a profile asking for a code from an MFA device.
+type MFAError struct {
+	Profile string
+	Device  string // the MFA device's ARN
+}
+
+func (e *MFAError) Error() string {
+	return fmt.Sprintf("profile %q asks for a code from %s", e.Profile, e.Device)
+}
+
+func (e *MFAError) Is(target error) bool { return target == ErrMFARequired }
+
+var mfaPrompt = regexp.MustCompile(`Enter MFA code for (\S+):(?:\s|$)`)
+
 // CheckAWS proves a profile's credentials work and returns who they are.
 // An expired SSO session is a *LoginError carrying the login that fixes it
-// (IsAuthExpired). It never prompts: a profile that asks for an MFA code
-// says so instead.
-func CheckAWS(ctx context.Context, profile string) (string, error) {
+// (IsAuthExpired). A profile that asks for an MFA code is an *MFAError
+// until the code is given (mfaCode); the AWS CLI keeps the session it buys
+// for later calls. It never prompts.
+func CheckAWS(ctx context.Context, profile, mfaCode string) (string, error) {
 	var errb bytes.Buffer
 	cmd := exec.CommandContext(ctx, "aws", "sts", "get-caller-identity", "--query", "Arn", "--output", "text", "--profile", profile)
 	cmd.Stderr = &errb
+	// No terminal to prompt on: the CLI reads a code from stdin, or finds
+	// none there.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin = strings.NewReader(strings.TrimSpace(mfaCode) + "\n")
 	out, err := cmd.Output()
 	if err == nil {
 		return strings.TrimSpace(string(out)), nil
@@ -121,8 +146,11 @@ func CheckAWS(ctx context.Context, profile string) (string, error) {
 	switch {
 	case SSOExpired(msg):
 		return "", &driver.LoginError{Login: []string{"aws", "sso", "login", "--profile", profile}, Err: fmt.Errorf("the SSO session for profile %q has expired", profile)}
-	case strings.Contains(strings.ToLower(msg), "mfa"):
-		return "", fmt.Errorf("profile %q asks for an MFA code — run `pier setup` in a terminal, or pick a profile without one", profile)
+	case mfaPrompt.MatchString(msg):
+		if strings.TrimSpace(mfaCode) != "" && strings.Contains(msg, "AccessDenied") {
+			return "", fmt.Errorf("AWS didn't take that MFA code for profile %q — try the next one", profile)
+		}
+		return "", &MFAError{Profile: profile, Device: mfaPrompt.FindStringSubmatch(msg)[1]}
 	}
 	return "", fmt.Errorf("credentials for profile %q aren't working: %s", profile, msg)
 }
@@ -531,3 +559,48 @@ gcloud compute firewall-rules create pier-deny-ingress \
 # needed. The CPU headroom display reads compute regions describe (covered
 # by instanceAdmin).
 `
+
+// Where sessions can run when the cloud can't be asked (no login yet).
+var (
+	knownAWSRegions = []string{"us-east-1", "us-east-2", "us-west-1", "us-west-2", "ca-central-1", "sa-east-1",
+		"eu-central-1", "eu-west-1", "eu-west-2", "eu-west-3", "eu-north-1", "eu-south-1",
+		"ap-northeast-1", "ap-northeast-2", "ap-south-1", "ap-southeast-1", "ap-southeast-2"}
+	knownGCPZones = []string{"us-central1-a", "us-central1-b", "us-east1-b", "us-east4-a", "us-west1-a",
+		"europe-west1-b", "europe-west3-a", "europe-west4-a", "europe-north1-a",
+		"asia-northeast1-a", "asia-southeast1-a", "australia-southeast1-a"}
+)
+
+// Regions are where sessions can run: the AWS regions a profile's account
+// has, or the zones a GCP project has — the usual ones when the cloud
+// can't be asked.
+func Regions(ctx context.Context, cloud, profile, project string) []string {
+	var cmd *exec.Cmd
+	fallback := knownAWSRegions
+	switch cloud {
+	case "aws-ec2":
+		if profile == "" {
+			profile = "default"
+		}
+		cmd = exec.CommandContext(ctx, "aws", "ec2", "describe-regions", "--query", "Regions[].RegionName", "--output", "text", "--profile", profile, "--region", "us-east-1")
+	case "gcp-gce":
+		fallback = knownGCPZones
+		args := []string{"compute", "zones", "list", "--format=value(name)"}
+		if project != "" {
+			args = append(args, "--project", project)
+		}
+		cmd = exec.CommandContext(ctx, "gcloud", args...)
+	default:
+		return nil
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	out, err := cmd.Output()
+	if err != nil {
+		return fallback
+	}
+	list := strings.Fields(string(out))
+	if len(list) == 0 {
+		return fallback
+	}
+	slices.Sort(list)
+	return list
+}

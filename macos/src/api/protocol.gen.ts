@@ -750,7 +750,7 @@ export interface ErrorData {
  * ErrorKind classifies a failed call so the app can react without parsing
  * messages.
  */
-export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "no_checkout" | "head_moved" | "busy" | "quota" | "github_auth" | "rate_limited" | "no_default_vpc" | "no_billing" | "no_permission";
+export type ErrorKind = "parse" | "invalid_request" | "method_not_found" | "invalid_params" | "internal" | "failed" | "cancelled" | "not_set_up" | "auth_expired" | "not_found" | "ambiguous" | "still_creating" | "create_failed" | "deleting" | "parked" | "no_key" | "not_in_repo" | "unreachable" | "conflict" | "no_checkout" | "head_moved" | "busy" | "quota" | "mfa_required" | "github_auth" | "rate_limited" | "no_default_vpc" | "no_billing" | "no_permission";
 
 /** PRDetail is a session's pull request in full. */
 export interface PRDetail extends PRSummary {
@@ -1036,6 +1036,21 @@ export interface Quota {
   detail: string;
 }
 
+/** Regions are the regions (AWS) or zones (GCP) to pick from. */
+export interface Regions {
+  regions: string[];
+}
+
+/**
+ * RegionsParams asks where sessions can run: AWS regions for a profile,
+ * or GCP zones for a project.
+ */
+export interface RegionsParams {
+  cloud: string;
+  profile?: string;
+  project?: string;
+}
+
 /** RenameWindowParams renames a window. */
 export interface RenameWindowParams {
   sessionId: string;
@@ -1266,6 +1281,8 @@ export interface SetupCheckParams {
   profile?: string;
   /** gcp */
   project?: string;
+  /** MFACode answers an AWS profile that asks for one (kind mfa_required). */
+  mfaCode?: string;
 }
 
 /**
@@ -1388,6 +1405,15 @@ export interface TermAck {
 }
 
 /**
+ * TermCaptured says pier took something from a local terminal's output and
+ * kept it (what: "claude-token", saved to pier's config).
+ */
+export interface TermCaptured {
+  termId: string;
+  what: string;
+}
+
+/**
  * TermData carries terminal bytes, base64-encoded: output in term.output
  * (Seq counts up per terminal), keystrokes in term.input.
  */
@@ -1416,7 +1442,7 @@ export interface TermLocalParams {
  * LocalPurpose names what a local terminal runs. The app never names a
  * command itself: pier decides what each purpose runs.
  */
-export type LocalPurpose = "login" | "setup" | "aws-sso" | "gcloud-login" | "gh-login" | "claude-token" | "teardown";
+export type LocalPurpose = "login" | "setup" | "aws-sso" | "gcloud-login" | "gh-login" | "claude-token";
 
 /** TermOpenParams opens a terminal tab into a session's tmux. */
 export interface TermOpenParams {
@@ -1569,6 +1595,8 @@ export interface WatchResult<T> {
 export interface Methods {
   /** The account's vCPU quota use in the active region. */
   "account.headroom": { params: Empty; result: Quota };
+  /** Removes pier from the account — every pooled session, the session images and the groundwork — narrating each step as progress. Sessions must be removed first. */
+  "account.teardown": { params: Empty; result: null };
   /** What an agent offers — models with their efforts, permission modes — as a running session's agent says, else as last heard. */
   "agents.models": { params: ModelsParams; result: AgentModels };
   /** Runs the cloud login that fixes the last expired-login error, narrating its output (browser prompts, device codes) as progress. */
@@ -1719,6 +1747,8 @@ export interface Methods {
   "setup.detect": { params: Empty; result: SetupState };
   /** Runs the login setup.check asked for — aws sso login for the profile, gcloud auth login — narrating it (browser prompts, device codes) as progress. */
   "setup.login": { params: SetupCheckParams; result: null };
+  /** Where sessions can run: the AWS regions a profile's account has, or a GCP project's zones (the usual ones when the cloud can't be asked). */
+  "setup.regions": { params: RegionsParams; result: Regions };
   /** Ends the server once every earlier request has answered and this reply is out. */
   "shutdown": { params: Empty; result: unknown };
   /** Hangs a terminal up. Its tmux windows keep running in the session. */
@@ -1756,6 +1786,8 @@ export interface ServerNotifications {
   "notify": Notice;
   /** One update of a subscription. */
   "sub.event": SubEvent;
+  /** pier took something a local terminal printed and kept it: the token `claude setup-token` made, saved to pier's config. */
+  "term.captured": TermCaptured;
   /** A terminal's process ended. */
   "term.exit": TermExit;
   /** Terminal output, base64; acknowledge it with term.ack. */

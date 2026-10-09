@@ -189,3 +189,20 @@ func TestReviewParked(t *testing.T) {
 		t.Errorf("kept list = %+v", resp)
 	}
 }
+
+func TestTeardownNarrates(t *testing.T) {
+	c := start(t, &fake{})
+	resp, notes := c.call("account.teardown", nil)
+	if resp["error"] != nil {
+		t.Fatalf("teardown = %v", resp)
+	}
+	var msgs []string
+	for _, n := range notes {
+		if n["method"] == "$/progress" {
+			msgs = append(msgs, n["params"].(map[string]any)["event"].(map[string]any)["message"].(string))
+		}
+	}
+	if strings.Join(msgs, "|") != "removing pooled sessions|draining the pool of shop|the account is clean" {
+		t.Errorf("progress = %v", msgs)
+	}
+}

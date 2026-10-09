@@ -540,7 +540,23 @@ const handlers = {
     needsClaudeToken: true,
     hasClaudeToken: true,
   }),
-  "setup.check": (p) => ({ identity: `arn:aws:iam::111122223333:user/dev (${p.profile})`, region: "eu-central-1" }),
+  "setup.check": (p) => {
+    if (p.profile === "mfa" && p.mfaCode !== "123456") {
+      throw rpcError(p.mfaCode ? "failed" : "mfa_required", p.mfaCode ? "AWS didn't take that MFA code" : `profile "mfa" asks for a code from arn:aws:iam::111122223333:mfa/dev`);
+    }
+    return { identity: `arn:aws:iam::111122223333:user/dev (${p.profile})`, region: "eu-central-1" };
+  },
+  "setup.regions": (p) => ({ regions: p.cloud === "gcp-gce" ? ["europe-west4-a", "us-central1-a"] : ["eu-central-1", "eu-west-1", "us-east-1"] }),
+  "account.teardown": async (_p, progress) => {
+    progress("removing pooled sessions");
+    await wait(150);
+    progress("draining the pool of shop");
+    await wait(150);
+    progress("deleting the security group pier");
+    await wait(150);
+    progress("the account is clean", "done");
+    return null;
+  },
   "setup.defaults": (d) => ({
     rows: [
       { key: "machine", label: "Machine", value: d.machine, note: "2 vCPU · 4 GiB · ~$0.04/h while running" },
@@ -619,10 +635,13 @@ rl.on("line", (line) => {
   if (m.method === "term.open" || m.method === "term.openLocal") return openTerm(m);
   const h = handlers[m.method];
   if (!h) return send({ id: m.id, error: { code: -32000, message: `mock: ${m.method} isn't here`, data: { kind: "failed" } } });
-  try {
-    send({ id: m.id, result: h(m.params ?? {}) ?? null });
-  } catch (e) {
-    send({ id: m.id, error: { code: -32000, message: e.message, data: { kind: e.kind ?? "failed", message: e.message } } });
-  }
+  // A handler may answer later (a promise), narrating as it goes (progress).
+  const progress = (message, kind = "step") => send({ method: "$/progress", params: { id: m.id, event: { kind, message } } });
+  Promise.resolve()
+    .then(() => h(m.params ?? {}, progress))
+    .then(
+      (result) => send({ id: m.id, result: result ?? null }),
+      (e) => send({ id: m.id, error: { code: -32000, message: e.message, data: { kind: e.kind ?? "failed", message: e.message } } }),
+    );
 });
 rl.on("close", () => process.exit(0));

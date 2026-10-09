@@ -38,6 +38,8 @@ type Account interface {
 	Headroom(ctx context.Context) (pier.Quota, error)
 	MachineCatalog(currentType string) []pier.Machine
 	DiskMonthlyUSD() float64
+	// Teardown removes pier from the account: pools, images, groundwork.
+	Teardown(ctx context.Context, progress pier.Progress) error
 	// Close ends the backend's ssh connections.
 	Close()
 }

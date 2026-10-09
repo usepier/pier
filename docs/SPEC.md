@@ -672,12 +672,17 @@ in-flight work three seconds to see its cancellation.
 - **Setup.** `pier setup`'s steps, for a form: `setup.detect` (tools,
   cloud logins, agent config, the saved answers), `setup.check` (who a
   login is; an expired one is kind `auth_expired` with the login that
-  fixes it), `setup.defaults` (what a draft gives new sessions, with
-  costs), `setup.apply` (groundwork, config, checks, the onboarding skill;
-  kinds `no_default_vpc`, `no_billing` and `no_permission` say what to do)
-  and `setup.adminDoc`. `setup.login` runs a cloud login, narrating its
-  browser prompts; logins that want a terminal (gh, a Claude token) and
-  `pier teardown` run in local ones (`term.openLocal`).
+  fixes it, and a profile that asks for an MFA code is kind
+  `mfa_required` until the code comes with the check), `setup.regions`
+  (an account's regions or a project's zones), `setup.defaults` (what a
+  draft gives new sessions, with costs), `setup.apply` (groundwork,
+  config, checks, the onboarding skill; kinds `no_default_vpc`,
+  `no_billing` and `no_permission` say what to do) and `setup.adminDoc`.
+  `setup.login` runs a cloud login, narrating its browser prompts; logins
+  that want a terminal (gh, a Claude token) run in local ones
+  (`term.openLocal`) — pier reads the token `claude setup-token` prints
+  and keeps it itself (`term.captured`). `account.teardown` removes pier
+  from the account, narrating each step.
   `doctor.run` and `pier doctor --json` give each check the command that
   fixes it.
 - **Proxy and ports.** `proxy.start` runs `pier proxy` inside `pier api`,

@@ -24,6 +24,7 @@ func TestLoginFix(t *testing.T) {
 		{"The SSO session associated with this profile has expired or is otherwise invalid. To refresh this SSO session run aws sso login with the corresponding profile.", "aws sso login --profile dev"},
 		{"Error when retrieving token from sso: Token has expired and refresh failed", "aws sso login --profile dev"},
 		{"Error loading SSO Token: Token for my-sso does not exist", "aws sso login --profile dev"},
+		{"Enter MFA code for arn:aws:iam::111122223333:mfa/dev: \nEOF when reading a line", "aws sts get-caller-identity --profile dev"},
 		{"An error occurred (UnauthorizedOperation) when calling the DescribeInstances operation: access denied", ""},
 		{"", ""},
 	} {

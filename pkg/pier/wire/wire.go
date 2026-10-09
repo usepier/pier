@@ -314,6 +314,7 @@ const (
 	ErrHeadMoved      ErrorKind = "head_moved"  // the pull request moved past what was reviewed
 	ErrBusy           ErrorKind = "busy"
 	ErrQuota          ErrorKind = "quota"        // a cloud quota refused it; raise the quota
+	ErrMFARequired    ErrorKind = "mfa_required" // the AWS profile asks for an MFA code
 	ErrGitHubAuth     ErrorKind = "github_auth"  // no GitHub login here, or GitHub refused it
 	ErrRateLimited    ErrorKind = "rate_limited" // GitHub's rate limit is spent for now
 	// Setup's groundwork, failing for a reason the user acts on.

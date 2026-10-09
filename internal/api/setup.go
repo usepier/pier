@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/pkg/pier"
@@ -105,6 +106,11 @@ func init() {
 				Agents: append([]string{}, d.Agents...), ClaudeAuth: d.ClaudeAuth,
 				NeedsClaudeToken: pier.NeedsClaudeToken(d.Config), HasClaudeToken: d.Config.Secrets.ClaudeOAuthToken != "",
 			}
+			s.mu.Lock()
+			if s.claudeToken != "" {
+				st.HasClaudeToken = true
+			}
+			s.mu.Unlock()
 			if st.Draft.GCPProject == "" {
 				st.Draft.GCPProject = d.GCPProject
 			}
@@ -114,7 +120,7 @@ func init() {
 		func(ctx context.Context, s *Server, _ *Call, p wire.SetupCheckParams) (wire.SetupIdentity, error) {
 			switch p.Cloud {
 			case "aws-ec2":
-				arn, err := pier.CheckAWS(ctx, p.Profile)
+				arn, err := pier.CheckAWS(ctx, p.Profile, p.MFACode)
 				return wire.SetupIdentity{Identity: arn, Region: pier.AWSRegion(p.Profile)}, err
 			case "gcp-gce":
 				acct, err := pier.CheckGCP(p.Project)
@@ -141,6 +147,11 @@ func init() {
 		})
 	handle("setup.apply", "Finishes setup: the account's groundwork, the config, the checks, the onboarding skill, the account's existing images.",
 		func(ctx context.Context, s *Server, c *Call, p wire.SetupApplyParams) (wire.SetupResult, error) {
+			s.mu.Lock()
+			if p.Draft.ClaudeToken == "" {
+				p.Draft.ClaudeToken = s.claudeToken
+			}
+			s.mu.Unlock()
 			cfg, err := configFrom(pier.Detect().Config, p.Draft)
 			if err != nil {
 				return wire.SetupResult{}, err
@@ -180,6 +191,29 @@ func init() {
 				return nil, invalidParams("cloud is aws-ec2 or gcp-gce")
 			}
 			return nil, runLogin(ctx, c, exec.Command(argv[0], argv[1:]...))
+		})
+	handle("setup.regions", "Where sessions can run: the AWS regions a profile's account has, or a GCP project's zones (the usual ones when the cloud can't be asked).",
+		func(ctx context.Context, s *Server, _ *Call, p wire.RegionsParams) (wire.Regions, error) {
+			if p.Cloud == "aws-ec2" && p.Profile != "" && !awsProfile.MatchString(p.Profile) {
+				return wire.Regions{}, invalidParams("bad AWS profile")
+			}
+			ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			return wire.Regions{Regions: nonNil(pier.Regions(ctx, p.Cloud, p.Profile, p.Project))}, nil
+		})
+	handle("account.teardown", "Removes pier from the account — every pooled session, the session images and the groundwork — narrating each step as progress. Sessions must be removed first.",
+		func(ctx context.Context, s *Server, c *Call, _ wire.Empty) (*wire.Empty, error) {
+			be, err := s.backend()
+			if err != nil {
+				return nil, err
+			}
+			c.Progress(wire.Event{Kind: wire.EventStep, Message: "removing pooled sessions"})
+			err = be.Teardown(ctx, func(e pier.Event) { c.Progress(wireEvent(e)) })
+			if err == nil {
+				c.Progress(wire.Event{Kind: wire.EventDone, Message: "the account is clean"})
+			}
+			s.overview.kick(fastAfterAction)
+			return nil, err
 		})
 	handle("setup.adminDoc", "The commands an admin runs when the person setting pier up can't create its groundwork.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.CloudRef) (wire.LogText, error) {

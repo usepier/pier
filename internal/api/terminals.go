@@ -153,6 +153,7 @@ var errNoTerminal = errors.New("no such terminal")
 func init() {
 	serverNote[wire.TermData]("term.output", "Terminal output, base64; acknowledge it with term.ack.")
 	serverNote[wire.TermExit]("term.exit", "A terminal's process ended.")
+	serverNote[wire.TermCaptured]("term.captured", "pier took something a local terminal printed and kept it: the token `claude setup-token` made, saved to pier's config.")
 	clientNote("term.input", "Keystrokes for a terminal, base64.", func(s *Server, p wire.TermData) {
 		if tm := s.terminal(p.TermID); tm != nil {
 			if b, err := base64.StdEncoding.DecodeString(p.Data); err == nil {
@@ -242,18 +243,25 @@ func init() {
 				argv = []string{"gh", "auth", "login"}
 			case wire.LocalClaudeToken:
 				argv = []string{"claude", "setup-token"}
-			case wire.LocalTeardown:
-				exe, err := os.Executable()
-				if err != nil {
-					return wire.TermOpened{}, err
-				}
-				argv = []string{exe, "teardown"}
 			default:
 				return wire.TermOpened{}, invalidParams("unknown purpose " + string(p.Purpose))
 			}
 			t, err := pier.LocalTerminal(argv, p.Cols, p.Rows)
 			if err != nil {
 				return wire.TermOpened{}, err
+			}
+			if p.Purpose == wire.LocalClaudeToken {
+				// Watched for the token it prints, which pier keeps.
+				var id string
+				var ready sync.WaitGroup
+				ready.Add(1)
+				tt := &tokenTerm{term: t, cols: p.Cols, found: func(tok string) {
+					ready.Wait()
+					s.keepClaudeToken(id, tok)
+				}}
+				id = s.startTerminal(tt)
+				ready.Done()
+				return wire.TermOpened{TermID: id}, nil
 			}
 			return wire.TermOpened{TermID: s.startTerminal(t)}, nil
 		})

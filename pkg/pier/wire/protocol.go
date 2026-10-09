@@ -206,7 +206,6 @@ const (
 	LocalGCloudLogin LocalPurpose = "gcloud-login" // gcloud auth login
 	LocalGHLogin     LocalPurpose = "gh-login"     // gh auth login
 	LocalClaudeToken LocalPurpose = "claude-token" // claude setup-token
-	LocalTeardown    LocalPurpose = "teardown"     // pier teardown
 )
 
 // TermLocalParams opens a terminal on this machine.
@@ -255,6 +254,13 @@ type TermAck struct {
 type TermExit struct {
 	TermID string `json:"termId"`
 	Code   int    `json:"code"`
+}
+
+// TermCaptured says pier took something from a local terminal's output and
+// kept it (what: "claude-token", saved to pier's config).
+type TermCaptured struct {
+	TermID string `json:"termId"`
+	What   string `json:"what"`
 }
 
 // Window is one tmux window of a session.

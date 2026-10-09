@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Anchor, Check, CircleAlert, Copy, Terminal } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { rpc } from "@/api/client";
 import type { LocalPurpose, SetupDraft, SetupResult, SetupState } from "@/api/protocol.gen";
 import { RpcError } from "@/api/rpc";
@@ -269,7 +269,20 @@ function AccountStep({
   const [error, setError] = useState<{ message: string; login: boolean }>();
   const [lines, setLines] = useState<string[]>([]);
   const [signingIn, setSigningIn] = useState(false);
-  const check = async () => {
+  // A profile that asks for an MFA code: which device, and the code.
+  const [mfa, setMfa] = useState<string>();
+  const [code, setCode] = useState("");
+  const regions = useQuery({
+    queryKey: ["setup-regions", draft.cloud, draft.awsProfile, draft.gcpProject, !!identity],
+    queryFn: () =>
+      rpc.call("setup.regions", {
+        cloud: draft.cloud,
+        profile: draft.awsProfile || "default",
+        project: draft.gcpProject,
+      }),
+    staleTime: 300_000,
+  });
+  const check = async (mfaCode?: string) => {
     setChecking(true);
     setError(undefined);
     try {
@@ -277,10 +290,17 @@ function AccountStep({
         cloud: draft.cloud,
         profile: draft.awsProfile || "default",
         project: draft.gcpProject,
+        mfaCode,
       });
       setIdentity(r.identity);
+      setMfa(undefined);
+      setCode("");
       if (aws && !draft.awsRegion && r.region) update({ awsRegion: r.region });
     } catch (e) {
+      if (e instanceof RpcError && e.kind === "mfa_required") {
+        setMfa((e as Error).message);
+        return;
+      }
       setError({ message: (e as Error).message, login: e instanceof RpcError && e.kind === "auth_expired" });
     } finally {
       setChecking(false);
@@ -321,13 +341,24 @@ function AccountStep({
               ))}
             </datalist>
           </div>
-          <Field
-            label="Region"
-            value={draft.awsRegion ?? ""}
-            onChange={(v) => update({ awsRegion: v })}
-            placeholder="eu-central-1"
-            mono
-          />
+          <div className="flex flex-col gap-1">
+            <label htmlFor="aws-region" className="text-xs font-medium text-secondary">
+              Region
+            </label>
+            <input
+              id="aws-region"
+              list="aws-regions"
+              value={draft.awsRegion ?? ""}
+              placeholder="eu-central-1"
+              onChange={(e) => update({ awsRegion: e.target.value })}
+              className="selectable h-7 rounded-ctl border border-separator bg-control px-2 font-mono text-base outline-none focus:border-accent"
+            />
+            <datalist id="aws-regions">
+              {(regions.data?.regions ?? []).map((r) => (
+                <option key={r} value={r} />
+              ))}
+            </datalist>
+          </div>
         </>
       ) : (
         <>
@@ -342,13 +373,24 @@ function AccountStep({
             mono
             hint="Sessions, their disks and images live in this project."
           />
-          <Field
-            label="Zone"
-            value={draft.gcpZone ?? ""}
-            onChange={(v) => update({ gcpZone: v })}
-            placeholder="europe-west4-a"
-            mono
-          />
+          <div className="flex flex-col gap-1">
+            <label htmlFor="gcp-zone" className="text-xs font-medium text-secondary">
+              Zone
+            </label>
+            <input
+              id="gcp-zone"
+              list="gcp-zones"
+              value={draft.gcpZone ?? ""}
+              placeholder="europe-west4-a"
+              onChange={(e) => update({ gcpZone: e.target.value })}
+              className="selectable h-7 rounded-ctl border border-separator bg-control px-2 font-mono text-base outline-none focus:border-accent"
+            />
+            <datalist id="gcp-zones">
+              {(regions.data?.regions ?? []).map((z) => (
+                <option key={z} value={z} />
+              ))}
+            </datalist>
+          </div>
         </>
       )}
       <div className="flex items-center gap-2">
@@ -362,6 +404,32 @@ function AccountStep({
           </span>
         )}
       </div>
+      {mfa && (
+        <form
+          className="flex flex-col gap-2 rounded-card border border-separator bg-raised p-3 text-sm"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (code.trim()) void check(code);
+          }}
+        >
+          <div className="selectable text-secondary">{mfa}.</div>
+          <div className="flex items-center gap-2">
+            <input
+              aria-label="MFA code"
+              autoFocus
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 8))}
+              placeholder="123456"
+              className="selectable h-7 w-32 rounded-ctl border border-separator bg-control px-2 font-mono text-base tracking-widest outline-none focus:border-accent"
+            />
+            <Button type="submit" size="sm" variant="primary" isDisabled={checking || code.length < 6}>
+              {checking ? "Checking…" : "Use code"}
+            </Button>
+          </div>
+        </form>
+      )}
       {error && (
         <div className="rounded-card border border-warn/40 bg-warn/8 p-3 text-sm">
           <div className="selectable">{error.message}</div>
@@ -416,6 +484,9 @@ function DefaultsStep({
     placeholderData: (prev) => prev,
   });
   const [terminal, setTerminal] = useState<LocalPurpose>();
+  const qc = useQueryClient();
+  // The token went into pier's settings: the field says it's saved.
+  const onTokenCaptured = useCallback(() => void qc.invalidateQueries({ queryKey: ["setup"] }), [qc]);
   const note = (key: string) => defaults.data?.rows.find((r) => r.key === key)?.note;
   const select = (
     label: string,
@@ -584,8 +655,9 @@ function DefaultsStep({
       <LocalTerminalSheet
         purpose={terminal}
         title="Get a Claude token"
-        hint="Follow the steps, then copy the token it prints into the field."
+        hint="Follow the steps; pier picks up the token it prints."
         onClose={() => setTerminal(undefined)}
+        onCaptured={onTokenCaptured}
       />
     </section>
   );

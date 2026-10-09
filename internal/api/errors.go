@@ -50,6 +50,7 @@ var kinds = []struct {
 	{pier.ErrNoPR, wire.ErrNotFound},
 	{pier.ErrNoKey, wire.ErrNoKey},
 	{driver.ErrQuota, wire.ErrQuota},
+	{pier.ErrMFARequired, wire.ErrMFARequired},
 	{github.ErrNoToken, wire.ErrGitHubAuth},
 	{github.ErrUnauthorized, wire.ErrGitHubAuth},
 	{github.ErrRateLimited, wire.ErrRateLimited},

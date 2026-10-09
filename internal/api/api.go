@@ -65,6 +65,9 @@ type Server struct {
 	subs     map[string]*subscription
 	nextSub  int
 	activity wire.ClientActivity
+	// claudeToken is one `claude setup-token` printed, for a setup that
+	// hasn't written the config yet.
+	claudeToken string
 
 	overview *overviewPoller
 	termReg  *terminals
