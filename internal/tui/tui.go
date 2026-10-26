@@ -96,6 +96,16 @@ const (
 	ovHelp
 )
 
+// attachStep is what the attach screen says is happening.
+type attachStep int
+
+const (
+	stepResume  attachStep = iota // starting a parked VM
+	stepConnect                   // waiting for ssh to answer
+	stepRewait                    // ssh dropped at once: waiting again
+	stepHanded                    // ssh has the terminal; back here means detached
+)
+
 type model struct {
 	opts Options
 	be   Backend
@@ -129,9 +139,13 @@ type model struct {
 	polling bool
 	watch   int // extra poll rounds after a spawn, until the new row shows
 
-	// attach in flight: one bounded reconnect per attach, like the CLI
+	// attach in flight: one bounded reconnect per attach, like the CLI.
+	// While attaching is set the app shows only the attach screen and
+	// takes no keys but ctrl+c.
 	attaching     string
-	attachStart   time.Time
+	attachStep    attachStep
+	attachSince   time.Time // when the current step began
+	attachStart   time.Time // when ssh took the terminal
 	attachRetried bool
 
 	machines []pier.Machine
@@ -369,13 +383,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fail(msg.err)
 			return m, nil
 		}
-		msg.s.State = pier.StateRunning
-		return m.execAttach(msg.s)
+		// Prove the resumed VM answers before handing over the terminal.
+		s := msg.s
+		s.State = pier.StateRunning
+		m.attachStep, m.attachSince = stepConnect, time.Now()
+		return m, func() tea.Msg {
+			return reachableMsg{s, m.be.WaitReachable(context.Background(), s, 4*time.Minute)}
+		}
 
 	case attachDoneMsg:
 		if msg.err != nil && !m.attachRetried && pier.RetryAttach(msg.err, time.Since(m.attachStart)) {
 			m.attachRetried = true
-			m.note("not reachable yet — waiting for " + msg.s.Name + " to come online")
+			m.attachStep, m.attachSince = stepRewait, time.Now()
 			s := msg.s
 			return m, func() tea.Msg {
 				return reachableMsg{s, m.be.WaitReachable(context.Background(), s, 4*time.Minute)}
@@ -467,6 +486,9 @@ func clamp(i, n int) int {
 func (m model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+c" {
 		return m, tea.Quit
+	}
+	if m.attaching != "" {
+		return m, nil // the attach screen takes no keys
 	}
 	switch m.ov {
 	case ovNew:
@@ -614,15 +636,16 @@ func (m model) startAttach(s pier.Session) (tea.Model, tea.Cmd) {
 		m.fail(err)
 		return m, nil
 	}
-	m.attaching, m.attachRetried = s.Name, false
+	m.attaching, m.attachRetried, m.attachSince = s.Name, false, time.Now()
+	m.status = ""
 	if s.State == pier.StateParked {
-		m.note("resuming " + s.Name + " — about 20-60s, tmux comes back as you left it")
+		m.attachStep = stepResume
 		return m, func() tea.Msg { return resumedMsg{s, m.be.Resume(context.Background(), s)} }
 	}
 	// Prove the VM answers while the app is still on screen: handing the
 	// terminal to an ssh that's still connecting (or will fail) looks like
 	// pier quit, and its errors land outside the app.
-	m.note("connecting to " + s.Name + "…")
+	m.attachStep = stepConnect
 	return m, func() tea.Msg {
 		return reachableMsg{s, m.be.WaitReachable(context.Background(), s, 90*time.Second)}
 	}
@@ -635,7 +658,7 @@ func (m model) execAttach(s pier.Session) (tea.Model, tea.Cmd) {
 		m.fail(err)
 		return m, nil
 	}
-	m.attachStart = time.Now()
+	m.attachStart, m.attachStep = time.Now(), stepHanded
 	cmd = pier.ConnectingScreen(cmd, s.Name, false)
 	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 		stop() // the browser opener and port mirror end with the attach
