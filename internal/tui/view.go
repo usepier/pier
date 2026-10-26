@@ -22,6 +22,11 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "" // first frame, before the size arrives
 	}
+	// Once ssh has the terminal, the first frame back is the list: the
+	// app repaints before the attach's exit reaches Update.
+	if m.attaching != "" && m.attachStep != stepHanded {
+		return m.header() + "\n" + m.attachView() + "\n" + m.footer()
+	}
 	var body string
 	switch {
 	case m.ov == ovLogs:
@@ -263,6 +268,36 @@ func sessionHint(s pier.Session) string {
 		return "Under sustained CPU or memory pressure — m resizes it in about a minute, disk intact."
 	}
 	return "enter attaches · detach with C-b d and it keeps running."
+}
+
+// attachView is the whole screen while an attach is under way: the app
+// takes no keys until ssh has the terminal or the attach fails.
+func (m model) attachView() string {
+	name := sAccent.Render(m.attaching)
+	var title, what string
+	switch m.attachStep {
+	case stepResume:
+		title = "Resuming " + name
+		what = "Starting the parked VM from its disk — usually 20-60s. Your tmux windows and agent conversations come back as you left them."
+	case stepConnect:
+		title = "Connecting to " + name
+		what = "Waiting for the VM to answer over ssh before handing it the terminal."
+	default:
+		title = "Waiting for " + name + " to come online"
+		what = "The VM reports running but ssh isn't answering yet — this can take a few minutes after a start."
+	}
+	elapsed := int(time.Since(m.attachSince).Seconds())
+	w := min(max(m.width*2/3, 50), m.width)
+	lines := []string{"", sAccent.Render(spinFrames[m.frame%len(spinFrames)]) + " " + sBold.Render(title) + sDim.Render(fmt.Sprintf("  %ds", elapsed)), ""}
+	for _, l := range wrap(what, w-4) {
+		lines = append(lines, sFaint.Render(l))
+	}
+	lines = append(lines, "")
+	for _, l := range wrap("The session opens here on its own. Detach with C-b d to come back to pier.", w-4) {
+		lines = append(lines, sDim.Render(l))
+	}
+	box := panel("Attaching", "", lines, w, len(lines)+3, true)
+	return lipgloss.Place(m.width, m.height-3, lipgloss.Center, lipgloss.Center, box)
 }
 
 // --- repos ------------------------------------------------------------------------
@@ -514,6 +549,8 @@ func (m model) footer() string {
 	}
 	var k []string
 	switch {
+	case m.attaching != "" && m.attachStep != stepHanded:
+		k = []string{"ctrl+c", "quit"}
 	case m.ov == ovNew || m.ov == ovEdit:
 		k = []string{"enter", "save", "esc", "cancel"}
 	case m.ov == ovConfirm:
@@ -532,7 +569,7 @@ func (m model) footer() string {
 	default:
 		k = []string{"enter", "change", "↑↓", "move", "tab", "sessions"}
 	}
-	if m.ov == ovNone && !m.authRequired {
+	if m.ov == ovNone && !m.authRequired && (m.attaching == "" || m.attachStep == stepHanded) {
 		k = append(k, "?", "help", "q", "quit")
 	}
 	return fit(status, m.width) + "\n" + fitKeys(k, m.width-1)
