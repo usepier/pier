@@ -462,11 +462,43 @@ func TestRowsDontFlicker(t *testing.T) {
 func TestAttachConnectsBeforeHandingOverTheTerminal(t *testing.T) {
 	m := loaded(t, newFake(), 120, 30)
 	m, cmd := press(t, m, "enter")
-	if cmd == nil || !strings.Contains(m.status, "connecting to checkout-flow") {
-		t.Fatalf("enter must show it's connecting, got status %q", m.status)
+	if cmd == nil || !strings.Contains(stripANSI(m.View()), "Connecting to checkout-flow") {
+		t.Fatalf("enter must show it's connecting:\n%s", m.View())
 	}
 	if _, ok := cmd().(reachableMsg); !ok {
 		t.Error("the terminal must only be handed over once the VM answers")
+	}
+}
+
+// While an attach is under way the app is a loading screen: no tab, row or
+// overlay key does anything, so nothing looks like the attach was dropped.
+func TestAttachLocksTheApp(t *testing.T) {
+	m := loaded(t, newFake(), 120, 30)
+	m, _ = press(t, m, "down", "enter")
+	v := stripANSI(m.View())
+	if !strings.Contains(v, "Resuming fix-login") || strings.Contains(v, "NAME") {
+		t.Fatalf("a parked attach must show only the resume screen:\n%s", v)
+	}
+	for _, k := range []string{"tab", "down", "n", "d", "?", "q", "esc", "enter"} {
+		next, cmd := press(t, m, k)
+		if cmd != nil || next.tab != m.tab || next.ov != ovNone || next.sessIdx != m.sessIdx {
+			t.Errorf("%q must do nothing while attaching", k)
+		}
+	}
+	next, _ := m.Update(resumedMsg{s: m.sessions[m.sessIdx]})
+	m = next.(model)
+	if !strings.Contains(stripANSI(m.View()), "Connecting to fix-login") {
+		t.Error("after the resume the screen must say it's connecting")
+	}
+	m.attachStep = stepHanded
+	if strings.Contains(stripANSI(m.View()), "Connecting to") {
+		t.Error("coming back from a detach must not flash the attach screen")
+	}
+	m.attachStep = stepConnect
+	next, _ = m.Update(reachableMsg{s: m.sessions[m.sessIdx], err: errors.New("timed out")})
+	m = next.(model)
+	if m.attaching != "" || !m.statusBad || !strings.Contains(stripANSI(m.View()), "NAME") {
+		t.Error("a failed attach must return to the list with the error")
 	}
 }
 
