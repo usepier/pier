@@ -447,7 +447,7 @@ let lastCreate = null;
 // A bake underway, as a bake's job reports it: api's image, setup running.
 // (docs bakes too, from a terminal: no job here.)
 let listLooks = 0;
-const missedJob = { id: "job-fill-website", kind: "fill", repo: "website", state: "running", startedAt: iso(60e3), log: "/tmp/x" };
+const missedJob = { id: "job-fill-docs", kind: "fill", repo: "docs", state: "running", startedAt: iso(60e3), log: "/tmp/x" };
 const bakeJob = { id: "job-bake-api", kind: "bake", repo: "api", state: "running", startedAt: iso(7 * 60e3), log: "/tmp/x" };
 const bakeEvents = [
   { kind: "step", message: "baking from origin/main", elapsedMs: 0 },
@@ -474,7 +474,7 @@ const handlers = {
   // A fill whose live updates miss its end (as a watch can): pier's own
   // list says it ended from the second look on.
   "jobs.list": () => (++listLooks > 1 ? [bakeJob, { ...missedJob, state: "done", endedAt: iso() }] : [bakeJob, missedJob]),
-  "job.watch": (p) => ({ sub: openSub("job", p.id), seq: 0, snapshot: p.id === bakeJob.id ? { job: bakeJob, events: bakeEvents } : { job: { id: p.id, kind: "create", state: "running", startedAt: iso(), log: "/tmp/x" }, events: [] } }),
+  "job.watch": (p) => ({ sub: openSub("job", p.id), seq: 0, snapshot: p.id === bakeJob.id ? { job: bakeJob, events: bakeEvents } : p.id === missedJob.id ? { job: missedJob, events: [] } : { job: { id: p.id, kind: "create", state: "running", startedAt: iso(), log: "/tmp/x" }, events: [] } }),
   "sessions.suggestName": () => ({ name: "oslo" }),
   "pool.log": () => ({ text: "  ▸ filling pool session 1/1\n  ▸ waiting for .pier/setup.sh\npier: pool member: .pier/setup.sh failed (exit 2)\n", truncated: false }),
   "sessions.create": (p) => {

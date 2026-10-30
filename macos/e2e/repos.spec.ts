@@ -248,7 +248,7 @@ test("a bake started outside the app is in progress too", async ({ page }) => {
 test("a job whose end the live updates missed still ends, from pier's own list", async ({ page }) => {
   await page.clock.install();
   await page.goto("/#/");
-  const card = page.getByRole("region", { name: "Filling the pool of website" });
+  const card = page.getByRole("region", { name: "Filling the pool of docs" });
   await expect(card).toBeVisible();
   await page.clock.runFor(21_000);
   await expect(card).toHaveCount(0);
