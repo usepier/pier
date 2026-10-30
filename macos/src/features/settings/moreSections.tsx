@@ -10,7 +10,7 @@ import { usePrefs } from "@/state/prefs";
 import { startProxy, stopProxy, useProxy } from "@/state/proxy";
 import { attempt, toast, toastError } from "@/state/toasts";
 import { updatesAvailable, useUpdates } from "@/state/updates";
-import { Button } from "@/ui/Button";
+import { ActionButton, Button } from "@/ui/Button";
 import { Spinner } from "@/ui/Spinner";
 import { Switch } from "@/ui/Switch";
 import { icon } from "./icon";
@@ -74,15 +74,15 @@ export function useMoreSections(): { sections: Section[]; sheet: React.ReactNode
                 description:
                   "Browsers warn on https://<session>.pier until this Mac trusts pier's local certificate.",
                 control: (
-                  <Button
+                  <ActionButton
                     size="sm"
-                    onPress={async () => {
+                    action={async () => {
                       if ((await attempt(() => rpc.call("proxy.trustCA", {}))) !== undefined)
                         toast("Trusted", "ok");
                     }}
                   >
                     Trust…
-                  </Button>
+                  </ActionButton>
                 ),
               },
             ]
@@ -94,10 +94,10 @@ export function useMoreSections(): { sections: Section[]; sheet: React.ReactNode
             "Stops the proxy and takes its resolver, boot task and loopback addresses off this Mac. Turning it on again sets them up again.",
           text: "proxy remove forget resolver uninstall",
           control: (
-            <Button
+            <ActionButton
               size="sm"
               variant="plain"
-              onPress={async () => {
+              action={async () => {
                 if (
                   !(await confirm(
                     "Remove the local setup?",
@@ -110,7 +110,7 @@ export function useMoreSections(): { sections: Section[]; sheet: React.ReactNode
               }}
             >
               Remove…
-            </Button>
+            </ActionButton>
           ),
         },
         {
@@ -201,16 +201,16 @@ export function useMoreSections(): { sections: Section[]; sheet: React.ReactNode
           text: "cli command install terminal repair",
           control:
             cli.data && !cli.data.installed && !cli.data.provided ? (
-              <Button
+              <ActionButton
                 size="sm"
-                onPress={async () => {
+                action={async () => {
                   const r = await attempt(() => rpc.call("cli.install", {}));
                   if (r?.installed) toast(cli.data?.stale ? "Repaired" : "Installed", "ok");
                   void cli.refetch();
                 }}
               >
                 {cli.data.stale ? "Repair…" : "Install…"}
-              </Button>
+              </ActionButton>
             ) : undefined,
         },
       ],
@@ -238,10 +238,10 @@ export function useMoreSections(): { sections: Section[]; sheet: React.ReactNode
           description: "Deletes the pools, images and groundwork. Sessions must be removed first.",
           text: "teardown remove account",
           control: (
-            <Button
+            <ActionButton
               size="sm"
               variant="danger"
-              onPress={async () => {
+              action={async () => {
                 if (
                   await confirm(
                     "Remove pier from the account?",
@@ -253,7 +253,7 @@ export function useMoreSections(): { sections: Section[]; sheet: React.ReactNode
               }}
             >
               Remove…
-            </Button>
+            </ActionButton>
           ),
         },
       ],

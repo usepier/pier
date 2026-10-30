@@ -7,7 +7,7 @@ import { ago } from "@/lib/format";
 import { trackJob } from "@/state/jobs";
 import { useOverview } from "@/state/overview";
 import { attempt, toast } from "@/state/toasts";
-import { Button } from "@/ui/Button";
+import { ActionButton, Button } from "@/ui/Button";
 import { Select } from "@/ui/Select";
 import type { Item, Section } from "./model";
 import { RepoPrompts } from "./PromptItems";
@@ -28,10 +28,10 @@ export function useRepoSections(): Section[] {
           description: <span className="selectable font-mono text-sm">{path}</span>,
           text: `clone checkout link ${path}`,
           control: (
-            <Button
+            <ActionButton
               size="sm"
               variant="plain"
-              onPress={async () => {
+              action={async () => {
                 if (
                   !(await confirm(
                     `Unlink ${r.name}?`,
@@ -45,7 +45,7 @@ export function useRepoSections(): Section[] {
               }}
             >
               Unlink…
-            </Button>
+            </ActionButton>
           ),
         },
         {
@@ -76,10 +76,10 @@ export function useRepoSections(): Section[] {
             : "None yet: new sessions run the repo's whole setup. A bake makes them start in a minute or two.",
           text: "image bake",
           control: (
-            <Button
+            <ActionButton
               size="sm"
               isDisabled={r.baking}
-              onPress={async () => {
+              action={async () => {
                 const job = await attempt(() => rpc.call("image.bake", { path }));
                 if (job) {
                   trackJob(job);
@@ -88,7 +88,7 @@ export function useRepoSections(): Section[] {
               }}
             >
               {r.baking ? "Baking…" : r.image ? "Bake again" : "Bake"}
-            </Button>
+            </ActionButton>
           ),
         },
         {

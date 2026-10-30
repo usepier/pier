@@ -7,8 +7,12 @@ use tauri_plugin_window_state::StateFlags;
 
 #[cfg(target_os = "macos")]
 mod notify;
+#[cfg(target_os = "macos")]
+mod textinput;
 
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    textinput::plain();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())

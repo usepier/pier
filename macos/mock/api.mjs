@@ -58,6 +58,7 @@ const sess = (o) => ({
   hasKey: true,
   activity: "",
   label: "running",
+  prChecked: true,
   ...o,
 });
 
@@ -69,18 +70,25 @@ const sessions = [
     pr: { number: 38, title: "Search v2", url: "u", state: "merged", headOid: "d", baseRef: "main", additions: 300, deletions: 120, checks: "passing", checksPassed: 5, checksTotal: 5, review: "approved", mergeable: "unknown" } }),
   sess({ id: "i-04", name: "new-onboarding", repo: "shop", branch: "new-onboarding", state: "creating", label: "starting", createdAt: iso(60e3) }),
   sess({ id: "i-05", name: "pool-a1", repo: "shop", branch: "pier-pool", state: "parked", pooled: true, costNote: "~$3-4/mo", hourlyUsd: 0, createdAt: iso(2 * D) }),
-  sess({ id: "i-06", name: "docs-refresh", repo: "website", origin: "github.com/acme/website", branch: "docs-refresh", state: "running", setup: "running", createdAt: iso(5 * 60e3) }),
+  sess({ id: "i-06", name: "docs-refresh", repo: "website", origin: "github.com/acme/website", branch: "docs-refresh", state: "running", setup: "running", createdAt: iso(5 * 60e3), prChecked: false }),
+  sess({ id: "i-08", name: "old-banner", repo: "website", origin: "github.com/acme/website", branch: "old-banner", state: "idle", createdAt: iso(2 * D),
+    pr: { number: 12, title: "Retire the old banner", url: "u", state: "merged", headOid: "e", baseRef: "main", additions: 4, deletions: 40, checks: "passing", checksPassed: 2, checksTotal: 2, review: "approved", mergeable: "unknown" } }),
   sess({ id: "i-07", name: "api-rate-limits", repo: "api", origin: "github.com/acme/api", branch: "api-rate-limits", state: "failed", label: "create failed", failReason: "vCPU quota exceeded — request a raise", costNote: "", hourlyUsd: 0, createdAt: iso(2 * H), logPath: "/tmp/x" }),
 ];
 const checkouts = [
   { path: "/Users/dev/code/shop", name: "shop", origin: "github.com/acme/shop", missing: false },
   { path: "/Users/dev/code/website", name: "website", origin: "github.com/acme/website", missing: false },
+  { path: "/Users/dev/code/infra", name: "infra", origin: "github.com/acme/infra", missing: false },
 ];
 const repos = [
-  { name: "api", origin: "github.com/acme/api", hasPier: false, imageKind: "", baking: false, poolTarget: 0, poolReady: 0, poolFilling: 0, poolStale: 0, poolAges: [], sessions: 1, monthlyUsd: 0, hourlyUsd: 0, idleMonthlyUsd: 0, reminders: [] },
-  { name: "shop", origin: "github.com/acme/shop", checkout: checkouts[0], hasPier: true, image: "ami-0abc", imageKind: "prebuilt", bakedAt: iso(34 * D), baking: false, poolTarget: 1, poolReady: 1, poolFilling: 0, poolStale: 0, poolAges: ["2d"], sessions: 4, monthlyUsd: 5.8, hourlyUsd: 0.11, idleMonthlyUsd: 9.6,
+  { name: "api", origin: "github.com/acme/api", hasPier: false, imageKind: "", baking: true, needsImage: false, poolTarget: 0, poolReady: 0, poolFilling: 0, poolStale: 0, poolAges: [], sessions: 1, monthlyUsd: 0, imageMonthlyUsd: 0, hourlyUsd: 0, idleMonthlyUsd: 0, reminders: [] },
+  { name: "docs", origin: "github.com/acme/docs", hasPier: false, imageKind: "", baking: true, needsImage: false, poolTarget: 0, poolReady: 0, poolFilling: 0, poolStale: 0, poolAges: [], sessions: 0, monthlyUsd: 0, imageMonthlyUsd: 0, hourlyUsd: 0, idleMonthlyUsd: 0, reminders: [] },
+  { name: "shop", origin: "github.com/acme/shop", checkout: checkouts[0], hasPier: true, image: "ami-0abc", imageKind: "prebuilt", bakedAt: iso(34 * D), baking: false, needsImage: false, poolTarget: 1, poolReady: 1, poolFilling: 0, poolStale: 0, poolAges: ["2d"], sessions: 4, monthlyUsd: 5.8, imageMonthlyUsd: 2, hourlyUsd: 0.11, idleMonthlyUsd: 9.6,
     reminders: [{ message: "shop's session image is 34 days old. Rebake so new sessions start with current dependencies.", action: "pier bake" }] },
-  { name: "website", origin: "github.com/acme/website", checkout: checkouts[1], hasPier: true, imageKind: "toolchain", image: "ami-0def", bakedAt: iso(3 * D), baking: false, poolTarget: 0, poolReady: 0, poolFilling: 0, poolStale: 0, poolAges: [], sessions: 1, monthlyUsd: 2, hourlyUsd: 0.04, idleMonthlyUsd: 2, reminders: [] },
+  { name: "website", origin: "github.com/acme/website", checkout: checkouts[1], hasPier: true, imageKind: "toolchain", image: "ami-0def", bakedAt: iso(3 * D), baking: false, needsImage: false, poolTarget: 1, poolReady: 0, poolFilling: 0, poolStale: 0, poolAges: [], sessions: 1, monthlyUsd: 2, imageMonthlyUsd: 2, hourlyUsd: 0.04, idleMonthlyUsd: 2, reminders: [],
+    poolError: { at: iso(20 * H), message: ".pier/setup.sh failed (exit 2)" } },
+  // Its .pier/bake.sh needs toolchains, and it has no image yet.
+  { name: "infra", origin: "github.com/acme/infra", checkout: checkouts[2], hasPier: true, imageKind: "", baking: false, needsImage: true, poolTarget: 1, poolReady: 0, poolFilling: 0, poolStale: 0, poolAges: [], sessions: 0, monthlyUsd: 0, imageMonthlyUsd: 0, hourlyUsd: 0, idleMonthlyUsd: 0, reminders: [] },
 ];
 
 // Chats: the recorded conversations, with the prompts that started them.
@@ -257,6 +265,8 @@ async function turn(c, text) {
   const name = c.info.agent === "codex" ? "Codex" : "Claude";
   setState(c, "working", { error: undefined });
   await wait(400);
+  // "slowly": a turn that works a while before anything shows (even in tests).
+  if (/slowly/i.test(text)) await new Promise((r) => setTimeout(r, 4000));
   try {
     if (/plan/i.test(text) || c.info.mode === "plan") {
       await stream(c, "thinking", "Let me read the code before proposing anything.");
@@ -359,23 +369,38 @@ const settings = {
     { key: "aws.region", group: "cloud", label: "region", hint: "where new VMs launch", detail: "New session VMs launch here.", default: "eu-central-1", kind: "choice", options: [{ value: "us-east-1", desc: "N. Virginia" }, { value: "eu-central-1", desc: "Frankfurt" }], noCustom: false, value: "eu-central-1", display: "eu-central-1" },
     { key: "aws.instance_type", group: "sessions", label: "machine", hint: "VM for new sessions", detail: "Resize a session any time.", default: "t4g.medium", kind: "machine", noCustom: false, value: "t4g.medium", display: "t4g.medium" },
     { key: "idle_timeout", group: "idle", label: "park after", hint: "quiet time before a session parks", detail: "", default: "30m", kind: "text", noCustom: false, value: "30m", display: "30m" },
-    { key: "agents.default", group: "agents", label: "agent", hint: "who new chats talk to", detail: "", default: "claude", kind: "choice", options: [{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }], noCustom: true, value: "claude", display: "Claude" },
-    { key: "agents.claude_model", group: "agents", label: "Claude model", hint: "model new Claude chats run", detail: "", default: "", kind: "choice", options: [{ value: "opus", label: "Opus" }, { value: "sonnet", label: "Sonnet" }], noCustom: false, value: "opus", display: "Opus" },
+    { key: "agents.default", group: "agents", label: "agent", hint: "whose model new chats run", detail: "", default: "claude", kind: "choice", options: [{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }], noCustom: true, value: "claude", display: "Claude" },
+    { key: "agents.model", group: "agents", label: "model", hint: "the model new chats run", detail: "", default: "", kind: "text", noCustom: false, value: "opus", display: "opus" },
+    { key: "agents.effort", group: "agents", label: "effort", hint: "how hard the model thinks", detail: "", default: "", kind: "choice", options: [{ value: "", label: "model default" }, { value: "high", label: "High" }], noCustom: true, value: "", display: "model default" },
     { key: "agents.claude_mode", group: "agents", label: "Claude permissions", hint: "what it does without asking", detail: "", default: "default", kind: "choice", options: [{ value: "default", label: "ask" }, { value: "acceptEdits", label: "accept edits" }, { value: "plan", label: "plan" }, { value: "bypassPermissions", label: "bypass" }], noCustom: true, value: "default", display: "ask" },
     { key: "speed.auto_refill", group: "speed", label: "refill pools", hint: "rebuild a pool that runs low on its own", detail: "", default: "off", kind: "choice", options: [{ value: "true", label: "on" }, { value: "false", label: "off" }], noCustom: true, value: "false", display: "off" },
     { key: "theme", group: "app", label: "accent color", hint: "", detail: "", default: "teal", kind: "choice", options: ["teal", "navy", "violet", "emerald", "orange", "crimson", "pink", "amber", "graphite"].map((v) => ({ value: v, label: v })), noCustom: true, value: "teal", display: "teal" },
   ],
 };
 const models = {
+  // As pier api sends them: named by version, the default marked.
   claude: [
-    { id: "default", name: "Default", description: "Opus 5.5 · best for everyday, complex tasks", efforts: ["low", "medium", "high", "xhigh", "max"], default: true },
-    { id: "opus", name: "Opus 5.5", description: "For complex work", efforts: ["low", "medium", "high", "xhigh", "max"] },
-    { id: "sonnet", name: "Sonnet 5.5", description: "Most efficient for simpler tasks", efforts: ["low", "medium", "high", "xhigh", "max"] },
+    { id: "sonnet", name: "Sonnet 5.5", description: "Efficient for routine tasks", efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"], default: true },
+    { id: "opus", name: "Opus 5.5", description: "Best for everyday, complex tasks", efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"], fast: true, long: true },
+    { id: "claude-fable-5-1", name: "Fable 5.1", description: "Most capable for your hardest tasks", efforts: ["low", "medium", "high", "xhigh", "max"] },
     { id: "haiku", name: "Haiku 4.5", description: "Fastest for quick answers" },
   ],
   codex: [
-    { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", description: "Frontier reasoning", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high", default: true },
+    { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", description: "Frontier reasoning", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultEffort: "medium", default: true, fast: true },
     { id: "gpt-6-luna", name: "GPT-6 Luna", description: "Fast and efficient", efforts: ["low", "medium", "high"], defaultEffort: "medium" },
+  ],
+};
+// As the agents list them: their own, custom ones, skills.
+const commands = {
+  claude: [
+    { name: "compact", description: "Clear the conversation but keep a summary in context", hint: "<instructions>" },
+    { name: "context", description: "Show what fills the context window" },
+    { name: "review", description: "Review a pull request" },
+    { name: "deploy-preview", description: "Ship a preview of this branch (project)" },
+  ],
+  codex: [
+    { name: "compact", description: "Summarize the conversation so far to free up context." },
+    { name: "deploy-preview", description: "Ship a preview of this branch", path: "/home/agent/.codex/skills/deploy-preview/SKILL.md" },
   ],
 };
 const modes = {
@@ -394,13 +419,22 @@ const modes = {
 };
 const windows = new Map([
   ["i-01", [
+    { id: "@1", index: 0, name: "bash", command: "bash", active: true, role: "home" },
     { id: "@2", index: 1, name: "setup", command: "bash", active: false, role: "setup" },
     { id: "@3", index: 2, name: "server", command: "node", active: false, role: "" },
   ]],
 ]);
+// The last ten minutes of load, one reading per 5s, as a session sends it.
+const loadHistory = () =>
+  Array.from({ length: 120 }, (_, i) => ({
+    at: new Date(now - (120 - i) * 5000).toISOString(),
+    cpu: 20 + 25 * Math.sin(i / 9) ** 2 + Math.random() * 6,
+    memUsed: (2.4 + 0.3 * Math.sin(i / 20)) * 2 ** 30,
+  }));
 const env = (id) => ({
   windows: windows.get(id) ?? [],
   at: iso(),
+  load: loadHistory(),
   resources: res(40 + Math.random() * 30, 2.6),
   ports: [{ port: 3000, process: "node", pid: 4411 }, { port: 5432, process: "docker-proxy", pid: 990 }],
   containers: [{ id: "c1", name: "shop-db", image: "postgres:16", state: "running", status: "Up 3 hours", ports: "0.0.0.0:5432->5432/tcp" }],
@@ -409,6 +443,20 @@ const env = (id) => ({
 const terms = new Map();
 let tid = 0;
 
+let lastCreate = null;
+// A bake underway, as a bake's job reports it: api's image, setup running.
+// (docs bakes too, from a terminal: no job here.)
+let listLooks = 0;
+const missedJob = { id: "job-fill-website", kind: "fill", repo: "website", state: "running", startedAt: iso(60e3), log: "/tmp/x" };
+const bakeJob = { id: "job-bake-api", kind: "bake", repo: "api", state: "running", startedAt: iso(7 * 60e3), log: "/tmp/x" };
+const bakeEvents = [
+  { kind: "step", message: "baking from origin/main", elapsedMs: 0 },
+  { kind: "step", message: "bake instance i-0b4e launched — installing harnesses (a few minutes)", elapsedMs: 4000 },
+  { kind: "step", message: "running .pier/bake.sh (output follows)", elapsedMs: 162000 },
+  { kind: "note", message: "not carrying apps/web/.env.local — ignored env files travel only when .pier/include lists them", elapsedMs: 0 },
+  { kind: "step", message: "checking out api", elapsedMs: 0 },
+  { kind: "step", message: "running .pier/setup.sh to completion — the slow part every session now skips", elapsedMs: 0 },
+];
 const handlers = {
   initialize: () => ({ protocol: 1, version: "dev", configured: true, cloud: "AWS eu-central-1" }),
   "overview.get": () => overview(),
@@ -421,10 +469,34 @@ const handlers = {
   },
   "settings.machines": () => machines,
   "sessions.machines": () => machines,
-  "repos.inspect": () => ({ ...checkouts[0], branch: "main", head: "a1b2c3d", dirty: 4, base: "main" }),
+  "repos.inspect": () => ({ ...checkouts[0], branch: "checkout-v2", head: "a1b2c3d", dirty: 4, base: "checkout-v2", defaultBranch: "main" }),
   "logs.setup": () => ({ text: "==> pnpm install\nProgress: resolved 1204, reused 1180\n==> docker compose up -d\npier setup: done\n", truncated: false }),
-  "jobs.list": () => [],
-  "sessions.create": (p) => ({ id: nid("job"), kind: "create", repo: "shop", session: p.branch, state: "running", pid: 1, startedAt: iso(), logPath: "/tmp/x" }),
+  // A fill whose live updates miss its end (as a watch can): pier's own
+  // list says it ended from the second look on.
+  "jobs.list": () => (++listLooks > 1 ? [bakeJob, { ...missedJob, state: "done", endedAt: iso() }] : [bakeJob, missedJob]),
+  "job.watch": (p) => ({ sub: openSub("job", p.id), seq: 0, snapshot: p.id === bakeJob.id ? { job: bakeJob, events: bakeEvents } : { job: { id: p.id, kind: "create", state: "running", startedAt: iso(), log: "/tmp/x" }, events: [] } }),
+  "sessions.suggestName": () => ({ name: "oslo" }),
+  "pool.log": () => ({ text: "  ▸ filling pool session 1/1\n  ▸ waiting for .pier/setup.sh\npier: pool member: .pier/setup.sh failed (exit 2)\n", truncated: false }),
+  "sessions.create": (p) => {
+    lastCreate = p;
+    // The row lists a moment later, starting.
+    setTimeout(() => {
+      sessions.push(sess({ id: nid("i"), name: p.branch, repo: "shop", branch: p.branch, state: "creating", label: "starting", createdAt: iso() }));
+      emit("overview", "", overview());
+    }, 300);
+    return { id: nid("job"), kind: "create", repo: "shop", session: p.branch, state: "running", pid: 1, startedAt: iso(), logPath: "/tmp/x" };
+  },
+  "mock.lastCreate": () => lastCreate,
+  // As the cloud does it: a VM takes a moment to go, and the listing
+  // a moment more to say so (even in tests).
+  "sessions.removeMerged": async (p) => {
+    await new Promise((r) => setTimeout(r, 1200));
+    const at = sessions.findIndex((x) => x.id === p.id);
+    if (at < 0 || sessions[at].pr?.state !== "merged") throw new Error("its pull request hasn't merged");
+    sessions.splice(at, 1);
+    setTimeout(() => emit("overview", "", overview()), 1500);
+    return null;
+  },
   "sessions.resume": (p) => {
     const s = sessions.find((x) => x.id === p.id);
     if (s) {
@@ -433,6 +505,12 @@ const handlers = {
       emit("overview", "", overview());
     }
     return null;
+  },
+  "pool.fill": (p) => {
+    const r = repos.find((x) => x.checkout?.path === p.path);
+    if (r?.needsImage)
+      throw rpcError("failed", `${r.name} has no session image, and its .pier/bake.sh toolchains are needed for sessions to work — run \`pier bake\` first`);
+    return { id: nid("job"), kind: "fill", repo: r?.name, state: "running", startedAt: iso(), log: "/tmp/x" };
   },
   "env.watch": (p) => ({ sub: openSub("env", p.id), seq: 0, snapshot: env(p.id) }),
   "chats.watch": (p) => ({ sub: openSub("chats", p.id), seq: 0, snapshot: { chats: chatsOf(p.id).map((c) => c.info), live: live(p.id) } }),
@@ -505,8 +583,9 @@ const handlers = {
   },
   "chat.takeover": () => ({ windowId: "@9" }),
   "chats.window": () => ({ windowId: "@8" }),
-  "chat.compose": () => ({ text: "The `test (ubuntu)` check fails:\n\n```\nFAIL src/auth/mw.test.ts\n  expected 1 redirect, got 2\n```\n\nFix it and push." }),
-  "agents.models": (p) => ({ agent: p.agent, models: models[p.agent] ?? [], modes: modes[p.agent] ?? [] }),
+  // The failing logs come from GitHub: a moment (even in tests).
+  "chat.compose": async () => (await new Promise((r) => setTimeout(r, 800)), { text: "The `test (ubuntu)` check fails:\n\n```\nFAIL src/auth/mw.test.ts\n  expected 1 redirect, got 2\n```\n\nFix it and push." }),
+  "agents.models": (p) => ({ agent: p.agent, models: models[p.agent] ?? [], modes: modes[p.agent] ?? [], commands: commands[p.agent] ?? [] }),
   "files.upload": (p) => (live(p.sessionId) ? { name: p.name, path: `/home/agent/.pier/uploads/${p.name}`, mime: p.mime } : { name: p.name, path: `staged:/tmp/${p.name}`, mime: p.mime }),
   "files.list": (p) => ({ paths: [...repoFiles, ...filesOf(p.sessionId).filter((f) => !repoFiles.includes(f.path)).map((f) => f.path)], truncated: false, asOf: live(p.sessionId) ? undefined : iso(20 * 60e3) }),
   "git.changes": (p) => changes(p.id),
@@ -539,9 +618,10 @@ const handlers = {
     return { sub, seq: 0, snapshot: { matches: [], truncated: false, done: false } };
   },
   "pr.get": () => ({ id: "PR_41", number: 41, title: "Fix the login redirect loop", url: "https://github.com/acme/shop/pull/41", state: "open", headOid: "abc", baseRef: "main", additions: 12, deletions: 3, checks: "failing", checksPassed: 3, checksTotal: 4, review: "changes_requested", mergeable: "blocked", body: "",
-    runs: [{ name: "test (ubuntu)", state: "failing", url: "u", jobId: 1, runId: 9 }, { name: "lint", state: "passing", url: "u", jobId: 2, runId: 9 }],
-    threads: [{ path: "src/auth/mw.ts", line: 12, resolved: false, outdated: false, comments: [{ author: "maria", body: "Read the cookie name from config instead." }] }],
-    reviews: [{ author: "maria", state: "changes_requested", body: "Close — one thing about the cookie name." }] }),
+    runs: [{ name: "test (ubuntu)", state: "failing", url: "u", jobId: 1 }, { name: "lint", state: "passing", url: "u", jobId: 2 }],
+    threads: [{ path: "src/auth/mw.ts", line: 12, resolved: false, outdated: false, comments: [{ author: "maria", body: "Read the cookie name from config instead.", html: "<p>Read the cookie name from <code>config</code> instead.</p>" }] }],
+    reviews: [{ author: "review-bot", state: "changes_requested", body: "Close — one thing about the cookie name.",
+      html: '<p><strong>Close</strong> — one thing about the cookie name.</p><details><summary>Details</summary><table><thead><tr><th>File</th><th>Note</th></tr></thead><tbody><tr><td>src/auth/mw.ts</td><td>hard-coded cookie</td></tr></tbody></table></details><img src="javascript:alert(1)" onerror="alert(1)"><script>alert(1)</script>' }] }),
   "pr.log": () => ({ text: "Run pnpm test\n FAIL src/auth/mw.test.ts\nError: Process completed with exit code 1." }),
   "cli.status": () => ({ link: "/usr/local/bin/pier", installed: false }),
   "prompts.get": (p) => ({
@@ -624,16 +704,20 @@ const handlers = {
   },
   "proxy.watch": () => ({ sub: openSub("proxy", ""), seq: 0, snapshot: proxyState }),
   "tmux.windows": (p) => windows.get(p.sessionId) ?? [],
-  "tmux.newWindow": (p) => {
+  // As a session does it: the call takes a moment, and the session's next
+  // look at its windows comes seconds later (even in tests).
+  "tmux.newWindow": async (p) => {
+    await new Promise((r) => setTimeout(r, 700));
     const list = windows.get(p.sessionId) ?? [];
     const w = { id: `@${10 + list.length}`, index: list.length + 1, name: "zsh", command: "zsh", active: false, role: "" };
     windows.set(p.sessionId, [...list, w]);
-    emit("env", p.sessionId, env(p.sessionId));
+    setTimeout(() => emit("env", p.sessionId, env(p.sessionId)), 3000);
     return w;
   },
-  "tmux.killWindow": (p) => {
+  "tmux.killWindow": async (p) => {
+    await new Promise((r) => setTimeout(r, 700));
     windows.set(p.sessionId, (windows.get(p.sessionId) ?? []).filter((w) => w.id !== p.window));
-    emit("env", p.sessionId, env(p.sessionId));
+    setTimeout(() => emit("env", p.sessionId, env(p.sessionId)), 3000);
     return null;
   },
   "term.close": (p) => {

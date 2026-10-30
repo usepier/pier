@@ -31,7 +31,7 @@ export function FilesPanel({ session: s }: { session: Session }) {
   if (!readable(s)) {
     return (
       <div className="flex h-full flex-col">
-        <div className="shrink-0 border-b border-separator px-3 py-2 text-xs text-secondary">
+        <div className="shrink-0 border-b border-separator px-4 py-3 text-sm text-secondary">
           {s.state === "parked"
             ? "Parked — as of the last look. Wake it to search or edit."
             : "Not readable right now."}
@@ -42,10 +42,7 @@ export function FilesPanel({ session: s }: { session: Session }) {
   }
   return (
     <div className="flex h-full flex-col">
-      <fieldset
-        aria-label="Show"
-        className="m-0 flex shrink-0 gap-1 border-0 border-b border-separator p-1.5 text-xs"
-      >
+      <fieldset aria-label="Show" className="m-0 flex shrink-0 gap-1 border-0 px-3 pt-3 pb-1 text-sm">
         {(
           [
             ["tree", "Files"],
@@ -57,7 +54,7 @@ export function FilesPanel({ session: s }: { session: Session }) {
             type="button"
             aria-pressed={mode === m}
             onClick={() => setMode(m)}
-            className={`h-6 flex-1 rounded-ctl ${mode === m ? "bg-selected text-label" : "text-secondary hover:bg-hover"}`}
+            className={`h-7 flex-1 rounded-ctl ${mode === m ? "bg-selected text-label" : "text-secondary hover:bg-hover"}`}
           >
             {title}
           </button>
@@ -115,8 +112,8 @@ function Tree({ session: s }: { session: Session }) {
                 return next;
               })
             }
-            style={{ paddingLeft: 8 + depth * 12 }}
-            className="flex h-6 w-full items-center gap-1 pr-2 text-left text-sm hover:bg-hover"
+            style={{ paddingLeft: 8 + depth * 14 }}
+            className="flex h-7 w-full items-center gap-1.5 rounded-[6px] pr-2 text-left text-sm hover:bg-hover"
           >
             <ChevronRight
               size={11}
@@ -129,7 +126,7 @@ function Tree({ session: s }: { session: Session }) {
         </li>
       );
     }
-    return <li key={n.path}>{fileButton(n.path, n.name, 20 + depth * 12)}</li>;
+    return <li key={n.path}>{fileButton(n.path, n.name, 25 + depth * 14)}</li>;
   };
 
   const fileButton = (path: string, label: ReactNode, pad: number) => {
@@ -141,7 +138,7 @@ function Tree({ session: s }: { session: Session }) {
         onClick={() => openDoc(s.id, { kind: "file", path })}
         style={{ paddingLeft: pad }}
         title={path}
-        className={`flex h-6 w-full items-center gap-1.5 pr-2 text-left text-sm ${on ? "bg-selected" : "hover:bg-hover"}`}
+        className={`flex h-7 w-full items-center gap-2 rounded-[6px] pr-2 text-left text-sm ${on ? "bg-selected" : "hover:bg-hover"}`}
       >
         <File size={12} className="shrink-0 text-tertiary" />
         <span className={`truncate ${st ? (changeTone[st] ?? "") : ""}`}>{label}</span>
@@ -151,16 +148,16 @@ function Tree({ session: s }: { session: Session }) {
 
   return (
     <>
-      <div className="shrink-0 p-1.5">
+      <div className="shrink-0 px-3 py-2.5">
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter files"
           aria-label="Filter files"
-          className="selectable h-6 w-full rounded-ctl border border-separator bg-control px-2 text-sm outline-none placeholder:text-tertiary focus:border-accent"
+          className="selectable h-8 w-full rounded-ctl border border-separator bg-control px-2.5 text-sm outline-none placeholder:text-tertiary focus:border-accent"
         />
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
         {!files.data ? (
           <div className="flex justify-center p-4">
             {files.error ? (
@@ -232,8 +229,8 @@ function ContentSearch({ session: s }: { session: Session }) {
   );
   return (
     <>
-      <div className="shrink-0 p-1.5">
-        <div className="flex h-6 items-center gap-1 rounded-ctl border border-separator bg-control pr-1 pl-2 focus-within:border-accent">
+      <div className="shrink-0 px-3 py-2.5">
+        <div className="flex h-8 items-center gap-1.5 rounded-ctl border border-separator bg-control pr-1.5 pl-2.5 focus-within:border-accent">
           <Search size={12} className="shrink-0 text-tertiary" />
           <input
             ref={input}
@@ -247,7 +244,7 @@ function ContentSearch({ session: s }: { session: Session }) {
           {toggle(regex, setRegex, "Regular expression", ".*")}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2 text-sm">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 text-sm">
         {debounced && !data?.done && !failed && !data?.matches.length && (
           <div className="flex justify-center p-4">
             <Spinner />
@@ -255,15 +252,15 @@ function ContentSearch({ session: s }: { session: Session }) {
         )}
         {failed && <div className="selectable px-3 py-2 text-bad">{failed.message}</div>}
         {data && !failed && (data.done || data.matches.length > 0) && (
-          <div className="px-3 py-1 text-2xs text-tertiary">
+          <div className="px-2 pt-1 pb-2 text-xs text-tertiary">
             {plural(data.matches.length, "match", "matches")} in {plural(groups.length, "file")}
             {data.truncated ? " (more not shown)" : ""}
             {!data.done && " so far"}
           </div>
         )}
         {groups.map(([path, ms]) => (
-          <div key={path} className="mb-1">
-            <div className="truncate px-3 py-0.5 text-xs font-medium text-secondary" title={path}>
+          <div key={path} className="mb-2.5">
+            <div className="truncate px-2 py-1 text-xs font-medium text-secondary" title={path}>
               {path}
             </div>
             {ms.map((m) => (
@@ -271,7 +268,7 @@ function ContentSearch({ session: s }: { session: Session }) {
                 key={`${m.line}:${m.col}`}
                 type="button"
                 onClick={() => openDoc(s.id, { kind: "file", path, line: m.line })}
-                className="flex w-full items-baseline gap-2 py-0.5 pr-2 pl-5 text-left hover:bg-hover"
+                className="flex w-full items-baseline gap-2.5 rounded-[6px] py-1 pr-2 pl-4 text-left hover:bg-hover"
               >
                 <span className="w-7 shrink-0 text-right font-mono text-[10.5px] text-tertiary">
                   {m.line}

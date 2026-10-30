@@ -58,9 +58,17 @@ test("an AWS profile that asks for an MFA code takes one in setup", async ({ pag
 test("removing pier from the account shows each step", async ({ page }) => {
   await page.goto("/#/settings");
   await page.getByRole("button", { name: "Account" }).click();
-  // The confirmation is the browser's own dialog outside the app.
-  page.once("dialog", (d) => void d.accept());
+  // The confirmation is the app's own modal, not a system alert.
+  page.once("dialog", () => {
+    throw new Error("a system dialog opened");
+  });
   await page.getByRole("button", { name: "Remove…" }).click();
+  const modal = page.getByRole("alertdialog");
+  await expect(modal).toBeVisible();
+  await modal.getByRole("button", { name: "Cancel" }).click();
+  await expect(modal).toHaveCount(0);
+  await page.getByRole("button", { name: "Remove…" }).click();
+  await page.keyboard.press("Enter"); // Return takes the action
   await expect(page.getByText("deleting the security group pier")).toBeVisible();
   await expect(page.getByText("the account is clean")).toBeVisible();
   await page.getByRole("button", { name: "Done" }).click();

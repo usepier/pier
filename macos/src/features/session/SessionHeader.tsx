@@ -1,16 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Cpu, Pin, Power, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronRight, Cpu, GitBranch, Pin, Power, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { Button as AriaButton, Dialog, DialogTrigger, Popover } from "react-aria-components";
 import { rpc } from "@/api/client";
 import type { Session } from "@/api/protocol.gen";
+import { Crumb, RepoTile } from "@/app/crumbs";
 import { Toolbar } from "@/app/toolbar";
 import { confirm } from "@/lib/confirm";
-import { until } from "@/lib/format";
+import { openExternal, originUrl } from "@/lib/open";
 import { running } from "@/lib/session";
+import { useBusy } from "@/lib/useBusy";
 import { trackJob } from "@/state/jobs";
 import { sessionTone } from "@/state/overview";
+import { markRemoving, unmarkRemoving } from "@/state/removing";
 import { attempt, toast } from "@/state/toasts";
 import { Badge } from "@/ui/Badge";
 import { Button } from "@/ui/Button";
@@ -39,37 +42,41 @@ export function SessionHeader({
         ? "This dismisses the failed create's record."
         : "The VM and its disk are destroyed. Anything not pushed is lost.";
     if (!(await confirm(`Remove ${s.name}?`, what, { ok: "Remove", destructive: true }))) return;
-    await attempt(() => rpc.call("sessions.remove", { id: s.id }));
-    toast(`Removing ${s.name}`, "info");
+    // It shows as going (its row) from now; back here if it can't be removed.
+    markRemoving(s.id, "Removing…");
     navigate({ to: "/repo/$name", params: { name: s.repo } });
+    if ((await attempt(() => rpc.call("sessions.remove", { id: s.id }))) === undefined) unmarkRemoving(s.id);
   };
+  const [keeping, runKeep] = useBusy();
   return (
     <Toolbar>
-      <StateDot tone={sessionTone(s)} className="size-2.5" />
-      <div data-tauri-drag-region className="min-w-0 flex-1 leading-tight">
-        <div className="flex items-center gap-2">
-          <h1 className="truncate text-base font-semibold">{s.name}</h1>
+      <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-1">
+        <Crumb
+          tip={`Open ${s.repo}`}
+          onPress={() => navigate({ to: "/repo/$name", params: { name: s.repo } })}
+          className="shrink-0 gap-2.5 font-medium text-secondary hover:text-label"
+        >
+          <RepoTile name={s.repo} />
+          {s.repo}
+        </Crumb>
+        <ChevronRight size={14} className="shrink-0 text-quaternary" />
+        <div className="flex min-w-0 items-center gap-2.5 px-2">
+          <StateDot tone={sessionTone(s)} className="size-2.5" />
+          <h1 className="truncate text-md font-semibold">{s.name}</h1>
           <Badge>{s.label}</Badge>
           {s.setup === "running" && <Badge tone="info">setting up</Badge>}
           {s.setup === "failed" && <Badge tone="bad">setup failed</Badge>}
           {s.strained && <Badge tone="warn">strained</Badge>}
         </div>
-        <div className="selectable truncate text-xs text-secondary">
-          {s.branch}
-          {s.base && <span className="text-tertiary"> ← {s.base}</span>}
-          <span className="text-tertiary">
-            {" "}
-            · {s.machineType} · {s.costNote}
-            <Countdown session={s} />
-          </span>
-        </div>
+        <BranchLink session={s} />
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {s.state === "parked" && (
           <Button
             variant="primary"
-            icon={waking ? <Spinner className="text-on-accent" /> : <Power size={13} />}
-            isDisabled={waking || !s.hasKey}
+            icon={<Power size={13} />}
+            isPending={waking}
+            isDisabled={!s.hasKey}
             onPress={() => void wake()}
           >
             {waking ? "Waking…" : "Wake"}
@@ -78,11 +85,14 @@ export function SessionHeader({
         {live && (
           <Button
             icon={<Pin size={13} />}
+            isPending={keeping}
             onPress={() =>
-              attempt(async () => {
-                await rpc.call("sessions.keep", { id: s.id });
-                toast(`${s.name} won't park when idle`, "ok");
-              })
+              runKeep(() =>
+                attempt(async () => {
+                  await rpc.call("sessions.keep", { id: s.id });
+                  toast(`${s.name} won't park when idle`, "ok");
+                }),
+              )
             }
           >
             Keep
@@ -97,38 +107,50 @@ export function SessionHeader({
   );
 }
 
-/** When the session stops on its own, ticking down. */
-function Countdown({ session: s }: { session: Session }) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => tick((n) => n + 1), 30_000);
-    return () => clearInterval(t);
-  }, []);
-  const park = until(s.parkAt);
-  const cap = until(s.capAt);
-  if (park) return <span className="text-tertiary"> · parks in {park}</span>;
-  if (cap) return <span className="text-tertiary"> · runaway cap in {cap}</span>;
-  return null;
+/** The session's branch, linking to it on the web when the repo is there. */
+function BranchLink({ session: s }: { session: Session }) {
+  const url = originUrl(s.origin);
+  const text = (
+    <>
+      <GitBranch size={14} className="shrink-0 text-tertiary" />
+      <span className="truncate">{s.branch}</span>
+    </>
+  );
+  if (!url)
+    return <span className="flex min-w-0 items-center gap-1.5 px-2 text-sm text-secondary">{text}</span>;
+  return (
+    <Crumb
+      tip={`Open ${s.branch} on ${s.origin!.split("/")[0]}`}
+      onPress={() => openExternal(`${url}/tree/${s.branch.split("/").map(encodeURIComponent).join("/")}`)}
+      className="text-sm text-secondary"
+    >
+      {text}
+    </Crumb>
+  );
 }
 
 function ResizeButton({ session: s, onResize }: { session: Session; onResize: (jobId: string) => void }) {
   const [open, setOpen] = useState(false);
+  const [starting, run] = useBusy();
   const machines = useQuery({
     queryKey: ["machines", s.id],
     queryFn: () => rpc.call("sessions.machines", { id: s.id }),
     enabled: open,
   });
-  const resize = async (type: string) => {
-    setOpen(false);
-    const j = await attempt(() => rpc.call("sessions.resize", { id: s.id, machineType: type }));
-    if (j) {
-      trackJob(j);
-      onResize(j.id);
-    }
-  };
+  const resize = (type: string) =>
+    run(async () => {
+      setOpen(false);
+      const j = await attempt(() => rpc.call("sessions.resize", { id: s.id, machineType: type }));
+      if (j) {
+        trackJob(j);
+        onResize(j.id);
+      }
+    });
   return (
     <DialogTrigger isOpen={open} onOpenChange={setOpen}>
-      <Button icon={<Cpu size={13} />}>Resize</Button>
+      <Button icon={<Cpu size={13} />} isPending={starting}>
+        Resize
+      </Button>
       <Popover
         placement="bottom end"
         className="w-80 rounded-card border border-separator bg-surface p-1 shadow-xl outline-none"

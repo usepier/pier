@@ -1,12 +1,15 @@
 import { ArrowUpRight, MessageSquare, RotateCw, SquareTerminal, Trash2, X } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { rpc } from "@/api/client";
 import type { Attachment, ChatInfo, QueuedPrompt, Session } from "@/api/protocol.gen";
+import { focusTarget } from "@/lib/focus";
 import { running } from "@/lib/session";
+import { useNow } from "@/lib/useNow";
 import { seenKey, useSeen } from "@/state/attention";
 import { useFocused } from "@/state/background";
 import { useChat } from "@/state/chat";
+import { chatTab, useDocs } from "@/state/docs";
 import { useJob } from "@/state/jobs";
 import { type NewChat, useNewChats } from "@/state/newChats";
 import {
@@ -18,6 +21,7 @@ import {
   settleOutbox,
   useOutbox,
 } from "@/state/outbox";
+import { useChatDefaults } from "@/state/settings";
 import { attempt } from "@/state/toasts";
 import { Banner } from "@/ui/Banner";
 import { Button, IconButton } from "@/ui/Button";
@@ -73,6 +77,9 @@ export function ChatView({
   const focused = useFocused();
   const markSeen = useSeen((x) => x.markSeen);
   const updateDraft = useNewChats((n) => n.update);
+  const openDraft = useNewChats((n) => n.open);
+  const setActiveTab = useDocs((d) => d.setActive);
+  const defaults = useChatDefaults();
 
   // Looking at the chat is seeing how its turn ended.
   useEffect(() => {
@@ -97,6 +104,8 @@ export function ChatView({
     model: info?.model ?? draft?.model ?? "",
     effort: info?.effort ?? draft?.effort ?? "",
     mode: info?.mode ?? draft?.mode ?? "",
+    fast: info?.fast ?? draft?.fast ?? false,
+    fastOff: info?.fastOff,
   };
   const onSettings = (p: Partial<RunSettings>) => {
     if (draft && !info) {
@@ -108,7 +117,7 @@ export function ChatView({
   const onSend = (text: string, attachments: Attachment[], mode: "steer" | "queue") => {
     const create =
       draft && !info
-        ? { agent, model: settings.model, effort: settings.effort, mode: settings.mode }
+        ? { agent, model: settings.model, effort: settings.effort, mode: settings.mode, fast: settings.fast }
         : undefined;
     sendPrompt({ sessionId: s.id, chatId, text, attachments, mode, create });
   };
@@ -172,7 +181,14 @@ export function ChatView({
         footer={
           <>
             {queue.map((q) => (
-              <QueuedBubble key={q.id} sessionId={s.id} chatId={chatId} q={q} live={live} />
+              <QueuedBubble
+                key={q.id}
+                sessionId={s.id}
+                chatId={chatId}
+                q={q}
+                live={live}
+                turn={info?.state === "working" || info?.state === "waiting"}
+              />
             ))}
             {shown.map((o) => (
               <OutgoingBubble key={o.id} o={o} />
@@ -198,6 +214,18 @@ export function ChatView({
         onSettings={onSettings}
         onSend={onSend}
         onInterrupt={working || info?.state === "waiting" ? () => interruptChat(s.id, chatId) : undefined}
+        onOtherAgent={(other, model) => {
+          // A chat not started yet just changes agent; a running one can't,
+          // so a new chat opens with that model.
+          if (draft && !info) {
+            updateDraft(s.id, chatId, { ...defaults(other), model, fast: settings.fast });
+            return;
+          }
+          const id = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+          openDraft(s.id, { id, ...defaults(other), model, fast: settings.fast });
+          setActiveTab(s.id, chatTab(id));
+          focusTarget("composer", { next: true });
+        }}
       />
     </div>
   );
@@ -213,8 +241,10 @@ function WorkingLine({ since }: { since?: string }) {
   );
 }
 
+/** How long the turn has run, ticking each second. */
 function Elapsed({ since }: { since: string }) {
-  const s = Math.max(0, Math.round((Date.now() - new Date(since).getTime()) / 1000));
+  const now = useNow(1000);
+  const s = Math.max(0, Math.floor((now - new Date(since).getTime()) / 1000));
   return (
     <span className="text-tertiary tabular-nums">
       {s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}
@@ -258,18 +288,44 @@ function Bubble({
   );
 }
 
-/** A prompt the session holds until the turn ends. */
+/**
+ * A prompt the session holds until the turn ends. Every prompt passes
+ * through the queue, so with no turn running it's on its way in, not
+ * waiting.
+ */
 function QueuedBubble({
   sessionId,
   chatId,
   q,
   live,
+  turn,
 }: {
   sessionId: string;
   chatId: string;
   q: QueuedPrompt;
   live: boolean;
+  /** A turn is running: the prompt waits for it. */
+  turn: boolean;
 }) {
+  const [busy, setBusy] = useState<"now" | "back">();
+  const act = async (which: "now" | "back", f: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(which);
+    await attempt(f);
+    setBusy(undefined);
+  };
+  if (!turn) {
+    return (
+      <Bubble
+        text={q.text}
+        note={
+          <>
+            <Spinner size={9} /> sending
+          </>
+        }
+      />
+    );
+  }
   return (
     <Bubble
       text={q.text}
@@ -281,8 +337,10 @@ function QueuedBubble({
               <IconButton
                 label="Send now"
                 size="sm"
+                isPending={busy === "now"}
+                isDisabled={!!busy && busy !== "now"}
                 onPress={() =>
-                  void attempt(async () => {
+                  void act("now", async () => {
                     await rpc.call("chat.dequeue", { sessionId, chatId, promptId: q.id });
                     await rpc.call("chat.send", {
                       sessionId,
@@ -300,8 +358,10 @@ function QueuedBubble({
               <IconButton
                 label="Remove from the queue"
                 size="sm"
+                isPending={busy === "back"}
+                isDisabled={!!busy && busy !== "back"}
                 onPress={() =>
-                  void attempt(() => rpc.call("chat.dequeue", { sessionId, chatId, promptId: q.id }))
+                  void act("back", () => rpc.call("chat.dequeue", { sessionId, chatId, promptId: q.id }))
                 }
               >
                 <X size={12} />
@@ -324,20 +384,12 @@ function OutgoingBubble({ o }: { o: Outgoing }) {
         note={<>couldn't send{o.error ? `: ${o.error}` : ""}</>}
         actions={
           <>
-            <button
-              type="button"
-              onClick={() => retryPrompt(o.id)}
-              className="inline-flex items-center gap-0.5 hover:underline"
-            >
-              <RotateCw size={10} /> retry
-            </button>
-            <button
-              type="button"
-              onClick={() => discardPrompt(o.id)}
-              className="inline-flex items-center gap-0.5 hover:underline"
-            >
-              <Trash2 size={10} /> discard
-            </button>
+            <Button size="sm" icon={<RotateCw size={11} />} onPress={() => retryPrompt(o.id)}>
+              Retry
+            </Button>
+            <Button size="sm" variant="plain" icon={<Trash2 size={11} />} onPress={() => discardPrompt(o.id)}>
+              Discard
+            </Button>
           </>
         }
       />

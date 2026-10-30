@@ -24,7 +24,7 @@ import { readable } from "@/lib/session";
 import { seenKey, useSeen } from "@/state/attention";
 import { bufferKey, useBuffers } from "@/state/buffers";
 import { useChats } from "@/state/chat";
-import { type Doc, useDocs } from "@/state/docs";
+import { chatTab, type Doc, useDocs } from "@/state/docs";
 import { useNewChats, useNewChatsOf } from "@/state/newChats";
 import { useChatDefaults } from "@/state/settings";
 import { attempt } from "@/state/toasts";
@@ -38,11 +38,11 @@ const shells = new Set(["bash", "zsh", "sh", "fish", "-bash", "-zsh"]);
 function label(w: Window): string {
   if (w.role === "agent") return "Chats";
   if (w.role === "setup") return w.name === "setup-failed" ? "Setup failed" : "Setup";
+  if (w.role === "home" && shells.has(w.command)) return "Shell";
   return w.name || w.command || w.id;
 }
 
 const noDocs: Doc[] = [];
-const chatTab = (id: string) => `chat:${id}`;
 const isChatTab = (t?: string) => !!t?.startsWith("chat:");
 
 function baseName(p: string) {
@@ -134,16 +134,54 @@ function Tab({
 export function SessionCenter({ session: s, openWindow }: { session: Session; openWindow?: string }) {
   const live = readable(s);
   const env = useWatch("env", { id: s.id }, { enabled: live });
-  const windows = useMemo(() => [...(env.data?.windows ?? [])].sort((a, b) => a.index - b.index), [env.data]);
+  const docs = useDocs((d) => d.docs[s.id] ?? noDocs);
+  const active = useDocs((d) => d.active[s.id]);
+  // Tabs act at once: one opening shows (and is shown) before the session
+  // has made it, one closing goes before the session has; the session's
+  // next look (every few seconds) then agrees.
+  const [opening, setOpening] = useState<{ id: string; title: string; agent?: string }[]>([]);
+  const [made, setMade] = useState<Window[]>([]);
+  const [closing, setClosing] = useState<Set<string>>(() => new Set());
+  // The session's own shell (main's first window) is a tab only when
+  // something runs in it or it was opened: terminals are the ones asked for.
+  const windows = useMemo(() => {
+    const listed = env.data?.windows ?? [];
+    const ids = new Set(listed.map((w) => w.id));
+    return [...listed, ...made.filter((w) => !ids.has(w.id))]
+      .filter((w) => !closing.has(w.id))
+      .filter((w) => w.role !== "home" || (w.command && !shells.has(w.command)) || w.id === active)
+      .sort((a, b) => a.index - b.index);
+  }, [env.data, made, closing, active]);
+  // Once the session's look has caught up, what was waiting on it goes.
+  useEffect(() => {
+    const listed = new Set((env.data?.windows ?? []).map((w) => w.id));
+    setMade((m) => (m.some((w) => listed.has(w.id)) ? m.filter((w) => !listed.has(w.id)) : m));
+    setClosing((c) => {
+      const gone = [...c].filter((id) => id.startsWith("@") && !listed.has(id));
+      if (!gone.length) return c;
+      const next = new Set(c);
+      for (const id of gone) next.delete(id);
+      return next;
+    });
+  }, [env.data]);
   const list = useChats(s.id);
-  const chats = list.chats.length ? list.chats : (s.chats ?? []);
+  const allChats = list.chats.length ? list.chats : (s.chats ?? []);
+  const chats = useMemo(() => allChats.filter((c) => !closing.has(chatTab(c.id))), [allChats, closing]);
+  useEffect(() => {
+    const ids = new Set(allChats.map((c) => chatTab(c.id)));
+    setClosing((c) => {
+      const gone = [...c].filter((id) => isChatTab(id) && !ids.has(id));
+      if (!gone.length) return c;
+      const next = new Set(c);
+      for (const id of gone) next.delete(id);
+      return next;
+    });
+  }, [allChats]);
   const drafts = useNewChatsOf(s.id);
   const openDraft = useNewChats((n) => n.open);
   const dropDraft = useNewChats((n) => n.drop);
   const defaults = useChatDefaults();
   const seen = useSeen((x) => x.seen);
-  const docs = useDocs((d) => d.docs[s.id] ?? noDocs);
-  const active = useDocs((d) => d.active[s.id]);
   const setActiveIn = useDocs((d) => d.setActive);
   const closeDoc = useDocs((d) => d.close);
   const setActive = (id: string) => setActiveIn(s.id, id);
@@ -162,8 +200,13 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
     [chats, openDrafts],
   );
   const order = useMemo(
-    () => [...chatIds.map(chatTab), ...windows.map((w) => w.id), ...docs.map((d) => d.id)],
-    [chatIds, windows, docs],
+    () => [
+      ...chatIds.map(chatTab),
+      ...windows.map((w) => w.id),
+      ...opening.map((o) => o.id),
+      ...docs.map((d) => d.id),
+    ],
+    [chatIds, windows, opening, docs],
   );
 
   // Start on a chat (one waiting on you first), else whatever tmux has current.
@@ -192,17 +235,62 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
     setActive(chatTab(id));
     focusTarget("composer", { next: true });
   };
-  const newTerminal = async () => {
-    const w = await attempt(() => rpc.call("tmux.newWindow", { sessionId: s.id }));
-    if (w) setActive(w.id);
+  // A terminal tab shows the moment it's asked for, opening; the session's
+  // window takes its place once made — shown, unless another tab was picked
+  // meanwhile. If it can't be made, the tab goes and the one before is back.
+  const openTab = async (title: string, make: () => Promise<Window | undefined>, agent?: string) => {
+    const temp = `opening:${crypto.randomUUID()}`;
+    const before = active;
+    setOpening((o) => [...o, { id: temp, title, agent }]);
+    setActive(temp);
+    const w = await make();
+    setOpening((o) => o.filter((x) => x.id !== temp));
+    const still = useDocs.getState().active[s.id] === temp;
+    if (!w) {
+      if (still && before) setActive(before);
+      return;
+    }
+    setMade((m) => [...m.filter((x) => x.id !== w.id), w]);
+    if (still) setActive(w.id);
   };
-  const chatsInTerminal = async () => {
-    const r = await attempt(() => rpc.call("chats.window", { id: s.id }));
-    if (r) setActive(r.windowId);
+  const newTerminal = () =>
+    openTab("Terminal", () => attempt(() => rpc.call("tmux.newWindow", { sessionId: s.id })));
+  const chatsInTerminal = () =>
+    openTab("Chats", async () => {
+      const r = await attempt(() => rpc.call("chats.window", { id: s.id }));
+      return r && { id: r.windowId, index: 1e6, name: "chats", command: "", active: false, role: "agent" };
+    });
+  const takeover = (chatId: string) => {
+    const c = chats.find((x) => x.id === chatId);
+    const name = c ? agentName(c.agent) : "Agent";
+    return openTab(
+      name,
+      async () => {
+        const r = await attempt(() => rpc.call("chat.takeover", { sessionId: s.id, chatId }));
+        return (
+          r && { id: r.windowId, index: 1e6, name: name.toLowerCase(), command: "", active: false, role: "" }
+        );
+      },
+      c?.agent,
+    );
   };
-  const takeover = async (chatId: string) => {
-    const r = await attempt(() => rpc.call("chat.takeover", { sessionId: s.id, chatId }));
-    if (r) setActive(r.windowId);
+
+  // A tab closing goes at once — its neighbour shown if it was — and comes
+  // back, with why, if the session can't close it.
+  const closeNow = async (id: string, close: () => Promise<unknown>) => {
+    if (active === id) {
+      const at = order.indexOf(id);
+      const next = order[at + 1] ?? order[at - 1];
+      if (next) setActive(next);
+    }
+    setClosing((c) => new Set(c).add(id));
+    if ((await attempt(close)) === undefined) {
+      setClosing((c) => {
+        const next = new Set(c);
+        next.delete(id);
+        return next;
+      });
+    }
   };
 
   const activeTabButton = () =>
@@ -275,7 +363,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
       { ok: "Close", destructive: c.state === "working" || c.state === "waiting" },
     );
     if (!ok) return;
-    await attempt(() => rpc.call("chat.close", { sessionId: s.id, chatId: c.id }));
+    await closeNow(chatTab(c.id), () => rpc.call("chat.close", { sessionId: s.id, chatId: c.id }));
   };
   const closeWindow = async (w: Window) => {
     const busy = w.command && !shells.has(w.command);
@@ -287,8 +375,8 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
       }))
     )
       return;
-    await attempt(() => rpc.call("tmux.killWindow", { sessionId: s.id, window: w.id }));
     setVisited((v) => v.filter((x) => x !== w.id));
+    await closeNow(w.id, () => rpc.call("tmux.killWindow", { sessionId: s.id, window: w.id }));
   };
 
   const activeChat = isChatTab(active) ? active!.slice(5) : undefined;
@@ -380,6 +468,18 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
               />
             );
           })}
+          {opening.map((o) => (
+            <Tab
+              key={o.id}
+              id={o.id}
+              on={o.id === active}
+              onSelect={() => setActive(o.id)}
+              icon={o.agent ? <AgentGlyph agent={o.agent} /> : <SquareTerminal size={13} />}
+              title={o.title}
+            >
+              <Spinner size={10} />
+            </Tab>
+          ))}
           {docs.length > 0 && <div aria-hidden className="mx-1 h-4 w-px shrink-0 bg-separator" />}
           {docs.map((d) => {
             const Icon = d.kind === "diff" ? GitCompareArrows : FileCode;
@@ -470,7 +570,7 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
             )}
           </div>
         ))}
-        {chatIds.length === 0 && !windows.length && !docs.length && (
+        {chatIds.length === 0 && !windows.length && !opening.length && !docs.length && (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
             <MessagesSquare size={28} strokeWidth={1.5} className="text-quaternary" />
             <div className="text-base text-secondary">No chats in this session yet.</div>
@@ -492,6 +592,16 @@ export function SessionCenter({ session: s, openWindow }: { session: Session; op
             </div>
           </div>
         )}
+        {opening
+          .filter((o) => o.id === active)
+          .map((o) => (
+            <div
+              key={o.id}
+              className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-secondary"
+            >
+              <Spinner /> Opening {o.agent ? `${o.title} in a terminal` : "a terminal"}…
+            </div>
+          ))}
         {live &&
           visited
             .filter((id) => id.startsWith("@"))

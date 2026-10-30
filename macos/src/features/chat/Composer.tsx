@@ -4,6 +4,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -14,18 +15,24 @@ import { useFocusTarget } from "@/lib/focus";
 import { usePick } from "@/lib/usePick";
 import { useDrafts } from "@/state/drafts";
 import { usePrefs } from "@/state/prefs";
+import { rememberMode } from "@/state/settings";
 import { attempt, toast } from "@/state/toasts";
 import { IconButton } from "@/ui/Button";
+import { Kbd } from "@/ui/Kbd";
 import { type Option, Select } from "@/ui/Select";
 import { Spinner } from "@/ui/Spinner";
 import { Tip } from "@/ui/Tooltip";
-import { insertMention, mentionAt, rank } from "./mentions";
+import { effortLabel, ModelPicker } from "./ModelPicker";
+import { insertCommand, insertMention, mentionAt, rank, rankCommands, slashAt } from "./mentions";
 
 /** A chat's settings, as the composer's pickers show and change them. */
 export interface RunSettings {
   model: string;
   effort: string;
   mode: string;
+  fast?: boolean;
+  /** Why fast mode is off though asked for (the agent's own reason). */
+  fastOff?: string;
 }
 
 interface Pending {
@@ -55,26 +62,22 @@ export function useModels(agent: string, sessionId?: string) {
   });
 }
 
-const effortLabels: Record<string, string> = {
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-};
-
 /** The model, effort and permission pickers. */
 export function RunPickers({
   models,
   value,
   onChange,
   disabled,
+  withModel = true,
+  withEffort = true,
 }: {
   models?: AgentModels;
   value: RunSettings;
   onChange: (p: Partial<RunSettings>) => void;
   disabled?: boolean;
+  /** false when the model (and effort) are picked elsewhere (ModelPicker). */
+  withModel?: boolean;
+  withEffort?: boolean;
 }) {
   const list = models?.models ?? [];
   const current = list.find((m) => m.id === value.model) ?? list.find((m) => m.default);
@@ -89,11 +92,9 @@ export function RunPickers({
   const effortOptions: Option[] = [
     {
       value: "",
-      label: current?.defaultEffort
-        ? `Default (${effortLabels[current.defaultEffort] ?? current.defaultEffort})`
-        : "Default",
+      label: current?.defaultEffort ? `Default (${effortLabel(current.defaultEffort)})` : "Default",
     },
-    ...efforts.map((e) => ({ value: e, label: effortLabels[e] ?? e })),
+    ...efforts.map((e) => ({ value: e, label: effortLabel(e) })),
   ];
   const modeOptions: Option[] = (models?.modes ?? []).map((m) => ({
     value: m.id,
@@ -102,7 +103,7 @@ export function RunPickers({
   }));
   return (
     <>
-      {modelOptions.length > 0 && (
+      {withModel && modelOptions.length > 0 && (
         <Select
           label="Model"
           variant="ghost"
@@ -114,7 +115,7 @@ export function RunPickers({
           options={modelOptions}
         />
       )}
-      {efforts.length > 0 && (
+      {withEffort && efforts.length > 0 && (
         <Tip content="Effort: how long it thinks">
           <div className="inline-flex items-center">
             <Select
@@ -138,7 +139,10 @@ export function RunPickers({
           placement="top start"
           isDisabled={disabled}
           value={value.mode || "default"}
-          onChange={(mode) => onChange({ mode })}
+          onChange={(mode) => {
+            onChange({ mode });
+            if (models) void rememberMode(models.agent, mode);
+          }}
           options={modeOptions.map((o) => ({ ...o, icon: <ShieldCheck size={12} /> }))}
         />
       )}
@@ -165,6 +169,7 @@ export function Composer({
   onSettings,
   onSend,
   onInterrupt,
+  onOtherAgent,
 }: {
   sessionId: string;
   /** Where the unsent text is kept: one draft per chat. */
@@ -178,6 +183,8 @@ export function Composer({
   onSettings: (p: Partial<RunSettings>) => void;
   onSend: (text: string, attachments: Attachment[], mode: "steer" | "queue") => void;
   onInterrupt?: () => void;
+  /** A model of another agent was picked: a running chat can't switch, so another chat does. */
+  onOtherAgent?: (agent: string, model: string) => void;
 }) {
   const text = useDrafts((d) => d.drafts[draftKey] ?? "");
   const setDraft = useDrafts((d) => d.setDraft);
@@ -204,6 +211,31 @@ export function Composer({
   const matches = mentionOpen ? rank(files.data?.paths ?? [], at.query) : [];
 
   const [pick, setPick] = usePick(at?.query);
+
+  // A stop takes the agent a moment: it says so until the turn has ended.
+  const [stopping, setStopping] = useState(false);
+  if (stopping && !working) setStopping(false);
+  const stop = () => {
+    if (!onInterrupt || stopping) return;
+    setStopping(true);
+    onInterrupt();
+  };
+  // A stop that didn't take (it failed, and said so) can be asked again.
+  useEffect(() => {
+    if (!stopping) return;
+    const t = setTimeout(() => setStopping(false), 15_000);
+    return () => clearTimeout(t);
+  }, [stopping]);
+
+  // A message that starts with / runs one of the agent's commands: its
+  // own, custom ones, skills — as the agent lists them.
+  const slash = slashAt(text, caret);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  if (slashDismissed && !text.startsWith("/")) setSlashDismissed(false);
+  const commands = models.data?.commands ?? [];
+  const slashOpen = !!slash && !slashDismissed && commands.length > 0;
+  const commandMatches = slashOpen ? rankCommands(commands, slash.query) : [];
+  const [cmdPick, setCmdPick] = usePick(slash?.query);
 
   // Grow with the text, up to a third of the window; empty, back to one
   // line without measuring.
@@ -240,8 +272,36 @@ export function Composer({
     });
   };
 
+  const runCommand = (name: string) => {
+    const r = insertCommand(text, name);
+    setDraft(draftKey, r.text);
+    requestAnimationFrame(() => {
+      area.current?.setSelectionRange(r.caret, r.caret);
+      setCaret(r.caret);
+    });
+  };
+
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
+    if (slashOpen && commandMatches.length) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setCmdPick(
+          (p) => (p + (e.key === "ArrowDown" ? 1 : commandMatches.length - 1)) % commandMatches.length,
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        runCommand(commandMatches[cmdPick]!.name);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashDismissed(true);
+        return;
+      }
+    }
     if (mentionOpen && matches.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -257,7 +317,7 @@ export function Composer({
     if (e.key === "Escape") {
       e.preventDefault();
       if (mentionOpen && at) setDismissed(at.start);
-      else if (working) onInterrupt?.();
+      else if (working) stop();
       return;
     }
     if (e.key !== "Enter") return;
@@ -305,11 +365,21 @@ export function Composer({
   };
 
   const empty = !text.trim() && !pending.some((a) => a.attachment);
-  const hint = working
-    ? `${followUp === "steer" ? "⏎ steers this turn · ⌘⇧⏎ queues" : "⏎ queues · ⌘⇧⏎ steers this turn"} · esc stops`
-    : sendKey === "cmdEnter"
-      ? "⌘⏎ sends"
-      : "";
+  const sendKeys = sendKey === "cmdEnter" ? "⌘⏎" : "⏎";
+  const sendTip = working ? (
+    <span className="flex items-center gap-3">
+      <span className="flex items-center gap-1.5">
+        {followUp === "steer" ? "Steer" : "Queue"} <Kbd>{sendKeys}</Kbd>
+      </span>
+      <span className="flex items-center gap-1.5">
+        {followUp === "steer" ? "Queue" : "Steer"} <Kbd>⌘⇧⏎</Kbd>
+      </span>
+    </span>
+  ) : (
+    <span className="flex items-center gap-1.5">
+      Send <Kbd>{sendKeys}</Kbd>
+    </span>
+  );
   return (
     <div className="shrink-0 px-6 pb-4">
       {/* biome-ignore lint/a11y/noStaticElementInteractions: a drop target for files; the textarea is the control */}
@@ -324,6 +394,32 @@ export function Composer({
         onDrop={onDrop}
         className={`relative mx-auto max-w-3xl rounded-[14px] border bg-control transition-colors ${dragging ? "border-accent" : "border-strong focus-within:border-quaternary"}`}
       >
+        {slashOpen && commandMatches.length > 0 && (
+          <div
+            role="listbox"
+            aria-label="Commands"
+            className="pop-in absolute bottom-full left-2 mb-1.5 max-h-[320px] w-[min(560px,92%)] overflow-y-auto rounded-card bg-popover p-1 shadow-(--shadow-pop)"
+          >
+            {commandMatches.map((c, i) => (
+              <div
+                key={c.name}
+                role="option"
+                tabIndex={-1}
+                aria-selected={i === cmdPick}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  runCommand(c.name);
+                }}
+                onMouseEnter={() => setCmdPick(i)}
+                className={`flex cursor-pointer items-baseline gap-2.5 rounded-[6px] px-2.5 py-1.5 text-sm ${i === cmdPick ? "bg-hover" : ""}`}
+              >
+                <span className="shrink-0 font-mono text-[12.5px] text-label">/{c.name}</span>
+                {c.hint && <span className="shrink-0 font-mono text-[11.5px] text-tertiary">{c.hint}</span>}
+                <span className="min-w-0 truncate text-secondary">{c.description}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {mentionOpen && matches.length > 0 && (
           <div
             role="listbox"
@@ -384,11 +480,29 @@ export function Composer({
           onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={onKey}
           onPaste={onPaste}
-          className="selectable block max-h-[50vh] w-full resize-none bg-transparent px-4 pt-3 pb-1.5 text-[14px] leading-[1.5] outline-none placeholder:text-tertiary focus-visible:outline-none disabled:opacity-50"
+          className="selectable block max-h-[50vh] min-h-[84px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-[14px] leading-[1.5] outline-none placeholder:text-tertiary focus-visible:outline-none disabled:opacity-50"
         />
         <div className="flex items-center gap-0.5 px-2 pb-2">
-          <RunPickers models={models.data} value={settings} onChange={onSettings} />
-          <span className="min-w-0 flex-1 truncate px-2 text-right text-xs text-tertiary">{hint}</span>
+          <ModelPicker
+            value={{
+              agent,
+              model: settings.model,
+              effort: settings.effort,
+              fast: !!settings.fast,
+              fastOff: settings.fastOff,
+            }}
+            onChange={(p) => onSettings(p)}
+            lockedAgent={agent}
+            onOtherAgent={onOtherAgent}
+          />
+          <RunPickers
+            models={models.data}
+            value={settings}
+            onChange={onSettings}
+            withModel={false}
+            withEffort={false}
+          />
+          <span className="flex-1" />
           <input
             ref={picker}
             type="file"
@@ -405,20 +519,28 @@ export function Composer({
             </IconButton>
           </Tip>
           {working && onInterrupt && (
-            <Tip content="Stop (esc)">
-              <IconButton label="Stop the agent" onPress={onInterrupt} className="text-label">
+            <Tip
+              content={
+                <span className="flex items-center gap-1.5">
+                  Stop <Kbd>esc</Kbd>
+                </span>
+              }
+            >
+              <IconButton label="Stop the agent" isPending={stopping} onPress={stop} className="text-label">
                 <Square size={12} fill="currentColor" />
               </IconButton>
             </Tip>
           )}
-          <IconButton
-            label="Send"
-            isDisabled={empty || uploading || !canSend}
-            onPress={() => send(false)}
-            className="ml-0.5 rounded-full bg-accent-fill text-on-accent hover:bg-accent-fill hover:text-on-accent hover:brightness-110 disabled:bg-selected disabled:text-tertiary"
-          >
-            <ArrowUp size={15} strokeWidth={2.4} />
-          </IconButton>
+          <Tip content={sendTip}>
+            <IconButton
+              label="Send"
+              isDisabled={empty || uploading || !canSend}
+              onPress={() => send(false)}
+              className="ml-0.5 rounded-full bg-accent-fill text-on-accent hover:bg-accent-fill hover:text-on-accent hover:brightness-110 disabled:bg-selected disabled:text-tertiary"
+            >
+              <ArrowUp size={15} strokeWidth={2.4} />
+            </IconButton>
+          </Tip>
         </div>
       </div>
     </div>

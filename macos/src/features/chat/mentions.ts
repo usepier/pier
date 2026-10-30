@@ -46,3 +46,24 @@ export function rank(paths: string[], query: string, limit = 8): string[] {
   scored.sort((a, b) => b[0] - a[0] || a[1].localeCompare(b[1]));
   return scored.slice(0, limit).map(([, p]) => p);
 }
+
+/** The /command being typed: the message's first word, while the caret is in it. */
+export function slashAt(text: string, caret: number): { query: string } | null {
+  const m = text.match(/^\/(\S*)/);
+  if (!m || caret < 1 || caret > m[0].length) return null;
+  return { query: m[1]! };
+}
+
+/** Puts a picked command in place of the first word; returns the text and the caret after it. */
+export function insertCommand(text: string, name: string) {
+  const rest = text.replace(/^\/\S*\s?/, "");
+  const ins = `/${name} `;
+  return { text: ins + rest, caret: ins.length };
+}
+
+/** The commands matching what's typed after the /, best first. */
+export function rankCommands<C extends { name: string }>(commands: C[], query: string, limit = 8): C[] {
+  if (!query) return commands.slice(0, limit);
+  const by = new Map(commands.map((c) => [c.name, c]));
+  return rank([...by.keys()], query, limit).map((n) => by.get(n)!);
+}

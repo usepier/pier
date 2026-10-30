@@ -9,6 +9,7 @@ export interface NewChat {
   model: string;
   effort: string;
   mode: string;
+  fast?: boolean;
 }
 
 interface NewChats {

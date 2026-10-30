@@ -19,9 +19,11 @@ export function CommitSheet({
   files: number;
 }) {
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
+  // Which button's commit runs: it shows so, the other waits.
+  const [busy, setBusy] = useState<"commit" | "push">();
   const commit = async (push: boolean) => {
-    setBusy(true);
+    if (busy) return;
+    setBusy(push ? "push" : "commit");
     const head = await attempt(() =>
       rpc.call("git.commit", { sessionId: s.id, opId: crypto.randomUUID(), message: message.trim() }),
     );
@@ -31,7 +33,7 @@ export function CommitSheet({
         (await attempt(() => rpc.call("git.push", { sessionId: s.id, opId: crypto.randomUUID() }))) !==
         undefined;
     }
-    setBusy(false);
+    setBusy(undefined);
     if (!head) return;
     toast(pushed ? "Committed and pushed" : `Committed ${head.head.slice(0, 7)}`, "ok");
     setMessage("");
@@ -56,11 +58,20 @@ export function CommitSheet({
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <Button onPress={() => onOpenChange(false)}>Cancel</Button>
-        <Button isDisabled={busy || !message.trim()} onPress={() => void commit(true)}>
-          Commit and Push
+        <Button
+          isPending={busy === "push"}
+          isDisabled={busy === "commit" || !message.trim()}
+          onPress={() => void commit(true)}
+        >
+          {busy === "push" ? "Committing and pushing…" : "Commit and Push"}
         </Button>
-        <Button variant="primary" isDisabled={busy || !message.trim()} onPress={() => void commit(false)}>
-          {busy ? "Committing…" : "Commit"}
+        <Button
+          variant="primary"
+          isPending={busy === "commit"}
+          isDisabled={busy === "push" || !message.trim()}
+          onPress={() => void commit(false)}
+        >
+          {busy === "commit" ? "Committing…" : "Commit"}
         </Button>
       </div>
     </Sheet>

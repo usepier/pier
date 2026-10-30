@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-/** What a New Session sheet opens with. */
+/** What the New Session page opens with. */
 export interface NewSessionPreset {
   branch?: string;
   prompt?: string;

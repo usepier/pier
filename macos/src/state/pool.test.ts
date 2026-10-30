@@ -7,6 +7,8 @@ const repo = (p: Partial<Repo>): Repo => ({
   hasPier: true,
   imageKind: "",
   baking: false,
+  needsImage: false,
+  imageMonthlyUsd: 0,
   poolTarget: 1,
   poolReady: 0,
   poolFilling: 0,
@@ -28,9 +30,28 @@ describe("pool state", () => {
     expect(poolState(repo({}), false, true).kind).toBe("filling");
     const off = poolState(repo({}), false, false);
     expect([off.kind, off.short]).toEqual(["short", "pool 0/1 · empty"]);
-    expect(off.detail).toContain("Refill pools is off");
+    expect(off.detail).toContain("Not refilling on its own");
     expect(poolState(repo({}), true, false).short).toBe("pool 0/1 · refilling soon");
     expect(poolState(repo({ checkout: undefined }), true, false).short).toBe("pool 0/1 · no clone");
     expect(poolState(repo({ poolTarget: 0 }), false, false).kind).toBe("none");
+  });
+});
+
+describe("a repo that needs its image", () => {
+  it("says the pool waits for it, and offers no fill", () => {
+    const st = poolState(repo({ needsImage: true }), false, false);
+    expect(st.kind).toBe("none");
+    expect(st.detail).toContain("Waits for the session image");
+  });
+});
+
+describe("a pool whose last fill failed", () => {
+  it("says why, unless a fill is on its way", () => {
+    const failed = repo({
+      poolError: { at: new Date().toISOString(), message: ".pier/setup.sh failed (exit 2)" },
+    });
+    expect(poolState(failed, false, false).kind).toBe("failed");
+    expect(poolState(failed, false, false).detail).toContain(".pier/setup.sh failed (exit 2)");
+    expect(poolState(failed, false, true).kind).toBe("filling");
   });
 });

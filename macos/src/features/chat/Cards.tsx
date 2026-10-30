@@ -18,6 +18,15 @@ type Decision = {
 };
 type Decide = (d: Decision) => Promise<void>;
 
+/** Which answer is on its way ("allow:", "deny:", "allow:<mode>"), if one is. */
+type Busy = string | undefined;
+const answerKey = (d: Decision) => `${d.behavior}:${("mode" in d && d.mode) || ""}`;
+
+/** The answer key's button shows it on its way; the others wait. */
+function pending(busy: Busy, key: string) {
+  return { isPending: busy === key, isDisabled: !!busy && busy !== key };
+}
+
 /** What a chat's agent waits on, pinned above the composer until answered. */
 export function PendingCard({
   sessionId,
@@ -32,11 +41,12 @@ export function PendingCard({
   agentName: string;
   req: PermissionRequest;
 }) {
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<Busy>();
   const decide: Decide = async (d) => {
-    setBusy(true);
+    if (busy) return;
+    setBusy(answerKey(d));
     await attempt(() => rpc.call("chat.decide", { sessionId, chatId, requestId: req.id, ...d }));
-    setBusy(false);
+    setBusy(undefined);
   };
   switch (req.kind) {
     case "question":
@@ -70,7 +80,7 @@ function PermissionCard({
 }: {
   req: PermissionRequest;
   agentName: string;
-  busy: boolean;
+  busy: Busy;
   decide: Decide;
 }) {
   const [why, setWhy] = useState<string | null>(null);
@@ -137,27 +147,31 @@ function PermissionCard({
         </span>
         <div className="flex-1" />
         {why === null ? (
-          <Button size="sm" isDisabled={busy} onPress={() => setWhy("")}>
+          <Button size="sm" isDisabled={!!busy} onPress={() => setWhy("")}>
             Deny…
           </Button>
         ) : (
           <Button
             size="sm"
-            isDisabled={busy}
+            {...pending(busy, "deny:")}
             onPress={() => void decide({ behavior: "deny", message: why.trim() || undefined })}
           >
             Deny
           </Button>
         )}
         {req.allowSession && (
-          <Button size="sm" isDisabled={busy} onPress={() => void decide({ behavior: "allowSession" })}>
+          <Button
+            size="sm"
+            {...pending(busy, "allowSession:")}
+            onPress={() => void decide({ behavior: "allowSession" })}
+          >
             Allow for this chat
           </Button>
         )}
         <Button
           size="sm"
           variant="primary"
-          isDisabled={busy}
+          {...pending(busy, "allow:")}
           onPress={() => void decide({ behavior: "allow" })}
         >
           Allow
@@ -175,7 +189,7 @@ function QuestionCard({
 }: {
   req: PermissionRequest;
   agentName: string;
-  busy: boolean;
+  busy: Busy;
   decide: Decide;
 }) {
   const questions = req.questions ?? [];
@@ -217,7 +231,7 @@ function QuestionCard({
         <div className="flex-1" />
         <Button
           size="sm"
-          isDisabled={busy}
+          {...pending(busy, "deny:")}
           onPress={() =>
             void decide({
               behavior: "deny",
@@ -228,7 +242,13 @@ function QuestionCard({
         >
           Skip
         </Button>
-        <Button size="sm" variant="primary" isDisabled={busy || answered === 0} onPress={submit}>
+        <Button
+          size="sm"
+          variant="primary"
+          isPending={busy === "allow:"}
+          isDisabled={(!!busy && busy !== "allow:") || answered === 0}
+          onPress={submit}
+        >
           {answered < questions.length && answered > 0
             ? `Answer ${answered} of ${questions.length}`
             : "Answer"}
@@ -434,7 +454,7 @@ function PlanCard({
   req: PermissionRequest;
   agent: string;
   agentName: string;
-  busy: boolean;
+  busy: Busy;
   decide: Decide;
 }) {
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -473,13 +493,14 @@ function PlanCard({
       <div className="flex flex-wrap items-center gap-2 px-4 pt-3 pb-3.5">
         <div className="flex-1" />
         {feedback === null ? (
-          <Button size="sm" isDisabled={busy} onPress={() => setFeedback("")}>
+          <Button size="sm" isDisabled={!!busy} onPress={() => setFeedback("")}>
             Keep planning…
           </Button>
         ) : (
           <Button
             size="sm"
-            isDisabled={busy || !feedback.trim()}
+            isPending={busy === "deny:"}
+            isDisabled={(!!busy && busy !== "deny:") || !feedback.trim()}
             onPress={() => void decide({ behavior: "deny", message: feedback.trim() })}
           >
             Send feedback
@@ -490,7 +511,7 @@ function PlanCard({
             key={m.mode}
             size="sm"
             variant={i === modes.length - 1 ? "primary" : "secondary"}
-            isDisabled={busy}
+            {...pending(busy, `allow:${m.mode}`)}
             onPress={() => void decide({ behavior: "allow", mode: m.mode })}
           >
             {m.label}

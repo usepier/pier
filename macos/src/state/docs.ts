@@ -28,6 +28,9 @@ interface Docs {
 
 export const docId = (kind: Doc["kind"], path: string) => `${kind}:${path}`;
 
+/** A chat's tab id. */
+export const chatTab = (id: string) => `chat:${id}`;
+
 export const useDocs = create<Docs>()(
   persist(
     (set) => ({

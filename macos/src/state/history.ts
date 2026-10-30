@@ -1,28 +1,51 @@
-// Recent load readings per session, for sparklines. Kept for as long as the
-// app runs; nothing about history lives in pier.
-import { useSyncExternalStore } from "react";
-import type { Resources } from "@/api/protocol.gen";
+// Recent load readings per session, for graphs. A session sends the last
+// few minutes when its environment is first watched, then a reading every
+// few seconds; the app keeps them for as long as it runs.
+import { useEffect, useSyncExternalStore } from "react";
+import { useWatch } from "@/api/live";
+import type { Env, Resources, Session } from "@/api/protocol.gen";
+import { readable } from "@/lib/session";
 
-const LIMIT = 60;
-const series = new Map<string, { cpu: number[]; mem: number[]; at: number }>();
+/** How far back a graph goes. */
+export const LOAD_WINDOW_MS = 10 * 60_000;
+
+export interface Reading {
+  t: number;
+  cpu: number;
+  mem: number;
+}
+
+const series = new Map<string, Reading[]>();
 const listeners = new Set<() => void>();
 let version = 0;
 
-/** Records a reading, at most one per few seconds per session. */
-export function recordLoad(id: string, r: Resources | undefined | null) {
-  if (!r) return;
-  const s = series.get(id) ?? { cpu: [], mem: [], at: 0 };
-  const now = Date.now();
-  if (now - s.at < 4000) return;
-  s.at = now;
-  s.cpu = [...s.cpu, r.cpu].slice(-LIMIT);
-  s.mem = [...s.mem, r.memTotal ? (r.memUsed / r.memTotal) * 100 : 0].slice(-LIMIT);
-  series.set(id, s);
+function add(id: string, readings: Reading[]) {
+  const merged = [...(series.get(id) ?? []), ...readings].sort((a, b) => a.t - b.t);
+  const cut = Date.now() - LOAD_WINDOW_MS;
+  const out: Reading[] = [];
+  for (const r of merged) {
+    const last = out[out.length - 1];
+    // The same reading comes again with every watch that starts.
+    if (r.t < cut || (last && r.t - last.t < 2000)) continue;
+    out.push(r);
+  }
+  series.set(id, out);
   version++;
   for (const l of listeners) l();
 }
 
-export function useLoadHistory(id: string): { cpu: number[]; mem: number[] } {
+/** Takes the readings an environment message carries: its history, and its newest. */
+export function feedLoad(id: string, e: Env | undefined) {
+  if (!e) return;
+  const readings = (e.load ?? []).map((p) => ({ t: Date.parse(p.at), cpu: p.cpu, mem: p.memUsed }));
+  if (e.resources) readings.push({ t: Date.parse(e.at), cpu: e.resources.cpu, mem: e.resources.memUsed });
+  if (readings.length) add(id, readings);
+}
+
+/** A session's load as it comes: the readings for its graphs, and the newest. */
+export function useLoad(s: Session): { readings: Reading[]; now: Resources | undefined } {
+  const env = useWatch("env", { id: s.id }, { enabled: readable(s) });
+  useEffect(() => feedLoad(s.id, env.data), [env.data, s.id]);
   useSyncExternalStore(
     (fn) => {
       listeners.add(fn);
@@ -30,5 +53,5 @@ export function useLoadHistory(id: string): { cpu: number[]; mem: number[] } {
     },
     () => version,
   );
-  return series.get(id) ?? { cpu: [], mem: [] };
+  return { readings: series.get(s.id) ?? [], now: env.data?.resources ?? s.resources };
 }

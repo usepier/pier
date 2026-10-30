@@ -3,7 +3,7 @@ import { useState } from "react";
 import { rpc } from "@/api/client";
 import { useWatch } from "@/api/live";
 import type { Session } from "@/api/protocol.gen";
-import { composeInto } from "@/features/github/PRPanel";
+import { ComposeButton } from "@/features/github/PRPanel";
 import { plural } from "@/lib/format";
 import { useComments } from "@/state/comments";
 import { docId, useDocs } from "@/state/docs";
@@ -45,15 +45,15 @@ export function ChangesPanel({ session: s }: { session: Session }) {
   };
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-separator px-3 py-2.5">
-        <div className="flex items-center gap-1.5 text-sm">
-          <GitBranch size={13} className="shrink-0 text-secondary" />
+      <div className="shrink-0 border-b border-separator px-4 pt-3.5 pb-3.5">
+        <div className="flex items-center gap-2 text-base">
+          <GitBranch size={14} className="shrink-0 text-secondary" />
           <span className="selectable min-w-0 truncate font-medium">{c.branch || "detached HEAD"}</span>
           {c.baseRef && (
             <span className="shrink-0 text-tertiary">← {c.baseRef.replace(/^origin\//, "")}</span>
           )}
         </div>
-        <div className="mt-1 text-xs text-secondary">
+        <div className="mt-1.5 text-sm text-secondary">
           {c.files.length ? (
             <>
               {plural(c.files.length, "file")} · <span className="text-ok">+{added}</span>{" "}
@@ -72,7 +72,7 @@ export function ChangesPanel({ session: s }: { session: Session }) {
           {!c.live && c.asOf && " · as of the last look"}
         </div>
       </div>
-      <ul className="min-h-0 flex-1 overflow-y-auto py-1">
+      <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {c.files.map((f) => {
           const [dir, name] = splitPath(f.path);
           const on = activeDoc === docId("diff", f.path);
@@ -84,7 +84,7 @@ export function ChangesPanel({ session: s }: { session: Session }) {
                   open(s.id, { kind: "diff", path: f.path, oldPath: f.oldPath, status: f.status })
                 }
                 title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
-                className={`flex h-6 w-full items-center gap-2 px-3 text-left text-sm ${on ? "bg-selected" : "hover:bg-hover"}`}
+                className={`flex h-8 w-full items-center gap-2.5 rounded-[7px] px-2 text-left text-sm ${on ? "bg-selected" : "hover:bg-hover"}`}
               >
                 <StatusMark status={f.status} />
                 <span className="min-w-0 flex-1 truncate">
@@ -108,7 +108,7 @@ export function ChangesPanel({ session: s }: { session: Session }) {
         })}
       </ul>
       {c.live && (
-        <div className="flex shrink-0 flex-wrap gap-1.5 border-t border-separator p-2.5">
+        <div className="flex shrink-0 flex-wrap gap-2 border-t border-separator px-4 py-3">
           {comments > 0 && (
             <Button size="sm" variant="primary" icon={<Send size={11} />} onPress={() => void sendReview(s)}>
               Send {plural(comments, "comment")}
@@ -125,19 +125,16 @@ export function ChangesPanel({ session: s }: { session: Session }) {
           <Button
             size="sm"
             icon={<ArrowUpFromLine size={11} />}
-            isDisabled={pushing || unpushed === 0}
+            isPending={pushing}
+            isDisabled={unpushed === 0}
             onPress={() => void push()}
           >
             {pushing ? "Pushing…" : "Push"}
           </Button>
           {!s.pr && (
-            <Button
-              size="sm"
-              icon={<GitPullRequest size={11} />}
-              onPress={() => void composeInto(s, "createPR")}
-            >
+            <ComposeButton session={s} kind="createPR" icon={<GitPullRequest size={11} />}>
               Create PR…
-            </Button>
+            </ComposeButton>
           )}
         </div>
       )}

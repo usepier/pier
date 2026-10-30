@@ -1,5 +1,7 @@
 import type { ComponentProps, ReactNode } from "react";
 import { Button as AriaButton } from "react-aria-components";
+import { useBusy } from "@/lib/useBusy";
+import { Spinner } from "./Spinner";
 
 type Variant = "primary" | "secondary" | "plain" | "danger";
 
@@ -19,7 +21,8 @@ export interface ButtonProps extends Omit<ComponentProps<typeof AriaButton>, "ch
 }
 
 /** A button: primary for the one action that moves things on, secondary
- * for the rest, plain inside toolbars and rows. */
+ * for the rest, plain inside toolbars and rows. isPending says its action
+ * runs: a spinner in its icon's place, and no second press. */
 export function Button({
   variant = "secondary",
   size = "md",
@@ -32,12 +35,24 @@ export function Button({
   return (
     <AriaButton
       {...rest}
-      className={`inline-flex cursor-pointer items-center justify-center rounded-ctl font-medium whitespace-nowrap select-none outline-none transition-[filter,background-color,color] duration-100 disabled:cursor-default disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${sz} ${variants[variant]} ${className}`}
+      className={`inline-flex cursor-pointer items-center justify-center rounded-ctl font-medium whitespace-nowrap select-none outline-none transition-[filter,background-color,color] duration-100 disabled:cursor-default disabled:opacity-40 data-pending:cursor-progress focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${sz} ${variants[variant]} ${className}`}
     >
-      {icon}
+      {rest.isPending ? <Spinner size={size === "sm" ? 11 : 12} /> : icon}
       {children}
     </AriaButton>
   );
+}
+
+/**
+ * A Button whose action takes a while (it asks pier for something): pending
+ * — a spinner, no second press — until the action is done.
+ */
+export function ActionButton({
+  action,
+  ...props
+}: Omit<ButtonProps, "onPress" | "isPending"> & { action: () => Promise<unknown> }) {
+  const [busy, run] = useBusy();
+  return <Button {...props} isPending={busy} onPress={() => void run(action)} />;
 }
 
 /** A square, borderless button for an icon: toolbars, rows, cards. */
@@ -55,9 +70,9 @@ export function IconButton({
     <AriaButton
       aria-label={label}
       {...rest}
-      className={`inline-flex shrink-0 cursor-pointer items-center justify-center rounded-ctl text-tertiary outline-none transition-colors duration-100 hover:bg-hover hover:text-label data-pressed:bg-selected disabled:cursor-default disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-accent ${size === "sm" ? "size-6" : "size-7"} ${className}`}
+      className={`inline-flex shrink-0 cursor-pointer items-center justify-center rounded-ctl text-tertiary outline-none transition-colors duration-100 hover:bg-hover hover:text-label data-pressed:bg-selected disabled:cursor-default disabled:opacity-35 data-pending:cursor-progress focus-visible:outline-2 focus-visible:outline-accent ${size === "sm" ? "size-6" : "size-7"} ${className}`}
     >
-      {children}
+      {rest.isPending ? <Spinner size={11} /> : children}
     </AriaButton>
   );
 }

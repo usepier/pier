@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  BrushCleaning,
   ChevronRight,
   CircleCheck,
   CircleDashed,
@@ -11,8 +12,6 @@ import {
   GitMerge,
   GitPullRequest,
   MessageSquare,
-  RotateCw,
-  Trash2,
   Wrench,
 } from "lucide-react";
 import { useState } from "react";
@@ -21,14 +20,18 @@ import type { PRCheck, PRDetail, Session } from "@/api/protocol.gen";
 import { RpcError } from "@/api/rpc";
 import { inTauri } from "@/api/transport";
 import { confirm } from "@/lib/confirm";
+import { useBusy } from "@/lib/useBusy";
 import { currentChat, showChat } from "@/state/currentChat";
 import { useDrafts } from "@/state/drafts";
 import { attempt, toast, toastError } from "@/state/toasts";
 import { Badge } from "@/ui/Badge";
 import { Button } from "@/ui/Button";
 import { LogView } from "@/ui/LogView";
+import { Nothing, rowClass, Section } from "@/ui/Section";
 import { Spinner } from "@/ui/Spinner";
 import { Markdown } from "../chat/Markdown";
+import { cleanUp } from "./cleanup";
+import { GitHubHTML } from "./GitHubHTML";
 
 function open(url: string) {
   if (inTauri) void openUrl(url);
@@ -46,6 +49,37 @@ async function composeInto(s: Session, kind: "fixCI" | "addressComments" | "crea
 }
 
 export { composeInto };
+
+/**
+ * A button that has pier write a prompt into the composer — which can take
+ * a while (a failing check's logs come from GitHub) — saying so meanwhile.
+ */
+export function ComposeButton({
+  session: s,
+  kind,
+  icon,
+  variant,
+  children,
+}: {
+  session: Session;
+  kind: "fixCI" | "addressComments" | "createPR";
+  icon?: React.ReactNode;
+  variant?: "primary" | "secondary";
+  children: React.ReactNode;
+}) {
+  const [busy, run] = useBusy();
+  return (
+    <Button
+      size="sm"
+      variant={variant}
+      icon={icon}
+      isPending={busy}
+      onPress={() => void run(() => composeInto(s, kind))}
+    >
+      {children}
+    </Button>
+  );
+}
 
 const reviewText: Record<string, [string, "ok" | "warn" | "neutral"]> = {
   approved: ["approved", "ok"],
@@ -71,8 +105,16 @@ export function PRPanel({ session: s }: { session: Session }) {
     refetchInterval: s.pr?.checks === "pending" ? 15_000 : 45_000,
     retry: false,
   });
+  const onGitHub = /^[^/:]+\/[^/]+\/[^/]+$/.test(s.origin ?? "");
+  if (!s.pr && onGitHub && !s.prChecked) {
+    // Not asked yet: no pull request shown isn't "none".
+    return (
+      <div className="flex items-center justify-center gap-2 p-6 text-sm text-secondary">
+        <Spinner size={12} /> Checking GitHub…
+      </div>
+    );
+  }
   if (!s.pr) {
-    const onGitHub = /^[^/:]+\/[^/]+\/[^/]+$/.test(s.origin ?? "");
     return (
       <div className="flex flex-col items-center gap-3 p-6 text-center">
         <GitPullRequest size={22} strokeWidth={1.5} className="text-tertiary" />
@@ -80,9 +122,9 @@ export function PRPanel({ session: s }: { session: Session }) {
           {onGitHub ? `No pull request for ${s.branch} yet.` : "This repository isn't on GitHub."}
         </div>
         {onGitHub && (
-          <Button size="sm" onPress={() => void composeInto(s, "createPR")}>
+          <ComposeButton session={s} kind="createPR">
             Ask the agent to open one…
-          </Button>
+          </ComposeButton>
         )}
       </div>
     );
@@ -90,21 +132,15 @@ export function PRPanel({ session: s }: { session: Session }) {
   if (pr.error && !pr.data) {
     return <div className="selectable p-4 text-sm text-bad">{(pr.error as Error).message}</div>;
   }
-  if (!pr.data) {
-    return (
-      <div className="flex justify-center p-6">
-        <Spinner />
-      </div>
-    );
-  }
-  return <Detail session={s} pr={pr.data} />;
+  // What the overview has shows at once; checks and conversations follow.
+  const shown = pr.data ?? { ...s.pr, id: "", body: "", runs: [], threads: [], reviews: [] };
+  return <Detail session={s} pr={shown} loading={!pr.data} />;
 }
 
-function Detail({ session: s, pr }: { session: Session; pr: PRDetail }) {
+function Detail({ session: s, pr, loading }: { session: Session; pr: PRDetail; loading: boolean }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const failing = pr.runs.filter((r) => r.state === "failing");
-  const runs = [...new Set(failing.map((r) => r.runId).filter(Boolean))] as number[];
   const openThreads = pr.threads.filter((t) => !t.resolved);
   const asked = pr.reviews.some((r) => r.state === "changes_requested");
   const live = pr.state === "open" || pr.state === "draft";
@@ -113,16 +149,16 @@ function Detail({ session: s, pr }: { session: Session; pr: PRDetail }) {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="border-b border-separator px-3 py-3">
+      <div className="border-b border-separator px-4 pt-4 pb-4">
         <button
           type="button"
           onClick={() => open(pr.url)}
-          className="text-left text-base font-medium hover:underline"
+          className="text-left text-md leading-snug font-semibold hover:underline"
           title="Open on GitHub"
         >
           {pr.title} <span className="font-normal text-secondary">#{pr.number}</span>
         </button>
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+        <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
           <Badge
             tone={
               pr.state === "merged"
@@ -137,47 +173,21 @@ function Detail({ session: s, pr }: { session: Session; pr: PRDetail }) {
             {pr.state}
           </Badge>
           {review && live && <Badge tone={review[1]}>{review[0]}</Badge>}
-          {live && pr.mergeable !== "clean" && (
-            <span className="text-secondary">{mergeText[pr.mergeable]}</span>
-          )}
           <span className="text-secondary">
             into {pr.baseRef} · <span className="text-ok">+{pr.additions}</span>{" "}
             <span className="text-bad">−{pr.deletions}</span>
           </span>
         </div>
-        <div className="mt-2.5 flex flex-wrap gap-1.5">
+        <div className="mt-3.5 flex flex-wrap gap-2">
           {failing.length > 0 && live && (
-            <Button
-              size="sm"
-              variant="primary"
-              icon={<Wrench size={11} />}
-              onPress={() => void composeInto(s, "fixCI")}
-            >
+            <ComposeButton session={s} kind="fixCI" variant="primary" icon={<Wrench size={11} />}>
               Fix CI…
-            </Button>
+            </ComposeButton>
           )}
           {(openThreads.length > 0 || asked) && live && (
-            <Button
-              size="sm"
-              icon={<MessageSquare size={11} />}
-              onPress={() => void composeInto(s, "addressComments")}
-            >
+            <ComposeButton session={s} kind="addressComments" icon={<MessageSquare size={11} />}>
               Address comments…
-            </Button>
-          )}
-          {runs.length > 0 && live && (
-            <Button
-              size="sm"
-              icon={<RotateCw size={11} />}
-              onPress={async () => {
-                for (const runId of runs)
-                  await attempt(() => rpc.call("pr.rerun", { sessionId: s.id, runId }));
-                toast("Re-running the failed jobs", "ok");
-                setTimeout(refresh, 3000);
-              }}
-            >
-              Re-run failed
-            </Button>
+            </ComposeButton>
           )}
           <Button size="sm" icon={<ExternalLink size={11} />} onPress={() => open(pr.url)}>
             GitHub
@@ -188,32 +198,44 @@ function Detail({ session: s, pr }: { session: Session; pr: PRDetail }) {
       {pr.state === "merged" && (
         <Cleanup session={s} onRemoved={() => navigate({ to: "/repo/$name", params: { name: s.repo } })} />
       )}
-      {pr.state === "open" && <Merge session={s} pr={pr} onMerged={refresh} />}
+      {pr.state === "open" && !loading && <Merge session={s} pr={pr} onMerged={refresh} />}
 
       <Section
-        title={`Checks${pr.runs.length ? ` · ${pr.runs.filter((r) => r.state === "passing").length}/${pr.runs.length} passing` : ""}`}
+        title={`Checks${
+          loading
+            ? pr.checksTotal
+              ? ` · ${pr.checksPassed}/${pr.checksTotal} passing`
+              : ""
+            : pr.runs.length
+              ? ` · ${pr.runs.filter((r) => r.state === "passing").length}/${pr.runs.length} passing`
+              : ""
+        }`}
       >
-        {pr.runs.length === 0 ? (
-          <div className="px-3 py-1 text-sm text-secondary">No checks ran on this head.</div>
+        {loading ? (
+          <div className="flex items-center gap-2 py-1 text-sm text-secondary">
+            <Spinner size={11} /> Loading checks…
+          </div>
+        ) : pr.runs.length === 0 ? (
+          <Nothing>No checks ran on this head.</Nothing>
         ) : (
           pr.runs.map((r, i) => <CheckRow key={`${r.name}-${i}`} session={s} check={r} />)
         )}
       </Section>
 
       {openThreads.length > 0 && (
-        <Section title={`Open conversations · ${openThreads.length}`}>
+        <Section title="Open conversations" count={openThreads.length}>
           {openThreads.map((t, i) => (
-            <div key={i} className="border-t border-separator px-3 py-2 first:border-t-0">
-              <div className="truncate font-mono text-[11px] text-secondary">
+            <div key={i} className="mt-3 rounded-card border border-separator px-3.5 py-3 first:mt-0">
+              <div className="truncate font-mono text-[11px] text-tertiary">
                 {t.path}
                 {t.line ? `:${t.line}` : ""}
                 {t.outdated && " · outdated"}
               </div>
               {t.comments.map((c, j) => (
-                <div key={j} className="mt-1 text-sm">
-                  <span className="font-medium">{c.author}</span>
+                <div key={j} className="mt-2.5 text-sm">
+                  <div className="mb-0.5 font-medium">{c.author}</div>
                   <div className="text-label/90">
-                    <Markdown text={c.body} />
+                    {c.html ? <GitHubHTML html={c.html} /> : <Markdown text={c.body} />}
                   </div>
                 </div>
               ))}
@@ -227,26 +249,20 @@ function Detail({ session: s, pr }: { session: Session; pr: PRDetail }) {
           {pr.reviews
             .filter((r) => r.body.trim())
             .map((r, i) => (
-              <div key={i} className="border-t border-separator px-3 py-2 text-sm first:border-t-0">
-                <div className="flex items-center gap-1.5">
+              <div
+                key={i}
+                className="mt-3 rounded-card border border-separator px-3.5 py-3 text-sm first:mt-0"
+              >
+                <div className="mb-1 flex items-center gap-2">
                   <span className="font-medium">{r.author}</span>
                   <span className="text-xs text-secondary">{r.state.replace("_", " ")}</span>
                 </div>
-                <Markdown text={r.body} />
+                {r.html ? <GitHubHTML html={r.html} /> : <Markdown text={r.body} />}
               </div>
             ))}
         </Section>
       )}
     </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="border-b border-separator py-2">
-      <h3 className="px-3 pb-1 text-xs font-semibold text-secondary">{title}</h3>
-      {children}
-    </section>
   );
 }
 
@@ -267,7 +283,7 @@ function CheckRow({ session: s, check: c }: { session: Session; check: PRCheck }
   });
   return (
     <div>
-      <div className="group flex h-7 items-center gap-2 px-3 text-sm hover:bg-hover">
+      <div className={`${rowClass} group text-sm hover:bg-hover`}>
         {checkIcon[c.state as keyof typeof checkIcon] ?? checkIcon.pending}
         <button
           type="button"
@@ -295,7 +311,7 @@ function CheckRow({ session: s, check: c }: { session: Session; check: PRCheck }
         )}
       </div>
       {expanded && (
-        <div className="px-3 pb-2">
+        <div className="pt-1 pb-2">
           {log.data ? (
             <LogView text={log.data.text} className="max-h-72" empty="empty log" />
           ) : log.error ? (
@@ -309,16 +325,7 @@ function CheckRow({ session: s, check: c }: { session: Session; check: PRCheck }
   );
 }
 
-const methods = [
-  ["squash", "Squash and merge"],
-  ["merge", "Merge commit"],
-  ["rebase", "Rebase and merge"],
-] as const;
-
 function Merge({ session: s, pr, onMerged }: { session: Session; pr: PRDetail; onMerged: () => void }) {
-  const [method, setMethod] = useState<(typeof methods)[number][0]>(
-    () => (localStorage.getItem("pier.mergeMethod") as "squash") ?? "squash",
-  );
   const [busy, setBusy] = useState(false);
   const blocked = pr.mergeable === "conflicts" || pr.mergeable === "blocked";
   const merge = async () => {
@@ -340,9 +347,9 @@ function Merge({ session: s, pr, onMerged }: { session: Session; pr: PRDetail; o
       return;
     setBusy(true);
     try {
-      // Merges only what was shown here: if someone pushed since, GitHub refuses.
-      await rpc.call("pr.merge", { sessionId: s.id, method, expectedHeadOid: pr.headOid });
-      localStorage.setItem("pier.mergeMethod", method);
+      // Merges only what was shown here: if someone pushed since, GitHub
+      // refuses. The method is the repository's default, as on GitHub.
+      await rpc.call("pr.merge", { sessionId: s.id, expectedHeadOid: pr.headOid });
       toast(`Merged #${pr.number}`, "ok");
       onMerged();
     } catch (e) {
@@ -355,24 +362,16 @@ function Merge({ session: s, pr, onMerged }: { session: Session; pr: PRDetail; o
     }
   };
   return (
-    <div className="flex items-center gap-1.5 border-b border-separator px-3 py-2.5">
-      <select
-        aria-label="Merge method"
-        value={method}
-        onChange={(e) => setMethod(e.target.value as typeof method)}
-        className="h-[22px] min-w-0 flex-1 rounded-ctl border border-separator bg-control px-1.5 text-xs outline-none"
-      >
-        {methods.map(([m, label]) => (
-          <option key={m} value={m}>
-            {label}
-          </option>
-        ))}
-      </select>
+    <div className="flex items-center gap-3 border-b border-separator px-4 py-3">
+      <span className="min-w-0 flex-1 text-sm text-secondary">
+        {pr.mergeable === "clean" ? "Ready to merge" : mergeText[pr.mergeable]}
+      </span>
       <Button
         size="sm"
         variant="primary"
         icon={<GitMerge size={11} />}
-        isDisabled={busy || blocked}
+        isPending={busy}
+        isDisabled={blocked}
         onPress={() => void merge()}
       >
         {busy ? "Merging…" : "Merge"}
@@ -381,33 +380,13 @@ function Merge({ session: s, pr, onMerged }: { session: Session; pr: PRDetail; o
   );
 }
 
+/** Cleaning up leaves the page at once: the session's row says it's going. */
 function Cleanup({ session: s, onRemoved }: { session: Session; onRemoved: () => void }) {
-  const [busy, setBusy] = useState(false);
   return (
-    <div className="flex items-center gap-2 border-b border-separator bg-merged/8 px-3 py-2.5 text-sm">
+    <div className="flex items-center gap-3 border-b border-separator bg-merged/8 px-4 py-3 text-sm">
       <GitMerge size={14} className="shrink-0 text-merged" />
-      <span className="flex-1">Merged. Remove the session once nothing in it is left behind.</span>
-      <Button
-        size="sm"
-        icon={<Trash2 size={11} />}
-        isDisabled={busy}
-        onPress={async () => {
-          if (
-            !(await confirm(`Remove ${s.name}?`, "Its pull request merged; the VM and its disk go.", {
-              ok: "Remove",
-              destructive: true,
-            }))
-          )
-            return;
-          setBusy(true);
-          const ok = await attempt(() => rpc.call("sessions.removeMerged", { id: s.id }));
-          setBusy(false);
-          if (ok !== undefined) {
-            toast(`Removed ${s.name}`, "ok");
-            onRemoved();
-          }
-        }}
-      >
+      <span className="flex-1">Merged. Clean it up once nothing in it is left behind.</span>
+      <Button size="sm" icon={<BrushCleaning size={11} />} onPress={() => void cleanUp(s, onRemoved)}>
         Clean up
       </Button>
     </div>

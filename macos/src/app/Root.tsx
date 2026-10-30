@@ -1,19 +1,20 @@
-import { useRouterState } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { rpc } from "@/api/client";
 import { useStatus } from "@/api/live";
 import { AccountBanner } from "@/features/auth/AccountBanner";
 import { QuickOpen } from "@/features/files/QuickOpen";
-import { NewSessionSheet } from "@/features/newSession/NewSessionSheet";
 import { Palette } from "@/features/palette/Palette";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { applyAccent } from "@/lib/theme";
 import { useForgetGone } from "@/state/forget";
 import { useJobsBootstrap } from "@/state/jobs";
-import { useActivityReporting, useLoadRecorder } from "@/state/overview";
+import { useActivityReporting } from "@/state/overview";
 import { usePrefs } from "@/state/prefs";
 import { startProxy } from "@/state/proxy";
 import { toast } from "@/state/toasts";
+import { useUI } from "@/state/ui";
+import { ConfirmHost } from "@/ui/ConfirmHost";
 import { Toasts } from "@/ui/Toasts";
 import { useAppCommands } from "./appCommands";
 import { useAttentionEffects } from "./attention";
@@ -27,7 +28,6 @@ let sentToSetup = false;
 export function Root() {
   useAppCommands();
   useActivityReporting();
-  useLoadRecorder();
   useForgetGone();
   useJobsBootstrap();
   useAttentionEffects();
@@ -88,10 +88,27 @@ export function Root() {
           </>
         }
       />
-      <NewSessionSheet />
+      <NewSessionOpener />
       <QuickOpen />
       <Palette />
       <Toasts />
+      <ConfirmHost />
     </>
   );
+}
+
+/** New Session is a page: whatever asks for it (a button, ⌘N, a link) goes there. */
+function NewSessionOpener() {
+  const req = useUI((s) => s.newSession);
+  const close = useUI((s) => s.closeNewSession);
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!req.open) return;
+    close();
+    navigate({
+      to: "/new",
+      search: { repo: req.repo, branch: req.preset?.branch, prompt: req.preset?.prompt },
+    });
+  }, [req, close, navigate]);
+  return null;
 }

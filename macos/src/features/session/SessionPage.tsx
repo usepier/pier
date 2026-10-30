@@ -10,8 +10,9 @@ import { PRPanel } from "@/features/github/PRPanel";
 import { JobProgress } from "@/features/jobs/JobProgress";
 import { ChangesPanel } from "@/features/review/ChangesPanel";
 import { preloadDiffs } from "@/features/review/DiffView";
-import { age } from "@/lib/format";
+import { age, until } from "@/lib/format";
 import { readable, running } from "@/lib/session";
+import { useNow } from "@/lib/useNow";
 import { type InspectorTab, useInspector } from "@/state/inspector";
 import { useRunningJobs } from "@/state/jobs";
 import { useSession } from "@/state/overview";
@@ -124,7 +125,9 @@ function Idle({ session: s }: { session: Session }) {
       >
         <Button
           variant="primary"
-          isDisabled={waking || !s.hasKey}
+          icon={<Power size={13} />}
+          isPending={waking}
+          isDisabled={!s.hasKey}
           onPress={async () => {
             setWaking(true);
             await attempt(() => rpc.call("sessions.resume", { id: s.id }));
@@ -145,9 +148,20 @@ function Idle({ session: s }: { session: Session }) {
   return <Empty title="Not reachable from this Mac" />;
 }
 
+/** When the session stops on its own, if it will. */
+function stops(s: Session): string | undefined {
+  const park = until(s.parkAt);
+  if (park) return `parks in ${park}`;
+  const cap = until(s.capAt);
+  if (cap) return `runaway cap in ${cap}`;
+  return undefined;
+}
+
 function Details({ session: s }: { session: Session }) {
+  useNow(30_000); // the countdown moves on
+  const stop = stops(s);
   return (
-    <div className="p-3">
+    <div className="px-4 py-4">
       <Facts
         rows={[
           ["State", s.activity || s.label],
@@ -156,6 +170,7 @@ function Details({ session: s }: { session: Session }) {
           ["Based on", s.base || "—"],
           ["Machine", s.machineType],
           ["Cost", s.costNote],
+          ...(stop ? ([["Stops", stop]] as [string, string][]) : []),
           ["Created", s.createdAt ? `${age(s.createdAt)} ago` : "—"],
           ...(s.failReason ? ([["Failed", s.failReason]] as [string, string][]) : []),
         ]}

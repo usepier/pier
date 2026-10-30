@@ -53,20 +53,19 @@ describe("chat changes", () => {
 });
 
 describe("grouping", () => {
-  it("folds finished runs of steps between messages", () => {
+  it("makes each run of steps between messages one block", () => {
     const blocks = groupItems([user("u"), tool("1"), tool("2", "edit"), tool("3"), user("v")]);
     expect(blocks.map((b) => b.kind)).toEqual(["item", "steps", "item"]);
     expect(summarize((blocks[1] as { items: ChatItem[] }).items)).toBe("Ran 2 commands, edited 1 file");
   });
-  it("keeps the run in progress open, and short runs as they are", () => {
-    expect(
-      groupItems([tool("1"), tool("2"), tool("3", "bash", "running")]).every((b) => b.kind === "item"),
-    ).toBe(true);
-    expect(groupItems([tool("1"), tool("2"), user("u")]).map((b) => b.kind)).toEqual([
-      "item",
-      "item",
-      "item",
-    ]);
+  it("keeps a run the same block as it grows, live while its last step runs", () => {
+    const at = (items: ChatItem[]) =>
+      groupItems(items).map((b) => (b.kind === "steps" ? [b.id, b.live] : b.kind));
+    expect(at([user("u"), tool("1", "bash", "running")])).toEqual(["item", ["1", true]]);
+    expect(at([user("u"), tool("1"), tool("2", "bash", "running")])).toEqual(["item", ["1", true]]);
+    expect(at([user("u"), tool("1"), tool("2"), tool("3")])).toEqual(["item", ["1", false]]);
+    // A run that's over isn't live, whatever its steps say.
+    expect(at([tool("1", "bash", "running"), user("u")])).toEqual([["1", false], "item"]);
   });
 });
 

@@ -1,12 +1,14 @@
 // How a transcript reads: an agent's run of tool calls between two
-// messages folds into one "steps" block once it is done, so a long turn
-// reads as what was said and what was done.
+// messages is one "steps" block, so a long turn reads as what was said and
+// what was done. A block is the same block from its first step to its
+// last — steps join it, it never breaks apart — so the transcript doesn't
+// jump as the agent works, and what's open stays open.
 import type { ChatItem, ToolCall } from "@/api/protocol.gen";
 
-export type Block = { kind: "item"; item: ChatItem } | { kind: "steps"; id: string; items: ChatItem[] };
-
-/** Runs shorter than this stay as they are. */
-const minRun = 3;
+export type Block =
+  | { kind: "item"; item: ChatItem }
+  /** live: the run the agent is still working on (its last step runs). */
+  | { kind: "steps"; id: string; items: ChatItem[]; live: boolean };
 
 function stepLike(i: ChatItem): boolean {
   if (i.kind === "thinking") return true;
@@ -21,13 +23,8 @@ export function groupItems(items: ChatItem[], expand = false): Block[] {
   const out: Block[] = [];
   let run: ChatItem[] = [];
   const flush = (last: boolean) => {
-    // The run still being worked on stays open; finished ones fold.
-    const busy = run.some((i) => i.tool?.status === "running");
-    if (run.length >= minRun && !(last && busy)) {
-      out.push({ kind: "steps", id: run[0]!.id, items: run });
-    } else {
-      for (const item of run) out.push({ kind: "item", item });
-    }
+    const live = last && run.some((i) => i.tool?.status === "running");
+    out.push({ kind: "steps", id: run[0]!.id, items: run, live });
     run = [];
   };
   for (const item of items) {

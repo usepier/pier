@@ -6,7 +6,8 @@ import remarkGfm from "remark-gfm";
 import { inTauri } from "@/api/transport";
 import { highlight } from "@/lib/highlight";
 
-function open(href: string) {
+/** Opens a link in the browser, never in the app's own view. */
+export function open(href: string) {
   if (inTauri) void openUrl(href);
   else window.open(href, "_blank", "noopener");
 }
@@ -57,7 +58,7 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   );
 }
 
-const components: Components = {
+export const components: Components = {
   a: ({ href, children }) => (
     <a
       href={href}

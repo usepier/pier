@@ -1,9 +1,10 @@
 // What a repo's pool is up to, in words: ready, filling, or why it isn't.
 import type { Repo } from "@/api/protocol.gen";
+import { age } from "@/lib/format";
 
 export interface PoolState {
-  /** ready · filling · short (below its size, nothing filling) · none */
-  kind: "ready" | "filling" | "short" | "none";
+  /** ready · filling · failed (its last fill failed) · short (below its size, nothing filling) · none */
+  kind: "ready" | "filling" | "failed" | "short" | "none";
   /** One line for a list. */
   short: string;
   /** What it means, and what to do. */
@@ -16,47 +17,59 @@ export function poolState(r: Repo, autoRefill: boolean, fillRunning: boolean): P
       ? {
           kind: "none",
           short: `pool off · ${r.poolReady} left`,
-          detail: "No pool is kept; the sessions still in it go to new sessions until it is empty.",
+          detail: "Pool off — the ones left go to new sessions.",
         }
       : {
           kind: "none",
           short: "no pool",
-          detail: "No pool is kept: new sessions start from scratch (or from the session image).",
+          detail: "No pool kept.",
         };
   }
   const of = `${r.poolReady}/${r.poolTarget}`;
+  if (r.needsImage) {
+    return {
+      kind: "none",
+      short: `pool ${of} · waits for the image`,
+      detail: "Waits for the session image.",
+    };
+  }
   if (r.poolReady >= r.poolTarget) {
     return {
       kind: "ready",
       short: `pool ${of} ready`,
-      detail: "Ready: the next new session claims one and starts in seconds.",
+      detail: "Ready for the next session.",
     };
   }
   if (r.poolFilling > 0 || fillRunning) {
     return {
       kind: "filling",
       short: `pool ${of} · filling`,
-      detail: `${r.poolFilling || "Sessions"} on the way — a few minutes each. New sessions meanwhile start from the image.`,
+      detail: "Filling — a few minutes.",
     };
   }
-  const stale =
-    r.poolStale > 0 ? ` ${r.poolStale} aged out and ${r.poolStale === 1 ? "is" : "are"} being replaced.` : "";
+  if (r.poolError) {
+    return {
+      kind: "failed",
+      short: `pool ${of} · last fill failed`,
+      detail: `Last fill failed ${age(r.poolError.at)} ago: ${r.poolError.message}.`,
+    };
+  }
   if (!r.checkout || r.checkout.missing) {
     return {
       kind: "short",
       short: `pool ${of} · no clone`,
-      detail: `Below its size, and it can only be filled from a linked clone of ${r.name}.${stale}`,
+      detail: `Needs a linked clone of ${r.name} to fill.`,
     };
   }
   return autoRefill
     ? {
         kind: "short",
         short: `pool ${of} · refilling soon`,
-        detail: `Below its size: pier refills it shortly while the app runs.${stale}`,
+        detail: "Refilling shortly.",
       }
     : {
         kind: "short",
         short: `pool ${of} · empty`,
-        detail: `Below its size, and nothing refills it on its own (Settings ▸ Speed & pools ▸ Refill pools is off). Fill it now, or turn refilling on.${stale}`,
+        detail: "Not refilling on its own — fill it now.",
       };
 }

@@ -5,10 +5,15 @@ import type { Settings } from "@/api/protocol.gen";
 import { applyAccent } from "@/lib/theme";
 import { attempt, toast } from "@/state/toasts";
 import { useAppSections } from "./appSections";
+import { DefaultModel } from "./DefaultModel";
 import { icon } from "./icon";
 import type { Section } from "./model";
 import { useMoreSections } from "./moreSections";
 import { codeSpans, pierItem, type Save } from "./PierSetting";
+
+/** Saves settings in order, as one change. */
+export type SaveAll = (pairs: [string, string][]) => Promise<void>;
+
 import { usePromptItems } from "./PromptItems";
 import { useRepoSections } from "./repoSections";
 
@@ -40,8 +45,11 @@ const pierSections: { group: string; id: string; title: string; icon: typeof Bot
   { group: "app", id: "appearance", title: "Appearance", icon: Palette },
 ];
 
+// The default model's agent, model and effort: one picker, not three rows.
+const modelKeys = new Set(["agents.default", "agents.model", "agents.effort"]);
+
 /** pier's own settings (shared with the CLI and TUI), by group. */
-function usePierSections(settings: Settings | undefined, save: Save): Section[] {
+function usePierSections(settings: Settings | undefined, save: Save, saveAll: SaveAll): Section[] {
   if (!settings) return [];
   return pierSections
     .map((d) => ({
@@ -50,7 +58,22 @@ function usePierSections(settings: Settings | undefined, save: Save): Section[] 
       group: d.group === "app" ? ("This app" as const) : ("pier" as const),
       icon: icon(d.icon),
       description: d.description ? codeSpans(d.description) : undefined,
-      items: settings.settings.filter((s) => s.group === d.group).map((s) => pierItem(s, save)),
+      items: [
+        ...(d.group === "agents"
+          ? [
+              {
+                id: "agents.model",
+                title: "Default model",
+                text: "agent model effort claude codex",
+                description: codeSpans("What new chats run unless you pick another."),
+                control: <DefaultModel settings={settings} save={saveAll} />,
+              },
+            ]
+          : []),
+        ...settings.settings
+          .filter((s) => s.group === d.group && !modelKeys.has(s.key))
+          .map((s) => pierItem(s, save)),
+      ],
     }))
     .filter((s) => s.items.length > 0);
 }
@@ -64,15 +87,19 @@ export function useSections(): {
 } {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["settings"], queryFn: () => rpc.call("settings.get", {}) });
-  const save: Save = async (key, value) => {
-    const next = await attempt(() => rpc.call("settings.set", { key, value }));
-    if (!next) return;
-    qc.setQueryData(["settings"], next);
-    if (key === "theme") applyAccent(value);
+  const saveAll: SaveAll = async (pairs) => {
+    let next: Settings | undefined;
+    for (const [key, value] of pairs) {
+      next = await attempt(() => rpc.call("settings.set", { key, value }));
+      if (!next) return;
+      if (key === "theme") applyAccent(value);
+    }
+    if (next) qc.setQueryData(["settings"], next);
     toast("Saved", "ok");
   };
+  const save: Save = (key, value) => saveAll([[key, value]]);
   const app = useAppSections();
-  const pier = usePierSections(q.data, save);
+  const pier = usePierSections(q.data, save, saveAll);
   const repos = useRepoSections();
   const more = useMoreSections();
   const promptItems = usePromptItems("");

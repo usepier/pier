@@ -15,9 +15,10 @@ import {
   SquareTerminal,
   Wrench,
 } from "lucide-react";
-import { useState } from "react";
 import type { EditView, ToolCall } from "@/api/protocol.gen";
+import { useOpen } from "@/state/disclosure";
 import { Badge } from "@/ui/Badge";
+import { Reveal } from "@/ui/Reveal";
 import { Spinner } from "@/ui/Spinner";
 import { Markdown } from "./Markdown";
 
@@ -72,13 +73,19 @@ function Status({ t }: { t: ToolCall }) {
   }
 }
 
+/** What a tool call's line says: its icon, verb and what it was about. */
+export function toolLine(t: ToolCall) {
+  return {
+    Icon: icons[t.view as keyof typeof icons] ?? Wrench,
+    verb: verbs[t.view] ?? t.name,
+    summary: t.view === "edit" || t.view === "write" || t.view === "read" ? shortPath(t.summary) : t.summary,
+  };
+}
+
 /** One tool call: a line that opens onto what it did. */
-export function ToolView({ tool: t }: { tool: ToolCall }) {
-  const [open, setOpen] = useState(t.view === "todo");
-  const Icon = icons[t.view as keyof typeof icons] ?? Wrench;
-  const verb = verbs[t.view] ?? t.name;
-  const summary =
-    t.view === "edit" || t.view === "write" || t.view === "read" ? shortPath(t.summary) : t.summary;
+export function ToolView({ id, tool: t }: { id: string; tool: ToolCall }) {
+  const [open, setOpen] = useOpen(id, t.view === "todo");
+  const { Icon, verb, summary } = toolLine(t);
   return (
     <div className="text-sm">
       <button
@@ -99,11 +106,11 @@ export function ToolView({ tool: t }: { tool: ToolCall }) {
           className={`shrink-0 opacity-0 transition-transform group-hover:opacity-100 ${open ? "rotate-90" : ""}`}
         />
       </button>
-      {open && (
+      <Reveal open={open}>
         <div className="mt-1 mb-2 ml-5">
           <ToolDetail tool={t} />
         </div>
-      )}
+      </Reveal>
     </div>
   );
 }
