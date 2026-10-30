@@ -407,8 +407,9 @@ protected by the repository's `.gitignore`.
    attach-ready in 72s but `.pier/setup.sh` then ran ~9 min (container
    builds with zero cache hits, dependency stores downloaded from scratch),
    so baked and stock felt the same. The bake therefore also prebuilds: after
-   the hook, the bake instance receives a create's exact cargo off the
-   laptop's HEAD (placeholder branch `pier-prebuild`), bootstraps, and runs
+   the hook, the bake instance receives a create's exact cargo off origin's
+   default branch, freshly fetched (placeholder branch `pier-prebuild`;
+   a repo without an origin uses the laptop's HEAD), bootstraps, and runs
    `.pier/setup.sh` to completion; a failed setup aborts the bake. A scrub
    then deletes, by exact path, every file the files tar delivered, plus
    containers (their config embeds `env_file` values), setup logs and
@@ -476,8 +477,9 @@ protected by the repository's `.gitignore`.
    session's working tree starts exactly as the laptop's, staged edits
    arriving unstaged. Non-ignored untracked files ride in the files tar and
    are extracted after checkout + patch. (Both happen only when the session's
-   base is the laptop's HEAD; a session created off another commit carries no
-   dirty state.) Ignored files travel **only** when **`.pier/include`** names
+   base is the laptop's HEAD, asked for as such; a session from origin's
+   branch — the default — or any other commit carries no dirty state, even
+   when the clone sits on that commit.) Ignored files travel **only** when **`.pier/include`** names
    them: one path or glob per line, matched against the disk with no
    git-status distinction — listed = travels. Directly matched file symlinks
    are dereferenced into regular files at their repo-relative paths;
@@ -668,16 +670,18 @@ in-flight work three seconds to see its cancellation.
   and never into the last of the hour's rate limit. Sessions say why they
   need you (`attention`): an agent waiting, a failed create or setup,
   failing checks, requested changes, a merge to clean up, a pull request
-  ready to merge. `pr.get` reads one in full, `pr.log` a check's log,
-  `pr.rerun` re-runs failed jobs; `pr.merge` merges only at the head that
-  was reviewed (kind `head_moved` otherwise). `chat.compose` writes the
+  ready to merge. `pr.get` reads one in full — its comments and reviews also as GitHub
+  renders them — and `pr.log` a check's log; `pr.merge` merges with the
+  repository's default method, only at the head that was reviewed (kind
+  `head_moved` otherwise). `chat.compose` writes the
   prompt for fixing CI (with the failing logs), addressing review comments
   or opening a pull request, for the composer. Those prompts, the
   onboarding one and the heading of review comments are the user's to
   word (`prompts.get`, `prompts.set`; `[prompts]` in config.toml), for
   every repo or one (`[prompts.repos.<repo>]`). `sessions.removeMerged` removes a merged
   session only when everything in it is committed and its head is the
-  merged one.
+  merged one, reading the pull request from GitHub then rather than the
+  last look.
 - **Setup.** `pier setup`'s steps, for a form: `setup.detect` (tools,
   cloud logins, agent config, the saved answers), `setup.check` (who a
   login is; an expired one is kind `auth_expired` with the login that
@@ -725,8 +729,10 @@ in-flight work three seconds to see its cancellation.
 ```
 pier                    the app: Sessions · Repos · Settings tabs (new = background create,
                         listed as "creating" until the create writes its ready tag)
-pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
+pier <branch> [base]    create from cwd repo (branch off base, default origin's default branch,
+                        fetched; HEAD is the clone as it is, uncommitted edits included) and attach
 pier new <branch> [base]  the same, for a branch named like a command
+pier new -p <prompt>    a stand-in name; the session's agent names the branch after the prompt
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
 pier proxy              every running session as <session>.pier, listening ports mirrored
@@ -757,6 +763,17 @@ and updates. It is a viewer: agents, the prompt queue and every change run
 in the session or in a detached pier job, so quitting or crashing mid-turn
 loses nothing — prompts not yet acknowledged by their session stay in an
 outbox and go out, once, when the app is back.
+
+Its pickers offer what each agent reports — models by name and version,
+their efforts (with Claude's ultracode), fast mode, the 1M-context variant,
+slash commands and skills — asked of the agents' own CLIs on this Mac
+until a session has answered, with the agent's own default model and
+effort marked. The default model is one pier setting (`agents.default`,
+`agents.model`, `agents.effort`); the permission mode last picked in a chat
+becomes its agent's default, plan mode excepted. Background jobs read as
+their stages and current step; a bake's job carries on through its image
+save, and the app checks running jobs against `jobs.list` so none outlives
+its end.
 
 Releases ship it per CPU arch, signed with a Developer ID and notarized, as
 a DMG on the tag's GitHub release and a cask in usepier/homebrew-tap; the

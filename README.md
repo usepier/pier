@@ -66,7 +66,8 @@ $ pier checkout-flow
 One command launches a VM on your cloud account and drops you into tmux
 inside it, with:
 
-- your repo on a fresh branch, uncommitted edits included
+- your repo on a fresh branch off origin's main branch, as origin has it now
+  (`pier <branch> HEAD` starts from your clone instead, uncommitted edits included)
 - Claude Code and Codex installed and authenticated
 - your MCP servers configured
 - your dev environment built by the repo's own setup script
@@ -117,12 +118,15 @@ or download it: [Apple silicon](https://github.com/usepier/pier/releases/latest/
 [Intel](https://github.com/usepier/pier/releases/latest/download/Pier_x64.dmg).
 
 The app is the CLI's sessions with a window around them: each repository and
-its sessions in a sidebar; a chat with each session's agent, read from the
-agent's own transcript; its terminals; what changed, as diffs you can
-comment on; its files; its pull request with checks and logs; what runs in
-it; and each repository's pool, image and cost. It notifies you when an
-agent finishes or needs you, and keeps sessions parking on their own — a
-chat never keeps one awake. It updates itself.
+its sessions in a sidebar; a new session from a prompt, its branch named
+after it; a chat with each session's agent — Claude or Codex, any of their
+models, efforts and modes, their slash commands — read from the agent's own
+transcript; its terminals; what changed, as diffs you can comment on; its
+files; its pull request with checks, logs and reviews, merged and cleaned
+up from the app; what runs in it; and each repository's pool, image and
+cost. It notifies you when an agent finishes or needs you, and keeps
+sessions parking on their own — a chat never keeps one awake. It updates
+itself.
 
 Or build from source with `make`, not `go build` (the in-VM supervisor must
 be embedded):
@@ -229,7 +233,7 @@ for pier VMs and one allow rule above it for exactly Google's IAP range
 
 ```
 pier                      the app: Sessions · Repos · Settings tabs (? for keys)
-pier <branch> [base]      new session off base (default HEAD), then attach
+pier <branch> [base]      new session off base (default origin's main branch), then attach
     -d, --detach          create without attaching
     --idle <dur|never>    park after this much idle time (default from settings)
     --cap <dur|never>     unattended runaway cap (default 8h)
@@ -238,6 +242,7 @@ pier <branch> [base]      new session off base (default HEAD), then attach
     --agent <claude|codex> start an agent in a window of its own
     -p, --prompt <text>   its first prompt, typed in once setup is done
 pier new <branch> [base]  the same, for a branch named like a command (new, ls, ...)
+pier new -p <prompt>      a session with a stand-in name; its agent names the branch after the prompt
 pier ls [--json]          plain list, or stable JSON for automation
 pier attach <session>     attach (a parked session resumes, ~20-60s, tmux restored)
 pier logs <session>       show the setup script log (-f follows)
@@ -270,10 +275,10 @@ A day with pier:
 
 ```
 $ cd ~/code/shop && pier checkout-flow
-creating checkout-flow (shop @ HEAD)
+creating checkout-flow (shop @ origin/main)
   ▸ launching t4g.medium (baked image)
   ▸ pushing secrets + repo (GitHub-first: only secrets ride the tunnel)
-  ▸ bootstrap: branch checkout-flow, dirty patch applied, setup running
+  ▸ bootstrap: branch checkout-flow, setup running
 session checkout-flow ready
 [tmux opens: claude is installed, authenticated, on your branch]
 
@@ -369,7 +374,8 @@ them:
   secrets ride the tunnel.
 - Local-only commits: a thin delta bundle through the tunnel.
 - Anything else: a full-history bundle, slow but universal.
-- Uncommitted edits to tracked files: one git patch, applied after checkout.
+- Uncommitted edits to tracked files, for a session from your clone
+  (`pier <branch> HEAD`): one git patch, applied after checkout.
 
 Private repos reuse whatever GitHub credential the laptop already has (`gh`
 login, git's https credential helper, or ssh keys through a forwarded
@@ -454,8 +460,8 @@ container image builds, seeds. A toolchain-only image can't help with any of
 that, so a bake prebuilds the repo:
 
 ```
-pier bake    # one throwaway instance: harnesses + .pier/bake.sh, then your
-             # checkout (HEAD) with .pier/setup.sh run to completion, imaged
+pier bake    # one throwaway instance: harnesses + .pier/bake.sh, then the
+             # repo (origin's main branch) with .pier/setup.sh run to completion, imaged
 ```
 
 `pier bake` returns as soon as the bake instance is done. Saving the image,
@@ -482,8 +488,9 @@ the repo's to keep out. Anyone who can launch the image can read its disk.
 
 Freshness is manual: re-run `pier bake` when dependencies drift enough that
 the warm re-run gets slow. Images are keyed to the repo, so one project's
-toolchain never bleeds into another's. Re-baking supersedes the old image,
-and `pier teardown` sweeps them all by tag.
+toolchain never bleeds into another's. Re-baking supersedes the old image
+and deletes it, its disk snapshots included, so images never pile up;
+`pier teardown` sweeps them all by tag.
 
 ### Warm pools: the create is already done
 
@@ -502,8 +509,8 @@ pier pool drain [repo]  destroy a repo's pooled sessions, from anywhere
 ```
 
 The next `pier <branch>` claims one instead of creating — resume, check out
-your branch, re-push secrets, apply your dirty edits; setup doesn't run
-again — and the pool refills in the background. An empty pool just means a
+your branch, re-push secrets (and your uncommitted edits, for a session from
+`HEAD`); setup doesn't run again — and the pool refills in the background. An empty pool just means a
 normal create: the pool accelerates, never gates, and `--no-pool` skips it
 for one create.
 
