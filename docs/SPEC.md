@@ -522,8 +522,8 @@ polling.
 One-way copy from the laptop at create; never stored anywhere else, never
 written back. Sources:
 
-- non-ignored untracked repo files, automatically, plus ignored files named by
-  `.pier/include` (path or glob per line). The create warns about ignored env
+- ignored files named by `.pier/include` (path or glob per line), plus, for a
+  session from the laptop's HEAD, non-ignored untracked repo files. The create warns about ignored env
   files left behind. Directly matched file symlinks carry their target
   contents under the link's repo-relative path. Tracked content arrives with
   the fetch, dirty edits to it via the patch.

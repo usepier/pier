@@ -397,11 +397,12 @@ says how to set one.
 Local files and secrets travel once, at create, in the files payload:
 
 - `~/.claude`, `~/.codex`, tokens (`gh auth token`, `claude setup-token`)
-- non-ignored untracked repo files, plus ignored files your `.pier/include` lists
+- ignored files your `.pier/include` lists, plus, for a session from your
+  clone (`HEAD`), its non-ignored untracked files
 
-Untracked files that Git does not ignore ship by default. Ignored files ship
-only when `.pier/include` lists them; create prints which ignored env files it
-is *not* carrying. The VM never holds cloud credentials. On AWS its instance
+Ignored files ship only when `.pier/include` lists them; create prints which
+ignored env files it is *not* carrying. Untracked files that Git does not
+ignore ship with a session from `HEAD`, the clone as it is. The VM never holds cloud credentials. On AWS its instance
 role carries SSM and nothing else. On GCP it runs with no service account at
 all.
 
@@ -552,8 +553,8 @@ Mac app.
 ### Setup that can't fail silently
 
 `.pier/setup.sh` runs async in its own tmux window on first boot, after the
-checkout, dirty patch, untracked files, and `.pier/include` extras are in
-place. The outcome always surfaces:
+checkout and `.pier/include` extras are in place (a session from `HEAD` adds
+its dirty patch and untracked files). The outcome always surfaces:
 
 - `pier ls` and the app show `(setup running)` or `(setup failed)`
 - `pier logs <session>` prints the log from anywhere, no attach needed
