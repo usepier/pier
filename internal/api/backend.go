@@ -42,6 +42,9 @@ type Account interface {
 	Teardown(ctx context.Context, progress pier.Progress) error
 	// Close ends the backend's ssh connections.
 	Close()
+	// Stale: the config now asks for another cloud or machine than this
+	// backend was built for (changed by another process) — open a new one.
+	Stale() bool
 }
 
 // Sessions lists sessions and acts on one.
@@ -120,8 +123,7 @@ type Review interface {
 type PullRequests interface {
 	PullRequests(ctx context.Context, sessions []pier.Session) (map[string]pier.PR, error)
 	PullRequest(ctx context.Context, s pier.Session, number int) (pier.PRDetail, error)
-	MergePR(ctx context.Context, s pier.Session, prID, method, expectedHead string) error
-	RerunChecks(ctx context.Context, s pier.Session, runID int64) error
+	MergePR(ctx context.Context, s pier.Session, prID, expectedHead string) error
 	CheckLog(ctx context.Context, s pier.Session, jobID int64, maxBytes int) (string, error)
 	GitHubLimit() github.RateLimit
 }

@@ -245,3 +245,23 @@ func TestGitWatchFollowsAPark(t *testing.T) {
 		}
 	}
 }
+
+// A running session's changes show at once from what this machine kept,
+// marked as of then, while its first live read is still on its way.
+func TestGitWatchShowsTheKeptSnapshotUntilLive(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	f := &fake{sessions: []pier.Session{{ID: "i-1", Name: "fix", State: pier.StateRunning}}}
+	dir := pier.MirrorDir("i-1")
+	os.MkdirAll(dir, 0o700)
+	os.WriteFile(filepath.Join(dir, "changes.json"), []byte(`{"Files":[{"Path":"a.go","Status":"modified","Added":1}]}`), 0o600)
+	c := start(t, f)
+	c.call("overview.watch", nil)
+	began := time.Now()
+	resp, _ := c.call("git.watch", map[string]any{"id": "i-1"})
+	var snap wire.WatchResult[wire.Changes]
+	remarshal(t, resp["result"], &snap)
+	if snap.Snapshot.Live || snap.Snapshot.AsOf == nil || len(snap.Snapshot.Files) != 1 || time.Since(began) > 5*time.Second {
+		t.Errorf("snapshot = %+v after %s", snap.Snapshot, time.Since(began))
+	}
+}

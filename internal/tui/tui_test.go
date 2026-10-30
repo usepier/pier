@@ -55,6 +55,7 @@ func newFake() *fake {
 }
 
 func (f *fake) Cloud() string { return "AWS eu-central-1" }
+func (f *fake) Stale() bool   { return false }
 func (f *fake) ListSessions(context.Context) ([]pier.Session, error) {
 	return f.sessions, nil
 }
@@ -131,6 +132,9 @@ func (f *fake) DiskMonthlyUSD() float64              { return 7.6 }
 // loaded returns a model that has received its first list at w×h.
 func loaded(t *testing.T, f *fake, w, h int) model {
 	t.Helper()
+	// What pier keeps under the home folder (a bake running, jobs) is this
+	// test's own, not the machine's.
+	t.Setenv("HOME", t.TempDir())
 	m := newModel(Options{Open: func() (Backend, error) { return f, nil }, RepoRoot: "/code/flb-estimation", Version: "test"}, f)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	m = next.(model)

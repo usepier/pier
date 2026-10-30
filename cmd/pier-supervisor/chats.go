@@ -96,13 +96,21 @@ type chatState struct {
 	failures  []time.Time
 	// starting: a program start is under way (outside the lock).
 	starting bool
+	// fastOff is why the agent's fast mode is off though asked for (its
+	// own reason: "preference" is the organization's setting), as it last
+	// said.
+	fastOff string
 }
 
 // chatHost runs the session's chats.
 type chatHost struct {
-	mu    sync.Mutex
-	home  string
-	chats map[string]*chatState
+	mu sync.Mutex
+	// loading lets one load run at a time: two at once (a create's, the
+	// tick's) would each open a new chat, the second taking a turn the
+	// first had started for one the session stopped.
+	loading sync.Mutex
+	home    string
+	chats   map[string]*chatState
 	// notify publishes the chats' state; deltas the text being written.
 	notify func()
 	deltas func(chatID string, ds []wire.ChatDelta)
@@ -114,6 +122,8 @@ type chatHost struct {
 	// setupRunning: the repo's setup still runs (first prompts wait).
 	setupRunning func() bool
 	saveMu       sync.Mutex
+	// naming: the branch is being named after a first prompt (branchname.go).
+	naming bool
 }
 
 func newChatHost(home string) *chatHost {
@@ -125,6 +135,8 @@ func newChatHost(home string) *chatHost {
 // load reads every chat on disk not yet loaded: at start, and on each tick
 // (a create or claim drops new ones in).
 func (h *chatHost) load() {
+	h.loading.Lock()
+	defer h.loading.Unlock()
 	ents, _ := os.ReadDir(chatsDir(h.home))
 	changed := false
 	for _, e := range ents {

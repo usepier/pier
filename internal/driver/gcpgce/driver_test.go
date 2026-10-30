@@ -146,7 +146,7 @@ func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
 	// and happens before tmux starts.
 	gate := strings.Index(remote, `[ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]`)
 	wait := strings.Index(remote, `[ -e /run/pier/restored ] && break`)
-	exec := strings.Index(remote, "exec tmux new-session -A -s main")
+	exec := strings.Index(remote, "tmux has-session -t main")
 	if gate < 0 || wait < gate || exec < wait {
 		t.Errorf("attach must wait for the restore marker, gated, before tmux; got %q", remote)
 	}

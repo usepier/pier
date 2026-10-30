@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/usepier/pier/pkg/pier/chat"
 	"github.com/usepier/pier/pkg/pier/wire"
 )
 
@@ -40,64 +41,28 @@ func loadModels(home, agent string) []wire.ModelInfo {
 	return ms
 }
 
-// claudeModels reads the models of claude's initialize answer.
-func claudeModels(res json.RawMessage) []wire.ModelInfo {
-	var r struct {
-		Models []struct {
-			Value         string   `json:"value"`
-			DisplayName   string   `json:"displayName"`
-			Description   string   `json:"description"`
-			EffortLevels  []string `json:"supportedEffortLevels"`
-			SupportsEffor bool     `json:"supportsEffort"`
-		} `json:"models"`
+func commandsPath(home, agent string) string {
+	return filepath.Join(home, ".pier", "models", agent+"-commands.json")
+}
+
+// saveCommands keeps an agent's slash commands, as it last said them.
+func saveCommands(home, agent string, cs []wire.AgentCommand) {
+	b, _ := json.Marshal(cs)
+	_ = os.MkdirAll(filepath.Dir(commandsPath(home, agent)), 0o700)
+	_ = writeAtomic(commandsPath(home, agent), b)
+}
+
+func loadCommands(home, agent string) []wire.AgentCommand {
+	var cs []wire.AgentCommand
+	if b, err := os.ReadFile(commandsPath(home, agent)); err == nil {
+		_ = json.Unmarshal(b, &cs)
 	}
-	if json.Unmarshal(res, &r) != nil {
-		return nil
-	}
-	var out []wire.ModelInfo
-	for _, m := range r.Models {
-		if m.Value == "" {
-			continue
-		}
-		out = append(out, wire.ModelInfo{ID: m.Value, Name: m.DisplayName, Description: m.Description, Efforts: m.EffortLevels, Default: m.Value == "default"})
-	}
-	return out
+	return cs
 }
 
 func (h *chatHost) cacheClaudeModels(res json.RawMessage) {
-	saveModels(h.home, "claude", claudeModels(res))
-}
-
-// codexModels reads model/list's answer.
-func codexModels(res json.RawMessage) []wire.ModelInfo {
-	var r struct {
-		Data []struct {
-			Model         string `json:"model"`
-			DisplayName   string `json:"displayName"`
-			Description   string `json:"description"`
-			Hidden        bool   `json:"hidden"`
-			IsDefault     bool   `json:"isDefault"`
-			DefaultEffort string `json:"defaultReasoningEffort"`
-			Efforts       []struct {
-				Effort string `json:"reasoningEffort"`
-			} `json:"supportedReasoningEfforts"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(res, &r) != nil {
-		return nil
-	}
-	var out []wire.ModelInfo
-	for _, m := range r.Data {
-		if m.Hidden || m.Model == "" {
-			continue
-		}
-		mi := wire.ModelInfo{ID: m.Model, Name: m.DisplayName, Description: m.Description, DefaultEffort: m.DefaultEffort, Default: m.IsDefault}
-		for _, e := range m.Efforts {
-			mi.Efforts = append(mi.Efforts, e.Effort)
-		}
-		out = append(out, mi)
-	}
-	return out
+	saveModels(h.home, "claude", chat.ClaudeModels(res))
+	saveCommands(h.home, "claude", chat.ClaudeCommands(res))
 }
 
 var codexModelsOnce sync.Map // per server: asked once
@@ -114,13 +79,24 @@ func (h *chatHost) cacheCodexModels(s *codexServer) {
 		codexModelsOnce.Delete(done)
 		return
 	}
-	saveModels(h.home, "codex", codexModels(res))
+	saveModels(h.home, "codex", chat.CodexModels(res))
+	h.cacheCodexSkills(s)
+}
+
+// cacheCodexSkills keeps the skills codex finds for the checkout, as its
+// slash commands.
+func (h *chatHost) cacheCodexSkills(s *codexServer) {
+	res, err := s.call("skills/list", map[string]any{"cwds": []string{checkoutDir(h.home)}}, time.Minute)
+	if err != nil {
+		return
+	}
+	saveCommands(h.home, "codex", chat.CodexCommands(res))
 }
 
 // models is what an agent offers, asking it when nothing is known yet.
 func (h *chatHost) models(agent string) (map[string]any, error) {
 	if ms := loadModels(h.home, agent); len(ms) > 0 {
-		return map[string]any{"models": ms}, nil
+		return map[string]any{"models": ms, "commands": loadCommands(h.home, agent)}, nil
 	}
 	switch agent {
 	case "claude":
@@ -136,7 +112,7 @@ func (h *chatHost) models(agent string) (map[string]any, error) {
 	default:
 		return nil, fmt.Errorf("unknown agent %q", agent)
 	}
-	return map[string]any{"models": loadModels(h.home, agent)}, nil
+	return map[string]any{"models": loadModels(h.home, agent), "commands": loadCommands(h.home, agent)}, nil
 }
 
 // probeClaude starts claude only to hear its handshake.

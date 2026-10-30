@@ -197,30 +197,29 @@ var Settings = []Field{
 		Detail: "Parks a session even while the agent is busy, once you've been detached this long — a looping agent can't burn compute for days.\n--cap overrides one create.",
 	},
 	{
-		Key: "agents.default", Group: "agents", Label: "agent", Hint: "who new chats talk to",
+		Key: "agents.default", Group: "agents", Label: "agent", Hint: "whose model new chats run",
 		Kind: KindChoice, NoCustom: true, Default: "claude",
 		Options: []Option{
 			{Value: "claude", Label: "Claude", Desc: "Claude Code"},
 			{Value: "codex", Label: "Codex", Desc: "OpenAI Codex"},
 		},
-		Detail: "New chats — in the app, and `pier <branch> -p` on the command line — start with this agent unless you pick another.",
+		Detail: "New chats — in the app, and `pier <branch> -p` on the command line — start with this agent's model unless you pick another.",
 	},
 	{
-		Key: "agents.claude_model", Group: "agents", Label: "Claude model", Hint: "model new Claude chats run",
-		Kind: KindChoice, Empty: "account default",
-		Options: []Option{
-			{Value: "opus", Label: "Opus", Desc: "for complex work"},
-			{Value: "sonnet", Label: "Sonnet", Desc: "efficient for most tasks"},
-			{Value: "haiku", Label: "Haiku", Desc: "fastest"},
-		},
-		Detail: "Any model name claude takes (--model). Empty: what your account defaults to. A chat can switch models as it goes.",
+		Key: "agents.model", Group: "agents", Label: "model", Hint: "the model new chats run",
+		Kind: KindText, Empty: "the agent's default",
+		Detail: "Any model name the agent takes (claude --model, codex -m). Empty: what the agent runs by default. A chat can switch models as it goes.",
 	},
 	{
-		Key: "agents.claude_effort", Group: "agents", Label: "Claude effort", Hint: "how hard it thinks",
+		Key: "agents.effort", Group: "agents", Label: "effort", Hint: "how hard the model thinks",
 		Kind: KindChoice, NoCustom: true, Empty: "model default",
 		Options: []Option{
 			{Value: "", Label: "model default"},
-			{Value: "low"}, {Value: "medium"}, {Value: "high"}, {Value: "xhigh"}, {Value: "max"},
+			{Value: "minimal", Label: "Minimal", Desc: "Codex"},
+			{Value: "low", Label: "Low"}, {Value: "medium", Label: "Medium"}, {Value: "high", Label: "High"},
+			{Value: "xhigh", Label: "Extra high"}, {Value: "max", Label: "Max"},
+			{Value: "ultracode", Label: "Ultracode", Desc: "Claude: extra high effort with dynamic workflows"},
+			{Value: "ultra", Label: "Ultra", Desc: "Codex"},
 		},
 		Detail: "More effort thinks longer before acting: slower and costlier, better on hard problems.",
 	},
@@ -234,20 +233,6 @@ var Settings = []Field{
 			{Value: "bypassPermissions", Label: "bypass", Desc: "runs everything without asking"},
 		},
 		Detail: "Sessions are machines of their own, so a careless command can't reach your laptop — but it can still push, publish or delete within the session.",
-	},
-	{
-		Key: "agents.codex_model", Group: "agents", Label: "Codex model", Hint: "model new Codex chats run",
-		Kind: KindText, Empty: "account default",
-		Detail: "Any model name codex takes (-m). Empty: what your account defaults to.",
-	},
-	{
-		Key: "agents.codex_effort", Group: "agents", Label: "Codex effort", Hint: "how hard it reasons",
-		Kind: KindChoice, NoCustom: true, Empty: "model default",
-		Options: []Option{
-			{Value: "", Label: "model default"},
-			{Value: "minimal"}, {Value: "low"}, {Value: "medium"}, {Value: "high"}, {Value: "xhigh"},
-		},
-		Detail: "More effort reasons longer before acting.",
 	},
 	{
 		Key: "agents.codex_mode", Group: "agents", Label: "Codex permissions", Hint: "what it does without asking",
@@ -369,19 +354,15 @@ func Get(c Config, key string) string {
 		return c.Speed.ReminderAge
 	case "agents.default":
 		return c.Agents.Agent()
-	case "agents.claude_model":
-		return c.Agents.ClaudeModel
-	case "agents.claude_effort":
-		return c.Agents.ClaudeEffort
+	case "agents.model":
+		return c.Agents.Model
+	case "agents.effort":
+		return c.Agents.Effort
 	case "agents.claude_mode":
 		if c.Agents.ClaudeMode == "" {
 			return "default"
 		}
 		return c.Agents.ClaudeMode
-	case "agents.codex_model":
-		return c.Agents.CodexModel
-	case "agents.codex_effort":
-		return c.Agents.CodexEffort
 	case "agents.codex_mode":
 		if c.Agents.CodexMode == "" {
 			return "default"
@@ -535,27 +516,19 @@ func Set(c *Config, key, val string) error {
 		default:
 			return fmt.Errorf("agents.default: want claude or codex (got %q)", val)
 		}
-	case "agents.claude_model", "agents.codex_model":
+	case "agents.model":
 		val = strings.TrimSpace(val)
 		if strings.ContainsAny(val, " \t\n'\"`$;|&") {
 			return fmt.Errorf("%s: a model name has no spaces or shell characters (got %q)", key, val)
 		}
-		if key == "agents.claude_model" {
-			c.Agents.ClaudeModel = val
-		} else {
-			c.Agents.CodexModel = val
-		}
-	case "agents.claude_effort", "agents.codex_effort":
+		c.Agents.Model = val
+	case "agents.effort":
 		val = strings.TrimSpace(val)
 		// Agents add effort levels with their models: any plain word.
 		if val != "" && !effortWord.MatchString(val) {
 			return fmt.Errorf("%s: an effort is a word like low, high or max (got %q)", key, val)
 		}
-		if key == "agents.claude_effort" {
-			c.Agents.ClaudeEffort = val
-		} else {
-			c.Agents.CodexEffort = val
-		}
+		c.Agents.Effort = val
 	case "agents.claude_mode", "agents.codex_mode":
 		val = strings.TrimSpace(val)
 		modes := map[string]bool{"default": true, "plan": true, "bypassPermissions": true, "acceptEdits": key == "agents.claude_mode", "readOnly": key == "agents.codex_mode"}

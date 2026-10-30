@@ -122,6 +122,10 @@ type CheckoutInfo struct {
 	// that travel with a create from HEAD.
 	Dirty int    `json:"dirty"`
 	Base  string `json:"base"` // origin branch a session from HEAD builds on
+	// DefaultBranch is origin's default branch ("main"): new sessions start
+	// from it (origin/<it>), and their pull requests target it, unless
+	// told otherwise.
+	DefaultBranch string `json:"defaultBranch"`
 }
 
 // TimeOrNil is an optional timestamp: nil for the zero time, UTC otherwise.
@@ -147,6 +151,15 @@ type CreateParams struct {
 	// Chat starts the session with a chat; its prompt goes in once setup
 	// has finished.
 	Chat *NewChat `json:"chat,omitempty"`
+	// AutoName: the branch only stands in (sessions.suggestName). With a
+	// first prompt, the session names its branch after it, and itself
+	// after the branch.
+	AutoName bool `json:"autoName,omitempty"`
+}
+
+// SuggestedName is a stand-in name for a new session.
+type SuggestedName struct {
+	Name string `json:"name"`
 }
 
 // NewChat is the chat a new session starts with.
@@ -154,6 +167,7 @@ type NewChat struct {
 	Agent  string `json:"agent"` // claude | codex
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	Fast   bool   `json:"fast,omitempty"`
 	Mode   string `json:"mode,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
 }

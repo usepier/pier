@@ -24,6 +24,7 @@ import (
 // fake is a Backend with canned data that records what the server asked.
 type fake struct {
 	mu         sync.Mutex
+	stale      bool
 	sessions   []pier.Session
 	listErr    error
 	lists      int
@@ -45,6 +46,7 @@ type fake struct {
 	kept       []pier.GitState
 	following  map[string]int // sessions whose checkout is followed now
 	prReads    int
+	prOpen     bool // the fix branch's pull request is open, not merged
 	ownPrompts config.Prompts
 }
 
@@ -166,6 +168,7 @@ func (f *fake) StartResize(s pier.Session, t string) (pier.Job, error) {
 }
 func (f *fake) DiskMonthlyUSD() float64 { return 3.8 }
 func (f *fake) Close()                  {}
+func (f *fake) Stale() bool             { return f.stale }
 func (f *fake) OpenTerminal(_ context.Context, s pier.Session, tab, window string, cols, rows int) (*pier.Terminal, error) {
 	script := f.termScript
 	if script == "" {
@@ -347,11 +350,15 @@ func (f *fake) Push(context.Context, pier.Session, string) error { return nil }
 func (f *fake) PullRequests(_ context.Context, ss []pier.Session) (map[string]pier.PR, error) {
 	f.mu.Lock()
 	f.prReads++
+	state := "merged"
+	if f.prOpen {
+		state = "open"
+	}
 	f.mu.Unlock()
 	out := map[string]pier.PR{}
 	for _, s := range ss {
 		if s.Branch == "fix" {
-			out[s.ID] = pier.PR{ID: "PR_1", Number: 7, State: "merged", HeadOid: "abc", Checks: []pier.PRCheck{{Name: "test", State: "failing", JobID: 5}}}
+			out[s.ID] = pier.PR{ID: "PR_1", Number: 7, State: state, HeadOid: "abc", Checks: []pier.PRCheck{{Name: "test", State: "failing", JobID: 5}}}
 		}
 	}
 	return out, nil
@@ -360,13 +367,12 @@ func (f *fake) PullRequest(_ context.Context, _ pier.Session, n int) (pier.PRDet
 	return pier.PRDetail{PR: pier.PR{Number: n, Checks: []pier.PRCheck{{Name: "test", State: "failing", JobID: 5}}},
 		Threads: []github.Thread{{Path: "a.go", Line: 3, Comments: []github.ThreadComment{{Author: "rev", Body: "rename this"}}}}}, nil
 }
-func (f *fake) MergePR(_ context.Context, _ pier.Session, _, _, head string) error {
+func (f *fake) MergePR(_ context.Context, _ pier.Session, _, head string) error {
 	if head != "abc" {
 		return pier.ErrHeadMoved
 	}
 	return nil
 }
-func (f *fake) RerunChecks(context.Context, pier.Session, int64) error { return nil }
 func (f *fake) CheckLog(context.Context, pier.Session, int64, int) (string, error) {
 	return "--- FAIL: TestLogin", nil
 }
@@ -566,8 +572,9 @@ func TestErrorKinds(t *testing.T) {
 	}
 }
 
-// A watch answers with a snapshot, then pushes numbered events — never one
-// before the reply.
+// A watch answers with a snapshot — at first the sessions as listed, their
+// statuses read from each VM following — then pushes numbered events,
+// never one before the reply.
 func TestOverviewWatch(t *testing.T) {
 	f := &fake{sessions: []pier.Session{
 		{ID: "i-1", Name: "feat", Repo: "app", State: pier.StateRunning, CostNote: "~$0.04/h"},
@@ -590,7 +597,8 @@ func TestOverviewWatch(t *testing.T) {
 		t.Errorf("totals = %v", totals)
 	}
 	sessions := snap["sessions"].([]any)
-	if len(sessions) != 3 || sessions[0].(map[string]any)["state"] != "working" || sessions[2].(map[string]any)["pooled"] != true {
+	first := sessions[0].(map[string]any)["state"]
+	if len(sessions) != 3 || (first != "running" && first != "working") || sessions[2].(map[string]any)["pooled"] != true {
 		t.Errorf("sessions = %v", sessions)
 	}
 	if snap["quota"].(map[string]any)["limit"] != float64(32) {
@@ -602,6 +610,15 @@ func TestOverviewWatch(t *testing.T) {
 	p := ev["params"].(map[string]any)
 	if p["sub"] != sub || p["seq"] != float64(1) || p["topic"] != "overview" {
 		t.Errorf("first event = %v", p)
+	}
+	state := func(ev map[string]any) any {
+		return ev["params"].(map[string]any)["data"].(map[string]any)["sessions"].([]any)[0].(map[string]any)["state"]
+	}
+	for i := 0; first != "working" && state(ev) != "working"; i++ {
+		if i == 5 {
+			t.Fatalf("the statuses never followed: %v", state(ev))
+		}
+		ev = c.next("sub.event")
 	}
 	f.mu.Lock()
 	sweeps := f.sweeps
@@ -681,5 +698,83 @@ func TestSettings(t *testing.T) {
 	checks := resp["result"].([]any)
 	if len(checks) != 2 || checks[1].(map[string]any)["status"] != "fail" {
 		t.Errorf("doctor = %v", checks)
+	}
+}
+
+// A backend whose cloud or machine settings another process changed is
+// replaced before the next call uses it.
+func TestStaleBackendIsReplaced(t *testing.T) {
+	var opened []*fake
+	s := &Server{opts: Options{Open: func() (Backend, error) {
+		f := &fake{}
+		opened = append(opened, f)
+		return f, nil
+	}}}
+	first, _ := s.backend()
+	if again, _ := s.backend(); again != first || len(opened) != 1 {
+		t.Fatalf("a current backend was reopened (%d opens)", len(opened))
+	}
+	opened[0].stale = true
+	if next, _ := s.backend(); next == first || len(opened) != 2 {
+		t.Errorf("a stale backend was kept (%d opens)", len(opened))
+	}
+}
+
+// Another process writing the config (a bake's finish recording its image)
+// refreshes a watched overview at once, not on the next round.
+func TestConfigChangeRefreshesTheOverview(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configCheck = 20 * time.Millisecond
+	t.Cleanup(func() { configCheck = 2 * time.Second })
+	f := &fake{sessions: []pier.Session{{ID: "i-1", Name: "feat", Repo: "app", State: pier.StateIdle}}}
+	c := start(t, f)
+	c.call("overview.watch", nil)
+	time.Sleep(100 * time.Millisecond)
+	f.mu.Lock()
+	before := f.lists
+	f.mu.Unlock()
+	if _, err := config.Update(func(cfg *config.Config) error {
+		cfg.RecordBake("app", "ami-1")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.mu.Lock()
+		after := f.lists
+		f.mu.Unlock()
+		if after > before {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the overview didn't refresh after the config changed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A bake's machine shows as no session and no repo; what it costs while it
+// runs counts all the same.
+func TestOverviewLeavesOutBakeMachines(t *testing.T) {
+	f := &fake{sessions: []pier.Session{
+		{ID: "i-1", Name: "feat", Repo: "app", State: pier.StateRunning},
+		{ID: "i-2", Name: "bake", Repo: "bake", Branch: "bake", State: pier.StateRunning, InstanceType: "t4g.xlarge"},
+	}}
+	c := start(t, f)
+	resp, _ := c.call("overview.get", nil)
+	o := resp["result"].(map[string]any)
+	for _, s := range o["sessions"].([]any) {
+		if s.(map[string]any)["name"] == "bake" {
+			t.Error("the bake machine is listed as a session")
+		}
+	}
+	for _, r := range o["repos"].([]any) {
+		if r.(map[string]any)["name"] == "bake" {
+			t.Error("the bake machine made a repo")
+		}
+	}
+	if o["totals"].(map[string]any)["running"] != float64(1) {
+		t.Errorf("totals = %v", o["totals"])
 	}
 }

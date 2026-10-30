@@ -47,7 +47,7 @@ func Fill(ctx context.Context, p Params) error {
 		return fmt.Errorf("filling %d pooled session(s) needs more vCPU headroom than %s has — raise the quota or shrink the pool",
 			plan.Fill, q.Detail)
 	}
-	hasSetup := len(SetupScript(p.RepoRoot)) > 0
+	hasSetup := len(SetupScript(p.RepoRoot, p.Base)) > 0
 	for i := range plan.Fill {
 		progress(fmt.Sprintf("filling pool session %d/%d", i+1, plan.Fill))
 		if err := fillOne(ctx, p, hasSetup); err != nil {
@@ -67,6 +67,7 @@ func fillOne(ctx context.Context, p Params, hasSetup bool) error {
 		Name:          name,
 		Repo:          p.RepoRoot,
 		Branch:        name, // placeholder; claim's freshen replaces it
+		BaseRef:       p.Base,
 		Image:         p.Image,
 		IdleTimeout:   FillLeash,
 		UnattendedCap: p.UnattendedCap,

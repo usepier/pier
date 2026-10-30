@@ -1,13 +1,16 @@
 package pier
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/internal/tombstone"
 	"github.com/usepier/pier/pkg/pier/wire"
@@ -172,5 +175,71 @@ func TestBeaconCarriesTheChats(t *testing.T) {
 	b.apply(&s)
 	if len(s.Chats) != 1 || s.Chats[0].State != "waiting" || s.Chats[0].Waiting != "permission" || s.Chats[0].Queued != 1 || s.Chats[0].Ask != "rm -rf build" {
 		t.Errorf("chats = %+v", s.Chats)
+	}
+}
+
+type renamer struct {
+	driver.Driver
+	got [][3]string
+}
+
+func (r *renamer) Rename(_ context.Context, id, name, branch string) error {
+	r.got = append(r.got, [3]string{id, name, branch})
+	return nil
+}
+
+// A session that named its branch after its first prompt takes the
+// branch's name, unless another session has it.
+func TestRelabelFollowsTheSessionsBranch(t *testing.T) {
+	r := &renamer{}
+	c := &Client{drv: r}
+	sessions := []Session{
+		{ID: "i-1", Name: "oslo", Branch: "oslo"},
+		{ID: "i-2", Name: "fix-login", Branch: "fix-login"},
+		{ID: "i-3", Name: "kyoto", Branch: "kyoto"},
+	}
+	c.relabel(context.Background(), sessions, []string{"fix-login", "", "kyoto"})
+	if len(r.got) != 1 || r.got[0] != [3]string{"i-1", "fix-login-2", "fix-login"} {
+		t.Errorf("relabels = %v", r.got)
+	}
+	if sessions[0].Name != "fix-login-2" || sessions[0].Branch != "fix-login" || sessions[2].Name != "kyoto" {
+		t.Errorf("sessions = %+v", sessions)
+	}
+}
+
+// The machine a bake runs on is listed like a session, but it is no one's:
+// neither a session nor pool inventory, and its "bake" isn't a repo.
+func TestBakeMachineIsNoSession(t *testing.T) {
+	all := []Session{
+		{ID: "i-1", Name: "fix", Repo: "shop", State: driver.StateRunning},
+		{ID: "i-2", Name: "bake", Repo: "bake", Branch: "bake", State: driver.StateRunning},
+	}
+	sessions, pooled := SplitPool(all)
+	if len(sessions) != 1 || sessions[0].ID != "i-1" || len(pooled) != 0 {
+		t.Errorf("sessions = %v, pooled = %v", sessions, pooled)
+	}
+	c := &Client{cfg: config.Default()}
+	for _, r := range c.ReposFor(all, nil) {
+		if r.Name == "bake" {
+			t.Error("the bake machine made a repo of its own")
+		}
+	}
+}
+
+// A branch the agent started and pushed is followed too: a session named
+// after its branch takes the new name, one with a name of its own keeps
+// it, and the branch the session came off is never taken for its own.
+func TestRelabelFollowsAPushedBranch(t *testing.T) {
+	r := &renamer{}
+	c := &Client{drv: r}
+	sessions := []Session{
+		{ID: "i-1", Name: "fix-login", Branch: "fix-login", Base: "main"},
+		{ID: "i-2", Name: "my-work", Branch: "fix-auth", Base: "main"},
+		{ID: "i-3", Name: "docs", Branch: "docs", Base: "main"},
+	}
+	c.relabel(context.Background(), sessions, []string{"kur-12-fix-login", "kur-13-fix-auth", "main"})
+	want := [][3]string{{"i-1", "kur-12-fix-login", "kur-12-fix-login"}, {"i-2", "my-work", "kur-13-fix-auth"}}
+	if !slices.Equal(r.got, want) {
+		t.Errorf("relabels = %v", r.got)
 	}
 }

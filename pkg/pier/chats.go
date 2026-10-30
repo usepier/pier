@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ type ChatRequest struct {
 	Agent  string // claude | codex
 	Model  string
 	Effort string
+	Fast   bool
 	Mode   string // permission mode; see AgentModes
 	Title  string
 	Prompt *wire.ChatPrompt
@@ -60,9 +62,9 @@ func (r *ChatRequest) check() error {
 // withDefaults fills what a new chat leaves open from the agent settings.
 func (c *Client) withDefaults(r *ChatRequest) {
 	if r.Agent == "" {
-		r.Agent = c.cfg.Agents.Agent()
+		r.Agent = c.conf().Agents.Agent()
 	}
-	model, effort, mode := c.cfg.Agents.For(r.Agent)
+	model, effort, mode := c.conf().Agents.For(r.Agent)
 	if r.Model == "" {
 		r.Model = model
 	}
@@ -82,7 +84,7 @@ func chatSpec(r *ChatRequest) (*driver.ChatSpec, error) {
 	if err := r.check(); err != nil {
 		return nil, err
 	}
-	sp := &driver.ChatSpec{ID: r.ID, Agent: r.Agent, Model: r.Model, Effort: r.Effort, Mode: r.Mode}
+	sp := &driver.ChatSpec{ID: r.ID, Agent: r.Agent, Model: r.Model, Effort: r.Effort, Fast: r.Fast, Mode: r.Mode}
 	if r.Prompt != nil && strings.TrimSpace(r.Prompt.Text) != "" {
 		sp.Prompt, sp.PromptID = r.Prompt.Text, r.Prompt.ID
 	}
@@ -116,7 +118,7 @@ func (c *Client) CreateChat(ctx context.Context, s Session, r ChatRequest) (stri
 	if err := r.check(); err != nil {
 		return "", err
 	}
-	args := map[string]any{"id": r.ID, "agent": r.Agent, "model": r.Model, "effort": r.Effort, "mode": r.Mode, "title": r.Title}
+	args := map[string]any{"id": r.ID, "agent": r.Agent, "model": r.Model, "effort": r.Effort, "fast": r.Fast, "mode": r.Mode, "title": r.Title}
 	if r.Prompt != nil {
 		args["prompt"] = r.Prompt
 	}
@@ -183,14 +185,19 @@ func (c *Client) Decide(ctx context.Context, s Session, chatID, requestID string
 	return err
 }
 
-// ChatConfig changes a chat as it goes on; empty fields stay.
+// ChatConfig changes a chat as it goes on; empty fields (a nil Fast) stay.
 type ChatConfig struct {
 	Model, Effort, Mode, Title string
+	Fast                       *bool
 }
 
 // ConfigureChat changes a chat's model, effort, mode or title.
 func (c *Client) ConfigureChat(ctx context.Context, s Session, chatID string, cfg ChatConfig) error {
-	_, err := c.Op(ctx, s, "chat.configure", map[string]string{"chat": chatID, "model": cfg.Model, "effort": cfg.Effort, "mode": cfg.Mode, "title": cfg.Title})
+	fast := ""
+	if cfg.Fast != nil {
+		fast = map[bool]string{true: "on", false: "off"}[*cfg.Fast]
+	}
+	_, err := c.Op(ctx, s, "chat.configure", map[string]string{"chat": chatID, "model": cfg.Model, "effort": cfg.Effort, "fast": fast, "mode": cfg.Mode, "title": cfg.Title})
 	return err
 }
 
@@ -237,45 +244,202 @@ func ParseChats(data json.RawMessage) ([]wire.ChatInfo, error) {
 // --- models -------------------------------------------------------------------
 
 func modelsPath(agent string) string {
-	return filepath.Join(config.Dir(), "models", filepath.Base(agent)+".json")
+	return filepath.Join(config.Dir(), "models", filepath.Base(agent)+"-v3.json")
 }
 
 // Models is what an agent offers: asked of a running session when s is
 // given (and remembered), else what this machine last heard, else what
 // pier knows of.
 func (c *Client) Models(ctx context.Context, s *Session, agent string) (wire.AgentModels, error) {
+	out, err := c.models(ctx, s, agent)
+	out.Models = namedModels(out.Models)
+	if agent == "claude" {
+		out.Models = withUltracode(withLong(out.Models))
+	}
+	model, effort := agentDefaults(agent, c.conf().Secrets.Manifest)
+	out.Models = withAgentDefaults(out.Models, model, effort)
+	return out, err
+}
+
+// withLong folds claude's 1M-context rows ("opus[1m]", "Opus 5.5 (1M)")
+// into their model, as a variant it has: one Opus 5.5, with 1M context to
+// switch on. The standard alias is the row's id; ID+"[1m]" runs the 1M one.
+func withLong(ms []wire.ModelInfo) []wire.ModelInfo {
+	const long = "[1m]"
+	byID := map[string]int{}
+	out := make([]wire.ModelInfo, 0, len(ms))
+	for _, m := range ms {
+		base, isLong := strings.CutSuffix(m.ID, long)
+		if !isLong {
+			if i, ok := byID[base]; ok {
+				// The 1M row came first: it stands for this model.
+				out[i].Description, out[i].Resolved = m.Description, m.Resolved
+				continue
+			}
+			byID[base] = len(out)
+			out = append(out, m)
+			continue
+		}
+		m.Name = strings.TrimSuffix(m.Name, " (1M)")
+		if i, ok := byID[base]; ok {
+			out[i].Long = true
+			out[i].Fast = out[i].Fast || m.Fast
+			if m.Default {
+				out[i].Default, out[i].LongDefault = true, true
+			}
+			continue
+		}
+		m.ID, m.Long, m.LongDefault = base, true, m.Default
+		m.Resolved = strings.TrimSuffix(m.Resolved, long)
+		byID[base] = len(out)
+		out = append(out, m)
+	}
+	if def := slices.IndexFunc(out, func(m wire.ModelInfo) bool { return m.Default }); def >= 0 {
+		for i := range out {
+			out[i].Default = i == def
+		}
+	}
+	return out
+}
+
+// withUltracode adds claude's top level — xhigh effort with dynamic
+// workflows — to each model that reaches xhigh: claude's own list of
+// efforts leaves it out, as it's switched on in a running chat.
+func withUltracode(ms []wire.ModelInfo) []wire.ModelInfo {
+	for i, m := range ms {
+		if slices.Contains(m.Efforts, "xhigh") && !slices.Contains(m.Efforts, "ultracode") {
+			ms[i].Efforts = append(append([]string{}, m.Efforts...), "ultracode")
+		}
+	}
+	return ms
+}
+
+// namedModels gives each model the name people know it by — its version
+// included ("Opus 5.5", which claude's list keeps in the description) —
+// and folds the agent's "default" entry into the model it stands for,
+// marked as the default.
+func namedModels(ms []wire.ModelInfo) []wire.ModelInfo {
+	var def *wire.ModelInfo
+	out := make([]wire.ModelInfo, 0, len(ms))
+	for _, m := range ms {
+		if name, rest, ok := strings.Cut(m.Description, " · "); ok {
+			m.Name = strings.Replace(name, " with 1M context", " (1M)", 1)
+			m.Description = rest
+		}
+		if m.ID == "default" {
+			d := m
+			def = &d
+			continue
+		}
+		m.Default = false
+		out = append(out, m)
+	}
+	if def == nil {
+		// No "default" entry: the agent marks its default itself.
+		for i, m := range ms {
+			if i < len(out) {
+				out[i].Default = m.Default
+			}
+		}
+		return out
+	}
+	for i := range out {
+		same := out[i].Resolved != "" && out[i].Resolved == def.Resolved || def.Resolved == "" && out[i].Name == def.Name
+		if same {
+			out[i].Default = true
+			return out
+		}
+	}
+	// The default stands for a model the list doesn't otherwise have.
+	def.Default = true
+	return append([]wire.ModelInfo{*def}, out...)
+}
+
+// modelsFresh is how long a list heard from the agent's CLI on this
+// machine is taken as it is; after, it's asked again. A session's list
+// (what sessions actually run) stands until a session says otherwise.
+const modelsFresh = 6 * time.Hour
+
+func (c *Client) models(ctx context.Context, s *Session, agent string) (wire.AgentModels, error) {
 	out := wire.AgentModels{Agent: agent, Modes: AgentModes(agent)}
 	if s != nil && s.State != driver.StateParked {
 		raw, err := c.Op(ctx, *s, "models", map[string]string{"agent": agent})
 		var r struct {
-			Models []wire.ModelInfo `json:"models"`
+			Models   []wire.ModelInfo    `json:"models"`
+			Commands []wire.AgentCommand `json:"commands"`
 		}
 		if err == nil {
 			err = json.Unmarshal(raw, &r)
 		}
 		if err == nil && len(r.Models) > 0 {
-			out.Models = r.Models
-			b, _ := json.Marshal(r.Models)
-			err := os.MkdirAll(filepath.Dir(modelsPath(agent)), 0o700)
-			if err == nil {
-				err = writeFileAtomic(modelsPath(agent), b)
-			}
-			if err != nil {
-				c.logf("keeping %s's models: %v", agent, err)
-			}
+			out.Models, out.Commands = r.Models, r.Commands
+			c.keepModels(agent, "session", r.Models, r.Commands)
 			return out, nil
 		}
 		if err != nil {
 			c.logf("%s's models from %s: %v — using the last known", agent, s.Name, err)
 		}
 	}
-	if b, err := os.ReadFile(modelsPath(agent)); err == nil {
-		if json.Unmarshal(b, &out.Models) == nil && len(out.Models) > 0 {
-			return out, nil
-		}
+	kept, from, at := keptModels(agent)
+	if len(kept.Models) > 0 && (from == "session" || time.Since(at) < modelsFresh) {
+		out.Models, out.Commands = kept.Models, kept.Commands
+		return out, nil
+	}
+	// Before any session has said: the agent's CLI here.
+	if ms, cs, err := localModels(ctx, agent); err == nil && len(ms) > 0 {
+		out.Models, out.Commands = ms, cs
+		c.keepModels(agent, "here", ms, cs)
+		return out, nil
+	} else if err != nil {
+		c.logf("%s's models here: %v", agent, err)
+	}
+	if len(kept.Models) > 0 {
+		out.Models, out.Commands = kept.Models, kept.Commands
+		return out, nil
 	}
 	out.Models = knownModels(agent)
 	return out, nil
+}
+
+// keptList is a model list as kept: who said it (a session, or the CLI
+// here) and what.
+type keptList struct {
+	From     string              `json:"from"`
+	Models   []wire.ModelInfo    `json:"models"`
+	Commands []wire.AgentCommand `json:"commands,omitempty"`
+}
+
+func (c *Client) keepModels(agent, from string, ms []wire.ModelInfo, cs []wire.AgentCommand) {
+	b, _ := json.Marshal(keptList{From: from, Models: ms, Commands: cs})
+	err := os.MkdirAll(filepath.Dir(modelsPath(agent)), 0o700)
+	if err == nil {
+		err = writeFileAtomic(modelsPath(agent), b)
+	}
+	if err != nil {
+		c.logf("keeping %s's models: %v", agent, err)
+	}
+	// Lists kept before they said which models have a fast mode, or which
+	// commands the agent has.
+	for _, old := range []string{".json", "-v2.json"} {
+		_ = os.Remove(filepath.Join(config.Dir(), "models", filepath.Base(agent)+old))
+	}
+}
+
+// keptModels is the list last heard, who said it, and when.
+func keptModels(agent string) (keptList, string, time.Time) {
+	fi, err := os.Stat(modelsPath(agent))
+	if err != nil {
+		return keptList{}, "", time.Time{}
+	}
+	b, err := os.ReadFile(modelsPath(agent))
+	if err != nil {
+		return keptList{}, "", time.Time{}
+	}
+	var k keptList
+	if json.Unmarshal(b, &k) != nil {
+		return keptList{}, "", time.Time{}
+	}
+	return k, k.From, fi.ModTime()
 }
 
 // knownModels is what pier knows an agent offers before any session said.
@@ -285,8 +449,7 @@ func knownModels(agent string) []wire.ModelInfo {
 		return []wire.ModelInfo{{ID: "", Name: "Default", Description: "The model your codex account defaults to.", Default: true}}
 	}
 	return []wire.ModelInfo{
-		{ID: "default", Name: "Default", Description: "The model your account defaults to.", Efforts: efforts, Default: true},
-		{ID: "opus", Name: "Opus", Description: "For complex work.", Efforts: efforts},
+		{ID: "opus", Name: "Opus", Description: "For complex work.", Efforts: efforts, Default: true},
 		{ID: "sonnet", Name: "Sonnet", Description: "Efficient for most tasks.", Efforts: efforts},
 		{ID: "haiku", Name: "Haiku", Description: "Fastest for quick answers."},
 	}

@@ -79,6 +79,12 @@ type status struct {
 	Ports []port `json:"ports,omitempty"`
 	// Res is the session's load this tick.
 	Res *resources `json:"res,omitempty"`
+	// Renamed is the branch the session named itself after its first
+	// prompt, while it's still on it; Branch the checkout's branch once
+	// it's pushed as the session's own (branchname.go). The laptop
+	// relabels the session after them, Branch first.
+	Renamed string `json:"renamed,omitempty"`
+	Branch  string `json:"branch,omitempty"`
 	// ParkAt is when the session parks if nothing changes: set while it is
 	// quiet and detached. CapAt is when the runaway cap stops it: set while
 	// it works with nobody attached.
@@ -165,6 +171,9 @@ func main() {
 	detachedBusySince := time.Time{}
 	last := status{}
 	lastSnap := time.Time{}
+	// The branches take three git runs: read every few ticks, not each.
+	var branchesAt time.Time
+	var renamed, own string
 	var cpu cpuSampler
 	var procs procSampler
 	h := newHub()
@@ -239,6 +248,7 @@ func main() {
 		last.Setup = setup
 		res := readResources(&cpu)
 		last.Res = &res
+		load.add(now, res)
 		last.IdleTimeout, last.Cap = int64(idleTimeout.Seconds()), int64(cap_.Seconds())
 		last.ParkAt, last.CapAt = nil, nil
 		if idleTimeout > 0 && !attached && !busy {
@@ -250,6 +260,11 @@ func main() {
 			last.CapAt = &at
 		}
 		last.Chats = host.summaries()
+		if now.Sub(branchesAt) >= branchesEvery {
+			renamed, own = sessionBranches(home)
+			branchesAt = now
+		}
+		last.Renamed, last.Branch = renamed, own
 		writeStatus(last)
 		h.publish("status", last)
 		if h.watching("env") {

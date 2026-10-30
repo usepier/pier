@@ -10,6 +10,7 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 	"github.com/usepier/pier/internal/pool"
 	"github.com/usepier/pier/internal/tombstone"
 )
@@ -25,7 +26,10 @@ type CreateRequest struct {
 	// NoPool skips claiming one of the repo's pooled sessions.
 	NoPool bool
 	// Chat starts the session with a chat, optionally with a first prompt.
-	Chat     *ChatRequest
+	Chat *ChatRequest
+	// AutoName: Branch only stands in (SuggestName); the session names its
+	// branch after the chat's first prompt, and itself after the branch.
+	AutoName bool
 	Progress Progress
 }
 
@@ -57,9 +61,11 @@ type CreateResult struct {
 func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, error) {
 	start := time.Now()
 	step := req.Progress.stepper(start)
+	// Origin's default branch as origin has it now, unless a base is named
+	// (HEAD: the clone as it is, uncommitted work and all).
 	base := req.Base
 	if base == "" {
-		base = "HEAD"
+		base = payload.OriginBase(ctx, req.RepoRoot)
 	}
 	sessions, err := c.drv.List(ctx)
 	if err != nil {
@@ -70,16 +76,16 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 			return CreateResult{}, fmt.Errorf("session %q already exists — `pier attach %s`", req.Branch, req.Branch)
 		}
 	}
-	idle, err := c.duration(req.Idle, c.cfg.IdleTimeout)
+	idle, err := c.duration(req.Idle, c.conf().IdleTimeout)
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("idle timeout: %w", err)
 	}
-	cap_, err := c.duration(req.Cap, c.cfg.UnattendedCap)
+	cap_, err := c.duration(req.Cap, c.conf().UnattendedCap)
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("runaway cap: %w", err)
 	}
 	repo := filepath.Base(req.RepoRoot)
-	if c.cfg.BakedImage(repo) == "" {
+	if c.conf().BakedImage(repo) == "" {
 		// The config may just have lost track of an image the cloud still
 		// holds (a reset config, another laptop's bake).
 		if _, err := c.ReconcileImages(ctx); err != nil {
@@ -89,7 +95,7 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 	if err := c.needImage(req.RepoRoot); err != nil {
 		return CreateResult{}, err
 	}
-	image := c.cfg.BakedImage(repo)
+	image := c.conf().BakedImage(repo)
 
 	if req.Chat != nil {
 		c.withDefaults(req.Chat)
@@ -98,7 +104,10 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 	if err != nil {
 		return CreateResult{}, err
 	}
-	poolable := c.cfg.PoolSize(repo) > 0 && !req.NoPool
+	if req.AutoName && chat != nil && chat.Prompt != "" {
+		chat.NameBranch = req.Branch
+	}
+	poolable := c.conf().PoolSize(repo) > 0 && !req.NoPool
 	var res CreateResult
 	if poolable {
 		pp, err := c.poolParams(req.RepoRoot, req.Progress, start)
@@ -167,7 +176,7 @@ func (c *Client) SpawnCreate(repoRoot, branch string) (string, error) {
 // its own error is what the user acts on — a record write that fails must
 // not mask it.
 func (c *Client) bury(req CreateRequest, cause error) {
-	drv := c.cfg.Driver
+	drv := c.conf().Driver
 	if drv == "" {
 		drv = "aws-ec2"
 	}
@@ -186,12 +195,17 @@ func fileExists(p string) bool {
 	return err == nil && !fi.IsDir()
 }
 
+// DefaultBase is what a session of the repo starts from unless told
+// otherwise: origin's default branch ("origin/main"), as this clone last
+// fetched it (a create fetches it first); HEAD for a repo with no origin.
+func DefaultBase(repoRoot string) string { return payload.KnownBase(repoRoot) }
+
 // needImage refuses a repo with a bake hook but no session image. The hook
 // declares that the stock image isn't enough: a session launched from it
 // runs .pier/setup.sh without the toolchains and fails minutes later.
 func (c *Client) needImage(repoRoot string) error {
 	repo := filepath.Base(repoRoot)
-	if c.cfg.BakedImage(repo) == "" && driver.BakeHook(repoRoot) != "" {
+	if c.conf().BakedImage(repo) == "" && len(payload.BakeHook(repoRoot, payload.KnownBase(repoRoot))) > 0 {
 		if BakeRunning(repo) {
 			return fmt.Errorf("%s's first session image is still being baked or saved — sessions can start once it's done (log: %s)",
 				repo, BakeFinishLogPath(repo))

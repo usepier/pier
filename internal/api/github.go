@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -28,30 +31,91 @@ const (
 
 // prCache is every session's pull request, refreshed by a loop of its own
 // while the overview is watched, on GitHub's cadence rather than the
-// cloud's.
+// cloud's. It's kept on disk, so pull requests show the moment the app
+// opens, before GitHub has answered again.
 type prCache struct {
 	s     *Server
 	kickc chan struct{}
 
-	mu      sync.Mutex
-	prs     map[string]pier.PR // by session id
+	mu  sync.Mutex
+	prs map[string]pier.PR // by session id
+	// checked is the branch GitHub was last asked about, by session id:
+	// until it has been, a session without a pull request says nothing.
+	checked map[string]string
 	at      time.Time
 	pending bool
 	lastErr error
 }
 
-func newPRCache(s *Server) *prCache {
-	return &prCache{s: s, prs: map[string]pier.PR{}, kickc: make(chan struct{}, 1)}
+type keptPRs struct {
+	PRs     map[string]pier.PR `json:"prs"`
+	Checked map[string]string  `json:"checked"`
 }
 
-func (c *prCache) snapshot() map[string]pier.PR {
+func prsPath() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "pier", "prs.json")
+}
+
+func newPRCache(s *Server) *prCache {
+	c := &prCache{s: s, prs: map[string]pier.PR{}, checked: map[string]string{}, kickc: make(chan struct{}, 1)}
+	var k keptPRs
+	if b, err := os.ReadFile(prsPath()); err == nil && json.Unmarshal(b, &k) == nil {
+		if k.PRs != nil {
+			c.prs = k.PRs
+		}
+		if k.Checked != nil {
+			c.checked = k.Checked
+		}
+	}
+	return c
+}
+
+// saveLocked keeps the cache for the next start; c.mu is held.
+func (c *prCache) saveLocked() {
+	b, err := json.Marshal(keptPRs{PRs: c.prs, Checked: c.checked})
+	if err == nil {
+		err = os.MkdirAll(filepath.Dir(prsPath()), 0o700)
+	}
+	if err == nil {
+		tmp := prsPath() + ".tmp"
+		if err = os.WriteFile(tmp, b, 0o600); err == nil {
+			err = os.Rename(tmp, prsPath())
+		}
+	}
+	if err != nil {
+		c.s.logf("keeping pull requests: %v", err)
+	}
+}
+
+func (c *prCache) snapshot() (map[string]pier.PR, map[string]string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make(map[string]pier.PR, len(c.prs))
+	prs := make(map[string]pier.PR, len(c.prs))
 	for k, v := range c.prs {
-		out[k] = v
+		prs[k] = v
 	}
-	return out
+	checked := make(map[string]string, len(c.checked))
+	for k, v := range c.checked {
+		checked[k] = v
+	}
+	return prs, checked
+}
+
+// unchecked reports a session GitHub hasn't been asked about on its
+// current branch.
+func (c *prCache) unchecked(sessions []pier.Session) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range sessions {
+		if s.PoolGen == "" && !pier.BakeMachine(s) && s.Branch != "" && c.checked[s.ID] != s.Branch {
+			return true
+		}
+	}
+	return false
 }
 
 // kick refreshes pull requests now (after a push, a merge, a re-run).
@@ -63,13 +127,6 @@ func (c *prCache) kick() {
 	case c.kickc <- struct{}{}:
 	default:
 	}
-}
-
-// never reports pull requests not read yet.
-func (c *prCache) never() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.at.IsZero()
 }
 
 // wait is how long until the next refresh is due: soon while checks run,
@@ -115,6 +172,13 @@ func (c *prCache) run(ctx context.Context) {
 		}
 		sessions, ok := c.s.overview.listed()
 		if !ok || err != nil {
+			// Nothing listed yet: the first listing kicks.
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.kickc:
+			case <-time.After(pollFast):
+			}
 			continue
 		}
 		if c.refresh(ctx, be, sessions) {
@@ -130,9 +194,20 @@ func (c *prCache) refresh(ctx context.Context, be PullRequests, sessions []pier.
 	prs, err := be.PullRequests(ctx, sessions)
 	c.mu.Lock()
 	c.at, c.lastErr = time.Now(), err
+	// Asked, answered or not: a failed read leaves the last pull requests
+	// standing rather than "checking" for good.
+	oldChecked := c.checked
+	c.checked = make(map[string]string, len(sessions))
+	for _, s := range sessions {
+		c.checked[s.ID] = s.Branch
+	}
 	if err != nil && len(prs) == 0 {
+		changed := !reflect.DeepEqual(oldChecked, c.checked)
+		if changed {
+			c.saveLocked()
+		}
 		c.mu.Unlock()
-		return false
+		return changed
 	}
 	old := c.prs
 	c.prs = prs
@@ -142,11 +217,15 @@ func (c *prCache) refresh(ctx context.Context, be PullRequests, sessions []pier.
 			c.pending = true
 		}
 	}
+	changed := !reflect.DeepEqual(old, prs) || !reflect.DeepEqual(oldChecked, c.checked)
+	if changed {
+		c.saveLocked()
+	}
 	c.mu.Unlock()
 	for _, s := range sessions {
 		c.s.notices.pr(s, old[s.ID], prs[s.ID])
 	}
-	return !reflect.DeepEqual(old, prs)
+	return changed
 }
 
 // cached is a session's pull request from the last refresh.
@@ -155,6 +234,33 @@ func (c *prCache) cached(id string) (pier.PR, bool) {
 	defer c.mu.Unlock()
 	p, ok := c.prs[id]
 	return p, ok
+}
+
+// keep records a pull request read outside the refresh loop.
+func (c *prCache) keep(s pier.Session, p pier.PR) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.prs[s.ID], c.checked[s.ID] = p, s.Branch
+	c.saveLocked()
+}
+
+// prLive reads a session's pull request from GitHub now, for a guard on
+// what can't be undone: the cache can be a minute behind (a merge just
+// made shows as open). Merged is for good, so the cache's word on that
+// stands.
+func (s *Server) prLive(ctx context.Context, be PullRequests, sess pier.Session) (pier.PR, error) {
+	if p, ok := s.prs.cached(sess.ID); ok && p.State == "merged" {
+		return p, nil
+	}
+	prs, err := be.PullRequests(ctx, []pier.Session{sess})
+	if p, ok := prs[sess.ID]; ok {
+		s.prs.keep(sess, p)
+		return p, nil
+	}
+	if err != nil {
+		return pier.PR{}, err
+	}
+	return pier.PR{}, pier.ErrNoPR
 }
 
 // prFor finds a session's pull request: the cache, else a fresh look.
@@ -175,17 +281,17 @@ func (s *Server) prFor(ctx context.Context, be PullRequests, sess pier.Session) 
 func wirePRDetail(d pier.PRDetail) wire.PRDetail {
 	w := wire.PRDetail{PRSummary: *wirePR(d.PR), ID: d.ID, Body: d.Body, Runs: []wire.PRCheck{}, Threads: []wire.PRThread{}, Reviews: []wire.PRReview{}}
 	for _, c := range d.Checks {
-		w.Runs = append(w.Runs, wire.PRCheck{Name: c.Name, State: c.State, URL: c.URL, JobID: c.JobID, RunID: c.RunID})
+		w.Runs = append(w.Runs, wire.PRCheck{Name: c.Name, State: c.State, URL: c.URL, JobID: c.JobID})
 	}
 	for _, t := range d.Threads {
 		wt := wire.PRThread{Path: t.Path, Line: t.Line, Resolved: t.Resolved, Outdated: t.Outdated, Comments: []wire.PRComment{}}
 		for _, c := range t.Comments {
-			wt.Comments = append(wt.Comments, wire.PRComment{Author: c.Author, Body: c.Body})
+			wt.Comments = append(wt.Comments, wire.PRComment{Author: c.Author, Body: c.Body, HTML: c.HTML})
 		}
 		w.Threads = append(w.Threads, wt)
 	}
 	for _, r := range d.Reviews {
-		w.Reviews = append(w.Reviews, wire.PRReview{Author: r.Author, State: r.State, Body: r.Body})
+		w.Reviews = append(w.Reviews, wire.PRReview{Author: r.Author, State: r.State, Body: r.Body, HTML: r.HTML})
 	}
 	return w
 }
@@ -273,19 +379,7 @@ func init() {
 			text, err := be.CheckLog(ctx, sess, p.JobID, prLogBytes)
 			return wire.LogText{Text: text}, err
 		})
-	handle("pr.rerun", "Re-runs a workflow run's failed jobs.",
-		func(ctx context.Context, s *Server, _ *Call, p wire.PRRerunParams) (*wire.Empty, error) {
-			be, sess, err := s.sessionFor(ctx, p.SessionID)
-			if err != nil {
-				return nil, err
-			}
-			if err := be.RerunChecks(ctx, sess, p.RunID); err != nil {
-				return nil, err
-			}
-			s.prs.kick()
-			return nil, nil
-		})
-	handle("pr.merge", "Merges a session's pull request — only at the head that was reviewed (kind head_moved otherwise).",
+	handle("pr.merge", "Merges a session's pull request with the repository's default method — only at the head that was reviewed (kind head_moved otherwise).",
 		func(ctx context.Context, s *Server, _ *Call, p wire.PRMergeParams) (*wire.Empty, error) {
 			be, sess, err := s.sessionFor(ctx, p.SessionID)
 			if err != nil {
@@ -295,7 +389,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			if err := be.MergePR(ctx, sess, pr.ID, p.Method, p.ExpectedHeadOid); err != nil {
+			if err := be.MergePR(ctx, sess, pr.ID, p.ExpectedHeadOid); err != nil {
 				return nil, err
 			}
 			s.prs.kick()
@@ -327,7 +421,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			pr, err := s.prFor(ctx, be, sess)
+			pr, err := s.prLive(ctx, be, sess)
 			if err != nil {
 				return nil, err
 			}

@@ -46,13 +46,13 @@ func init() {
 			}
 			req := pier.CreateRequest{
 				RepoRoot: root, Branch: p.Branch, Base: p.Base,
-				Idle: msPtr(p.IdleMs), Cap: msPtr(p.CapMs), NoPool: p.NoPool,
+				Idle: msPtr(p.IdleMs), Cap: msPtr(p.CapMs), NoPool: p.NoPool, AutoName: p.AutoName,
 			}
 			if a := p.Chat; a != nil {
 				if a.Agent != "claude" && a.Agent != "codex" {
 					return wire.Job{}, invalidParams("agent is claude or codex")
 				}
-				req.Chat = &pier.ChatRequest{Agent: a.Agent, Model: a.Model, Effort: a.Effort, Mode: a.Mode}
+				req.Chat = &pier.ChatRequest{Agent: a.Agent, Model: a.Model, Effort: a.Effort, Fast: a.Fast, Mode: a.Mode}
 				if a.Prompt != "" {
 					req.Chat.Prompt = &wire.ChatPrompt{Text: a.Prompt}
 				}
@@ -63,6 +63,15 @@ func init() {
 			}
 			s.overview.kick(fastAfterAction)
 			return wireJob(j), nil
+		})
+	handle("sessions.suggestName", "A stand-in name for a new session that no session has: with a first prompt and autoName, the session names its branch after the prompt.",
+		func(ctx context.Context, s *Server, _ *Call, _ wire.Empty) (wire.SuggestedName, error) {
+			sessions, _ := s.overview.listed()
+			taken := map[string]bool{}
+			for _, sess := range sessions {
+				taken[sess.Name] = true
+			}
+			return wire.SuggestedName{Name: pier.SuggestName(func(n string) bool { return taken[n] })}, nil
 		})
 	handle("image.bake", "Bakes the checkout's repo into a session image in a background job.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.BakeParams) (wire.Job, error) {
@@ -109,6 +118,13 @@ func init() {
 	handle("jobs.cancel", "Stops a running job the way ctrl-c would, cleanup included.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.JobRef) (*wire.Empty, error) {
 			return nil, pier.CancelJob(p.ID)
+		})
+	handle("pool.log", "The tail of a repo's pool log: its fills as they ran, the failed one's reason included.",
+		func(ctx context.Context, s *Server, _ *Call, p wire.PoolLogParams) (wire.LogText, error) {
+			if p.Repo == "" || strings.ContainsAny(p.Repo, `/\`) || strings.HasPrefix(p.Repo, ".") {
+				return wire.LogText{}, invalidParams("repo is a repository's name")
+			}
+			return tailFile(pier.PoolLogPath(p.Repo), p.Lines)
 		})
 	handle("jobs.log", "The tail of a job's human log.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.LogParams) (wire.LogText, error) {

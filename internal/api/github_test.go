@@ -20,7 +20,7 @@ func TestPullRequests(t *testing.T) {
 		t.Errorf("session = %+v pr %+v", s, s.PR)
 	}
 
-	resp, _ = c.call("pr.merge", map[string]any{"sessionId": "i-1", "method": "squash", "expectedHeadOid": "old"})
+	resp, _ = c.call("pr.merge", map[string]any{"sessionId": "i-1", "expectedHeadOid": "old"})
 	if errKind(resp) != "head_moved" {
 		t.Errorf("merge past the reviewed head = %v", resp)
 	}
@@ -73,7 +73,7 @@ func TestPullRequestsRefreshOnTheirOwn(t *testing.T) {
 		remarshal(t, c.next("sub.event")["params"].(map[string]any)["data"], &o)
 	}
 	before := reads()
-	c.call("pr.merge", map[string]any{"sessionId": "i-1", "method": "squash", "expectedHeadOid": "abc"})
+	c.call("pr.merge", map[string]any{"sessionId": "i-1", "expectedHeadOid": "abc"})
 	waitFor(t, func() bool { return reads() > before }, func() string { return "a merge didn't read pull requests again" })
 }
 
@@ -94,5 +94,23 @@ func TestAttentionOrder(t *testing.T) {
 		if got := attention(ok, &pr); got != want {
 			t.Errorf("%+v = %q, want %q", pr, got, want)
 		}
+	}
+}
+
+// Removing a merged session asks GitHub, not the last look: a pull request
+// merged a moment ago still reads open in the cache.
+func TestRemoveMergedReadsThePullRequestNow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{prOpen: true, sessions: []pier.Session{{ID: "i-1", Name: "fix", Repo: "shop", Branch: "fix", Origin: "github.com/acme/shop", State: pier.StateRunning}}}
+	c := start(t, f)
+	c.call("overview.get", map[string]any{}) // the cache: open
+	f.mu.Lock()
+	f.prOpen = false // merged since
+	f.mu.Unlock()
+	resp, _ := c.call("sessions.removeMerged", map[string]any{"id": "i-1"})
+	// Past the merge check, held only by the checkout's uncommitted work.
+	if e, _ := resp["error"].(map[string]any); e == nil || !strings.Contains(e["message"].(string), "uncommitted") {
+		t.Errorf("remove after a merge = %v", resp)
 	}
 }

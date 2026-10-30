@@ -23,6 +23,9 @@ func wireEnv(e pier.Env) wire.Env {
 	if r := e.Res; r != nil {
 		w.Resources = &wire.Resources{CPU: r.CPU, CPUs: r.CPUs, MemUsed: r.MemUsed, MemTotal: r.MemTotal, DiskUsed: r.DiskUsed, DiskTotal: r.DiskTotal, Load1: r.Load1}
 	}
+	for _, p := range e.Load {
+		w.Load = append(w.Load, wire.LoadPoint{At: p.At.UTC(), CPU: p.CPU, MemUsed: p.MemUsed})
+	}
 	return w
 }
 

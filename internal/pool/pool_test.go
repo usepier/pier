@@ -1,6 +1,8 @@
 package pool
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -157,5 +159,40 @@ func TestMembersAreThisMachines(t *testing.T) {
 	}
 	if all := Members(sessions, "shop", nil); len(all) != 2 {
 		t.Errorf("without a filter every member counts: %+v", all)
+	}
+}
+
+// A push whose connection breaks is tried again over a path resolved
+// afresh — not the address that just failed — and a remote refusal isn't
+// tried again at all.
+func TestPushAllRetriesOnAFreshPath(t *testing.T) {
+	pushBackoff = time.Millisecond
+	pushes := []payload.Push{{Local: "a", Remote: "/tmp/a"}, {Local: "b", Remote: "/tmp/b"}}
+	paths := []string{"direct", "tunnel"}
+	resolved, invalidated := 0, 0
+	target := func() ([]string, string, error) {
+		resolved++
+		return nil, paths[min(resolved, len(paths))-1], nil
+	}
+	var copied []string
+	cp := func(_ []string, dest, local, _ string) error {
+		if dest == "direct" {
+			return errors.New("scp a -> agent@i-1: ssh: connect to host 3.1.2.3 port 22: Network is unreachable")
+		}
+		copied = append(copied, local)
+		return nil
+	}
+	_, dest, err := pushAll(context.Background(), pushes, target, func() { invalidated++ }, cp, func(string) {})
+	if err != nil || dest != "tunnel" || invalidated != 1 || !slices.Equal(copied, []string{"a", "b"}) {
+		t.Errorf("err=%v dest=%s invalidated=%d copied=%v", err, dest, invalidated, copied)
+	}
+
+	tries := 0
+	refuse := func([]string, string, string, string) error {
+		tries++
+		return errors.New("scp: /tmp/a: Permission denied")
+	}
+	if _, _, err := pushAll(context.Background(), pushes, target, func() {}, refuse, func(string) {}); err == nil || tries != 1 {
+		t.Errorf("refusal: err=%v tries=%d", err, tries)
 	}
 }

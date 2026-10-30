@@ -44,7 +44,9 @@ func cmdNew(args []string) {
 		}
 	}
 	fs := flag.NewFlagSet("new", flag.ExitOnError)
-	var detach, noPark, noPool bool
+	var detach, noPark, noPool, autoName, fast bool
+	fs.BoolVar(&fast, "fast", false, "")
+	fs.BoolVar(&autoName, "auto-name", false, "") // the branch only stands in (a background create's)
 	fs.BoolVar(&detach, "d", false, "")
 	fs.BoolVar(&detach, "detach", false, "")
 	fs.BoolVar(&noPark, "no-park", false, "")
@@ -68,11 +70,18 @@ func cmdNew(args []string) {
 		os.Remove(promptFile)
 		promptS = string(b)
 	}
-	if len(pos) < 1 || len(pos) > 2 {
+	// No branch but a first prompt: a stand-in name, and the session names
+	// its branch after the prompt.
+	if len(pos) == 0 && promptS != "" {
+		autoName = true
+	} else if len(pos) < 1 || len(pos) > 2 {
 		printUsage()
 		os.Exit(1)
 	}
-	req := pier.CreateRequest{Branch: pos[0], NoPool: noPool, Progress: progress}
+	req := pier.CreateRequest{NoPool: noPool, AutoName: autoName, Progress: progress}
+	if len(pos) > 0 {
+		req.Branch = pos[0]
+	}
 	if len(pos) == 2 {
 		req.Base = pos[1]
 	}
@@ -93,9 +102,9 @@ func cmdNew(args []string) {
 		}
 		req.Cap = &d
 	}
-	if *agentS != "" || promptS != "" {
+	if *agentS != "" || promptS != "" || fast {
 		// Unset: the agent settings (pier settings → Agents) decide.
-		req.Chat = &pier.ChatRequest{Agent: *agentS, Model: *modelS, Effort: *effortS, Mode: *permS}
+		req.Chat = &pier.ChatRequest{Agent: *agentS, Model: *modelS, Effort: *effortS, Fast: fast, Mode: *permS}
 		if promptS != "" {
 			req.Chat.Prompt = &wire.ChatPrompt{Text: promptS}
 		}
@@ -103,9 +112,20 @@ func cmdNew(args []string) {
 
 	c := open()
 	req.RepoRoot = repoRoot()
+	if req.Branch == "" {
+		all, err := c.ListSessions(context.Background())
+		if err != nil {
+			fatal(err)
+		}
+		taken := map[string]bool{}
+		for _, s := range all {
+			taken[s.Name] = true
+		}
+		req.Branch = pier.SuggestName(func(n string) bool { return taken[n] })
+	}
 	base := req.Base
 	if base == "" {
-		base = "HEAD"
+		base = pier.DefaultBase(req.RepoRoot)
 	}
 	fmt.Printf("%s %s\n", ui.Bold.Render("creating "+req.Branch),
 		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(req.RepoRoot), base)))

@@ -198,7 +198,7 @@ func (h *hub) handle(conn net.Conn) {
 				if env == nil {
 					env = envSnapshot(nil)
 				}
-				c.send(message{Ev: "env", Data: env})
+				c.send(message{Ev: "env", Data: withLoad(env)})
 			}
 			if c.wants("git") {
 				// A watcher that kept it current answers now; otherwise

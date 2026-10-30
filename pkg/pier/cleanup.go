@@ -35,13 +35,13 @@ func (c *Client) sweepable(s Session, maxAge time.Duration, now time.Time) bool 
 	}
 	lived := now.Sub(s.Created)
 	if s.PoolGen == "" {
-		return s.Name == "bake" && s.Repo == "bake" && lived >= bakeMaxLife
+		return BakeMachine(s) && lived >= bakeMaxLife
 	}
 	switch {
 	case s.State == driver.StateDead,
 		// No pool for this repo (size 0, or no session image to pool): a
 		// claim never looks, so nothing ever would.
-		c.cfg.PoolSize(s.Repo) == 0,
+		c.conf().PoolSize(s.Repo) == 0,
 		maxAge > 0 && lived >= maxAge,
 		s.State != driver.StateParked && lived >= pool.FillGrace:
 		return true
@@ -54,7 +54,7 @@ func (c *Client) sweepable(s Session, maxAge time.Duration, now time.Time) bool 
 // returns the list with those rows marked deleting. A destroy that fails
 // leaves its row as it was; the next sweep tries again.
 func (c *Client) Sweep(ctx context.Context, sessions []Session) []Session {
-	maxAge, _ := c.cfg.PoolMaxAge() // unparsable → 0, which skips the age check
+	maxAge, _ := c.conf().PoolMaxAge() // unparsable → 0, which skips the age check
 	now := time.Now()
 	out := append([]Session(nil), sessions...)
 	var wg sync.WaitGroup
@@ -141,7 +141,7 @@ func (c *Client) ReconcileImages(ctx context.Context) (ImageReport, error) {
 	if err != nil {
 		return rep, err
 	}
-	c.cfg = next
+	c.setConf(next)
 	for _, img := range stale {
 		if err := c.drv.DeleteImage(ctx, img.ID); err != nil {
 			return rep, fmt.Errorf("deleting superseded image %s: %w", img.ID, err)

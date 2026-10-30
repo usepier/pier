@@ -132,9 +132,11 @@ func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage 
 // followed. A listed path travels with no git-status distinction, and the tar
 // extracts after checkout + patch, so listed content wins. No file, or an
 // empty one, means no explicit extras travel.
-func pierIncludeFiles(repoRoot string) []string {
-	b, err := os.ReadFile(filepath.Join(repoRoot, ".pier", "include"))
-	if err != nil {
+func pierIncludeFiles(repoRoot, base string) []string {
+	// The list is the base's; the files it names are this clone's (they're
+	// ignored, so only it has them).
+	b := FileAt(repoRoot, base, ".pier/include")
+	if b == nil {
 		return nil
 	}
 	seen := map[string]bool{}

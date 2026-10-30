@@ -18,10 +18,10 @@ func (c *Client) Prompts(repo string) []Prompt {
 	for _, k := range config.PromptKinds {
 		p := Prompt{Key: k.Key, Title: k.Title, Description: k.Description, Inherited: k.Default}
 		if repo != "" {
-			p.Inherited = c.cfg.Prompt("", k.Key)
+			p.Inherited = c.conf().Prompt("", k.Key)
 		}
-		p.Own = c.cfg.PromptOverride(repo, k.Key)
-		p.Effective = c.cfg.Prompt(repo, k.Key)
+		p.Own = c.conf().PromptOverride(repo, k.Key)
+		p.Effective = c.conf().Prompt(repo, k.Key)
 		out = append(out, p)
 	}
 	return out
@@ -36,6 +36,6 @@ func (c *Client) SetPrompt(repo, key, text string) error {
 	if err != nil {
 		return err
 	}
-	c.cfg = next
+	c.setConf(next)
 	return nil
 }

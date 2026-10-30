@@ -102,3 +102,70 @@ func TestFollowJobEndsWhenTheProcessDies(t *testing.T) {
 		t.Errorf("last event = %+v, want failed", last)
 	}
 }
+
+// A bake hands its job to its background finish: the job runs while the
+// finish does — though the bake's own process has ended — and ends with
+// what the finish reports, in the same events.
+func TestJobHandedOffRunsUntilItsFinishEnds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bake := exec.Command("true")
+	bake.Run()
+	finish := exec.Command("sleep", "30")
+	finish.Start()
+	defer finish.Process.Kill()
+
+	j := Job{ID: "bak111", Kind: JobBake, PID: bake.Process.Pid, Events: filepath.Join(jobsDir(), "bak111.events"),
+		Log: filepath.Join(config.Dir(), "x.log"), Started: time.Now()}
+	writeJob(t, j)
+	l, _ := OpenEventLog(j.Events)
+	l.Write(Event{Kind: EventStep, Message: "imaging"})
+	if err := handOffJob(l.Path(), finish.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	l.Handoff()
+	l.Finish(nil, "the bake's process mustn't end it") // after a handoff, nothing
+	if got, _ := JobByID("bak111"); got.State != JobRunning {
+		t.Fatalf("handed off = %s", got.State)
+	}
+	fl, _ := OpenEventLog(j.Events)
+	fl.Write(Event{Kind: EventStep, Message: "snapshot 40%"})
+	fl.Finish(nil, "image ready")
+	got, _ := JobByID("bak111")
+	events, _ := JobEvents(got)
+	if got.State != JobDone || got.Summary != "image ready" || len(events) != 3 {
+		t.Errorf("job = %s %q, %d events", got.State, got.Summary, len(events))
+	}
+}
+
+// Following a job that's handed off mid-way goes on with the process it's
+// handed to, to its final event — not ending with the first one's exit.
+func TestFollowJobAcrossAHandoff(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bake := exec.Command("sleep", "0.6")
+	bake.Start()
+	go bake.Wait()
+	finish := exec.Command("sleep", "30")
+	finish.Start()
+	defer finish.Process.Kill()
+	j := Job{ID: "eee555", Kind: JobBake, PID: bake.Process.Pid, Events: filepath.Join(jobsDir(), "eee555.events"), Started: time.Now()}
+	writeJob(t, j)
+	l, _ := OpenEventLog(j.Events)
+	l.Write(Event{Kind: EventStep, Message: "imaging"})
+	go func() {
+		// Followed from the start; handed off while followed.
+		time.Sleep(200 * time.Millisecond)
+		handOffJob(l.Path(), finish.Process.Pid)
+		l.Handoff()
+		time.Sleep(1200 * time.Millisecond) // the bake's process is gone by now
+		fl, _ := OpenEventLog(j.Events)
+		fl.Write(Event{Kind: EventStep, Message: "snapshot 100%"})
+		fl.Finish(nil, "image ready")
+	}()
+	var got []Event
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	FollowJob(ctx, j.ID, 0, func(e Event) { got = append(got, e) })
+	if len(got) != 3 || got[2].Kind != EventDone || got[2].Message != "image ready" {
+		t.Errorf("followed = %+v", got)
+	}
+}

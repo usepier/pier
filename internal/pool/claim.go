@@ -126,28 +126,19 @@ func freshen(ctx context.Context, p Params, member *driver.Session, name, branch
 		return plErr
 	}
 
-	// SSHTarget is the driver contract for features that manage their own
-	// ssh/scp processes — the same seam pier proxy rides.
-	opts, dest, err := p.Driver.SSHTarget(ctx, member.ID)
-	if err != nil {
-		return err
-	}
 	for _, n := range pl.Notes {
 		progress(n)
 	}
-	for _, push := range pl.Pushes {
-		if err := scpTo(ctx, p.Out, opts, dest, push.Local, push.Remote); err != nil {
-			if ctx.Err() != nil {
-				return err
-			}
-			// One retry: tunnels drop right as a just-started instance
-			// settles, exactly as during create.
-			progress("push interrupted — retrying")
-			time.Sleep(2 * time.Second)
-			if err := scpTo(ctx, p.Out, opts, dest, push.Local, push.Remote); err != nil {
-				return err
-			}
-		}
+	// SSHTarget is the driver contract for features that manage their own
+	// ssh/scp processes — the same seam pier proxy rides.
+	opts, dest, err := pushAll(ctx, pl.Pushes,
+		func() ([]string, string, error) { return p.Driver.SSHTarget(ctx, member.ID) },
+		func() { p.Driver.InvalidateTarget(member.ID) },
+		func(opts []string, dest, local, remote string) error {
+			return scpTo(ctx, p.Out, opts, dest, local, remote)
+		}, progress)
+	if err != nil {
+		return err
 	}
 	progress("switching to your branch, refreshing secrets, starting the environment")
 	var extra []string
@@ -158,6 +149,50 @@ func freshen(ctx context.Context, p Params, member *driver.Session, name, branch
 		return fmt.Errorf("freshen: %w\n%s", err, out)
 	}
 	return nil
+}
+
+// pushTries is how often a push is tried while the connection itself keeps
+// breaking; pushBackoff the first pause between tries, doubling after each.
+const pushTries = 3
+
+var pushBackoff = 2 * time.Second
+
+// pushAll copies each push to the member over the path target resolves. A
+// connection that breaks mid-copy — the laptop's network flapping, a tunnel
+// settling — is tried again over a path resolved afresh (invalidate), never
+// the address that just failed: one blip mustn't cost the warm member. A
+// remote refusal fails at once; retrying changes nothing. Returns the path
+// it ended on.
+func pushAll(ctx context.Context, pushes []payload.Push, target func() ([]string, string, error), invalidate func(),
+	cp func(opts []string, dest, local, remote string) error, progress func(string)) ([]string, string, error) {
+	opts, dest, err := target()
+	if err != nil {
+		return nil, "", err
+	}
+	for _, ps := range pushes {
+		backoff := pushBackoff
+		for try := 1; ; try++ {
+			err := cp(opts, dest, ps.Local, ps.Remote)
+			if err == nil {
+				break
+			}
+			if ctx.Err() != nil || !driver.TransportBroken(err) || try == pushTries {
+				return nil, "", err
+			}
+			progress("push interrupted — retrying")
+			select {
+			case <-ctx.Done():
+				return nil, "", err
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			invalidate()
+			if opts, dest, err = target(); err != nil {
+				return nil, "", err
+			}
+		}
+	}
+	return opts, dest, nil
 }
 
 func scpTo(ctx context.Context, out io.Writer, opts []string, dest, local, remote string) error {

@@ -23,6 +23,9 @@ import (
 // can drive the app without a cloud.
 type Backend interface {
 	Cloud() string
+	// Stale: the config now asks for another cloud or machine than this
+	// backend was built for (changed by another process) — open a new one.
+	Stale() bool
 	ListSessions(ctx context.Context) ([]pier.Session, error)
 	Sweep(ctx context.Context, sessions []pier.Session) []pier.Session
 	Enrich(ctx context.Context, sessions []pier.Session) []pier.Session
@@ -367,6 +370,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Background refreshes stay quiet: the spinner is for the first load
 		// and for refreshes the user asked for.
 		m.polling = false
+		if m.be.Stale() {
+			return m, func() tea.Msg {
+				be, err := m.opts.Open()
+				return reopenedMsg{be, err}
+			}
+		}
 		return m, m.fetch
 
 	case doneMsg:

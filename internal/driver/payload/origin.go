@@ -82,13 +82,23 @@ func BaseBranch(repo, baseRef string) string {
 	} else if b := strings.TrimPrefix(strings.TrimPrefix(baseRef, "refs/remotes/"), "origin/"); usable(b) {
 		return b
 	}
+	return DefaultBranch(repo)
+}
+
+// DefaultBranch is origin's default branch (main, usually), as this
+// checkout last fetched it; "" when it has none.
+func DefaultBranch(repo string) string {
+	has := func(b string) bool {
+		_, err := gitOut(repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/"+b)
+		return b != "" && checkName(b) == nil && err == nil
+	}
 	if d, err := gitOut(repo, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"); err == nil {
-		if b := strings.TrimPrefix(d, "origin/"); usable(b) {
+		if b := strings.TrimPrefix(d, "origin/"); has(b) {
 			return b
 		}
 	}
 	for _, b := range []string{"main", "master"} {
-		if usable(b) {
+		if has(b) {
 			return b
 		}
 	}

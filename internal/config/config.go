@@ -54,22 +54,35 @@ func (c *Config) UnlinkCheckout(root string) { delete(c.Checkouts, root) }
 // reminders), plus how images
 // are built and when pier suggests rebuilding them.
 // Agents are how new chats start unless told otherwise.
+// Agents is how new chats start: one default model — its agent, the
+// model ("" = what the agent runs by default) and its effort ("" = the
+// model's) — and each agent's permission mode.
 type Agents struct {
-	Default      string `toml:"default,omitempty"` // claude | codex
-	ClaudeModel  string `toml:"claude_model,omitempty"`
-	ClaudeEffort string `toml:"claude_effort,omitempty"`
-	ClaudeMode   string `toml:"claude_mode,omitempty"`
-	CodexModel   string `toml:"codex_model,omitempty"`
-	CodexEffort  string `toml:"codex_effort,omitempty"`
-	CodexMode    string `toml:"codex_mode,omitempty"`
+	Default    string `toml:"default,omitempty"` // claude | codex
+	Model      string `toml:"model,omitempty"`
+	Effort     string `toml:"effort,omitempty"`
+	ClaudeMode string `toml:"claude_mode,omitempty"`
+	CodexMode  string `toml:"codex_mode,omitempty"`
+
+	// Before one default model, each agent had its own: the default agent's
+	// carries over on load, and the next write drops them.
+	LegacyClaudeModel  string `toml:"claude_model,omitempty"`
+	LegacyClaudeEffort string `toml:"claude_effort,omitempty"`
+	LegacyCodexModel   string `toml:"codex_model,omitempty"`
+	LegacyCodexEffort  string `toml:"codex_effort,omitempty"`
 }
 
-// For is an agent's defaults: model, effort, permission mode.
+// For is an agent's defaults: model and effort for the default model's
+// agent ("" for the other: its own default), and its permission mode.
 func (a Agents) For(agent string) (model, effort, mode string) {
+	mode = a.ClaudeMode
 	if agent == "codex" {
-		return a.CodexModel, a.CodexEffort, a.CodexMode
+		mode = a.CodexMode
 	}
-	return a.ClaudeModel, a.ClaudeEffort, a.ClaudeMode
+	if agent == a.Agent() {
+		model, effort = a.Model, a.Effort
+	}
+	return model, effort, mode
 }
 
 // Agent is the agent new chats use.
@@ -210,6 +223,14 @@ func Load() (Config, error) {
 		}
 		c.Speed.LegacyReadySessions = nil // the next write drops the old key
 	}
+	if a := &c.Agents; !md.IsDefined("agents", "model") && !md.IsDefined("agents", "effort") {
+		a.Model, a.Effort = a.LegacyClaudeModel, a.LegacyClaudeEffort
+		if a.Agent() == "codex" {
+			a.Model, a.Effort = a.LegacyCodexModel, a.LegacyCodexEffort
+		}
+	}
+	c.Agents.LegacyClaudeModel, c.Agents.LegacyClaudeEffort = "", ""
+	c.Agents.LegacyCodexModel, c.Agents.LegacyCodexEffort = "", ""
 	return c, nil
 }
 

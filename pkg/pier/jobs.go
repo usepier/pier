@@ -128,6 +128,9 @@ func (c *Client) StartCreate(req CreateRequest) (Job, error) {
 	if req.NoPool {
 		args = append(args, "--no-pool")
 	}
+	if req.AutoName {
+		args = append(args, "--auto-name")
+	}
 	if a := req.Chat; a != nil {
 		args = append(args, "--agent", a.Agent)
 		if a.Model != "" {
@@ -135,6 +138,9 @@ func (c *Client) StartCreate(req CreateRequest) (Job, error) {
 		}
 		if a.Effort != "" {
 			args = append(args, "--effort", a.Effort)
+		}
+		if a.Fast {
+			args = append(args, "--fast")
 		}
 		if a.Mode != "" {
 			args = append(args, "--permission-mode", a.Mode)
@@ -187,6 +193,11 @@ func (c *Client) StartBake(repoRoot string, include *bool) (Job, error) {
 
 // StartFill tops up the repo's pool in the background.
 func (c *Client) StartFill(repoRoot string) (Job, error) {
+	// Refused here, not in the job: there the reason would only reach the
+	// pool's log.
+	if err := c.needImage(repoRoot); err != nil {
+		return Job{}, err
+	}
 	repo := filepath.Base(repoRoot)
 	// Append, never truncate: a claim can spawn a refill while the previous
 	// one is still writing the same log.
@@ -356,6 +367,12 @@ func FollowJob(ctx context.Context, id string, from int64, fn func(Event)) error
 			}
 		}
 		if !processAlive(j.PID) {
+			// Handed to another process (a bake's background finish): follow
+			// that one.
+			if cur, err := JobByID(id); err == nil && cur.PID != j.PID && processAlive(cur.PID) {
+				j = cur
+				continue
+			}
 			// One more read: the process may have written its last line
 			// between the read above and its exit.
 			b, _ := readEvents(j.Events, off)
@@ -380,6 +397,7 @@ func FollowJob(ctx context.Context, id string, from int64, fn func(Event)) error
 // process a job runs as writes its progress here.
 type EventLog struct {
 	mu    sync.Mutex
+	path  string
 	f     *os.File
 	start time.Time
 	ended bool
@@ -391,7 +409,56 @@ func OpenEventLog(path string) (*EventLog, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &EventLog{f: f, start: time.Now()}, nil
+	return &EventLog{path: path, f: f, start: time.Now()}, nil
+}
+
+// Path is the event file; "" for none.
+func (l *EventLog) Path() string {
+	if l == nil {
+		return ""
+	}
+	return l.path
+}
+
+// Handoff closes the log without a final event: another process (a bake's
+// background finish) carries the job on and ends it.
+func (l *EventLog) Handoff() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.ended {
+		l.ended = true
+		l.f.Close()
+	}
+}
+
+// handOffJob makes pid the process of the job writing events: the job
+// stays running while it does, and ends with what it reports.
+func handOffJob(events string, pid int) error {
+	entries, err := os.ReadDir(jobsDir())
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(jobsDir(), e.Name())
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var j Job
+		if json.Unmarshal(b, &j) != nil || j.Events != events {
+			continue
+		}
+		j.PID = pid
+		b, _ = json.Marshal(j)
+		return writeFileAtomic(path, b)
+	}
+	return fmt.Errorf("no job writes %s", events)
 }
 
 // Write records one event.

@@ -20,7 +20,9 @@ type Record struct {
 	Title  string `json:"title,omitempty"`
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
-	Mode   string `json:"mode,omitempty"`
+	// Fast: the agent's fast mode (faster output from the same model).
+	Fast bool   `json:"fast,omitempty"`
+	Mode string `json:"mode,omitempty"`
 	// Conversation is the agent's own id for it: claude's session id
 	// (chosen up front), codex's thread id (once it starts one).
 	Conversation string `json:"conversation,omitempty"`
@@ -57,6 +59,9 @@ type Prompt struct {
 	At          time.Time         `json:"at"`
 	// First marks a create's first prompt: it waits for setup to finish.
 	First bool `json:"first,omitempty"`
+	// NameBranch is the session's stand-in branch, when it's to be named
+	// after this prompt.
+	NameBranch string `json:"nameBranch,omitempty"`
 }
 
 // Dir is a chat's directory, relative to the home it lives in.

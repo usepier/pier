@@ -6,6 +6,23 @@ export interface AgentModels {
   agent: string;
   models: ModelInfo[];
   modes: ModeInfo[];
+  /**
+   * Commands are the slash commands the agent offers, as it says: its
+   * own, custom ones, skills.
+   */
+  commands: AgentCommand[];
+}
+
+/**
+ * AgentCommand is a slash command: typed as /Name, followed by what Hint
+ * says.
+ */
+export interface AgentCommand {
+  name: string;
+  description?: string;
+  hint?: string;
+  /** Path is where a skill is defined, for an agent that's handed it. */
+  path?: string;
 }
 
 /**
@@ -134,6 +151,8 @@ export interface ChatConfigureParams {
   chatId: string;
   model?: string;
   effort?: string;
+  /** Fast turns the agent's fast mode on or off; absent leaves it. */
+  fast?: boolean;
   mode?: string;
   title?: string;
 }
@@ -149,6 +168,7 @@ export interface ChatCreateParams {
   agent: string;
   model?: string;
   effort?: string;
+  fast?: boolean;
   mode?: string;
   title?: string;
   /** Prompt starts it, when given. */
@@ -179,6 +199,14 @@ export interface ChatDelta {
 export interface ChatInfo extends ChatSummary {
   model?: string;
   effort?: string;
+  /** Fast: the agent's fast mode is asked for. */
+  fast?: boolean;
+  /**
+   * FastOff is why it's off all the same, as the agent last said:
+   * preference (the organization turned it off), free (a paid plan
+   * needs it), extra_usage_disabled, model_not_allowed, …
+   */
+  fastOff?: string;
   /**
    * Mode is its permission mode: default, acceptEdits, plan,
    * bypassPermissions (codex: readOnly, default, plan, bypassPermissions).
@@ -339,6 +367,12 @@ export interface CheckoutInfo extends Checkout {
   dirty: number;
   /** origin branch a session from HEAD builds on */
   base: string;
+  /**
+   * DefaultBranch is origin's default branch ("main"): new sessions start
+   * from it (origin/<it>), and their pull requests target it, unless
+   * told otherwise.
+   */
+  defaultBranch: string;
 }
 
 /**
@@ -410,6 +444,12 @@ export interface CreateParams {
    * has finished.
    */
   chat?: NewChat;
+  /**
+   * AutoName: the branch only stands in (sessions.suggestName). With a
+   * first prompt, the session names its branch after it, and itself
+   * after the branch.
+   */
+  autoName?: boolean;
 }
 
 /**
@@ -467,6 +507,11 @@ export interface Env {
   processes: Process[];
   ports: Port[];
   resources?: Resources;
+  /**
+   * Load is the last few minutes of readings, oldest first — in the
+   * snapshot only; each event's resources is the next reading.
+   */
+  load?: LoadPoint[];
   at: string;
 }
 
@@ -646,6 +691,14 @@ export interface Event {
 /** EventKind is the kind of a progress event. */
 export type EventKind = "step" | "note" | "warn" | "done" | "failed";
 
+/** LoadPoint is one reading of a session's load, for graphs. */
+export interface LoadPoint {
+  at: string;
+  /** % of all CPUs */
+  cpu: number;
+  memUsed: number;
+}
+
 /** LogParams reads the tail of a log. */
 export interface LogParams {
   id: string;
@@ -690,7 +743,18 @@ export interface ModelInfo {
   efforts?: string[];
   /** DefaultEffort is the effort it runs at unless told otherwise. */
   defaultEffort?: string;
+  /** Default: the model a chat runs when none is picked. */
   default?: boolean;
+  /** Fast: it has a fast mode (faster output from the same model). */
+  fast?: boolean;
+  /** Resolved is the model an alias stands for ("opus" → claude-opus-5-5). */
+  resolved?: string;
+  /**
+   * Long: it has a 1M-context variant, run as ID + "[1m]". LongDefault:
+   * the agent's default runs that variant.
+   */
+  long?: boolean;
+  longDefault?: boolean;
 }
 
 /** ModelsParams asks what an agent offers. */
@@ -710,6 +774,7 @@ export interface NewChat {
   agent: string;
   model?: string;
   effort?: string;
+  fast?: boolean;
   mode?: string;
   prompt?: string;
 }
@@ -786,12 +851,8 @@ export interface PRCheck {
   /** State: pending | passing | failing | skipped */
   state: string;
   url: string;
-  /**
-   * JobID reads the log (pr.log); RunID re-runs it (pr.rerun). GitHub
-   * Actions only.
-   */
+  /** JobID reads the log (pr.log). GitHub Actions only. */
   jobId?: number;
-  runId?: number;
 }
 
 /** PRLogParams reads a check's log. */
@@ -803,19 +864,11 @@ export interface PRLogParams {
 /** PRMergeParams merges a session's pull request. */
 export interface PRMergeParams {
   sessionId: string;
-  /** merge | squash | rebase */
-  method: string;
   /**
    * ExpectedHeadOid is the head that was reviewed: if the pull request
    * moved past it, the merge fails with kind head_moved.
    */
   expectedHeadOid: string;
-}
-
-/** PRRerunParams re-runs a workflow run's failed jobs. */
-export interface PRRerunParams {
-  sessionId: string;
-  runId: number;
 }
 
 /** PRReview is a reviewer's verdict. */
@@ -824,6 +877,8 @@ export interface PRReview {
   /** approved | changes_requested | commented */
   state: string;
   body: string;
+  /** HTML is the body as GitHub renders it. */
+  html?: string;
 }
 
 /** PRSummary is a session's pull request, as a row shows it. */
@@ -860,6 +915,8 @@ export interface PRThread {
 export interface PRComment {
   author: string;
   body: string;
+  /** HTML is the body as GitHub renders it (markdown, its HTML, mentions). */
+  html?: string;
 }
 
 /** PathParams names a local path (a checkout or a directory inside one). */
@@ -891,6 +948,12 @@ export interface PermissionRequest {
   title?: string;
   /** Plan is the plan to approve, markdown. */
   plan?: string;
+}
+
+/** PoolLogParams asks for the tail of a repo's pool log. */
+export interface PoolLogParams {
+  repo: string;
+  lines?: number;
 }
 
 /** PoolSizeParams sets a repo's pool size; Path is its linked checkout. */
@@ -1090,6 +1153,11 @@ export interface Repo {
   /** a bake started on this machine is still running */
   baking: boolean;
   /**
+   * NeedsImage: no session image, and the checkout's .pier/bake.sh says
+   * sessions need one — none can start, nor the pool fill, until a bake.
+   */
+  needsImage: boolean;
+  /**
    * The pool: Target members kept, Ready parked and claimable, Filling
    * being set up, Stale about to recycle. Ages is one entry per member.
    */
@@ -1101,6 +1169,13 @@ export interface Repo {
   sessions: number;
   /** pooled disks plus image storage */
   monthlyUsd: number;
+  /** ImageMonthlyUSD is the image's share of MonthlyUSD. */
+  imageMonthlyUsd: number;
+  /**
+   * PoolError is the pool's last fill, when it failed: cleared by the
+   * next one that succeeds.
+   */
+  poolError?: PoolError;
   /**
    * HourlyUSD is what the repo's sessions bill right now; IdleMonthlyUSD
    * what it costs while nothing runs: parked disks, the pool, the image.
@@ -1112,6 +1187,12 @@ export interface Repo {
 
 /** ImageKind says what a repo's session image holds. */
 export type ImageKind = "" | "prebuilt" | "toolchain" | "unknown";
+
+/** PoolError says why a pool's last fill failed (pool.log has the rest). */
+export interface PoolError {
+  at: string;
+  message: string;
+}
 
 /** Reminder is one piece of rebake guidance. pier never acts on it. */
 export interface Reminder {
@@ -1221,6 +1302,11 @@ export interface Session {
   chats?: ChatSummary[];
   /** PR is the branch's pull request, when it has one. */
   pr?: PRSummary;
+  /**
+   * PRChecked says GitHub was asked about the branch: until it has
+   * been, no PR says nothing.
+   */
+  prChecked: boolean;
   /**
    * Attention says why the session needs the user, if it does:
    * needs_input, create_failed, setup_failed, ci_failing,
@@ -1410,6 +1496,11 @@ export interface SubEvent {
   seq: number;
   topic: string;
   data: unknown;
+}
+
+/** SuggestedName is a stand-in name for a new session. */
+export interface SuggestedName {
+  name: string;
 }
 
 /**
@@ -1695,6 +1786,8 @@ export interface Methods {
   "pool.drain": { params: RepoRef; result: DrainResult };
   /** Tops up the checkout's repo pool now, in a background job. */
   "pool.fill": { params: PathParams; result: Job };
+  /** The tail of a repo's pool log: its fills as they ran, the failed one's reason included. */
+  "pool.log": { params: PoolLogParams; result: LogText };
   /** Sets how many pooled sessions the checkout's repo keeps (0 turns the pool off and drains it). */
   "pool.setSize": { params: PoolSizeParams; result: null };
   /** Forwards a session's port to 127.0.0.1 on this Mac for as long as pier runs. */
@@ -1707,10 +1800,8 @@ export interface Methods {
   "pr.get": { params: SessionRef; result: PRDetail };
   /** The end of a check's log (GitHub Actions). */
   "pr.log": { params: PRLogParams; result: LogText };
-  /** Merges a session's pull request — only at the head that was reviewed (kind head_moved otherwise). */
+  /** Merges a session's pull request with the repository's default method — only at the head that was reviewed (kind head_moved otherwise). */
   "pr.merge": { params: PRMergeParams; result: null };
-  /** Re-runs a workflow run's failed jobs. */
-  "pr.rerun": { params: PRRerunParams; result: null };
   /** The prompts pier sends agents (fix CI, address comments, create a PR, onboard, review comments) for a repo, or every repo: each with its own text, what it falls back to, and what is sent. */
   "prompts.get": { params: PromptsParams; result: Prompts };
   /** Sets a prompt for a repo, or every repo; empty text falls back again. */
@@ -1749,6 +1840,8 @@ export interface Methods {
   "sessions.resize": { params: ResizeParams; result: Job };
   /** Wakes a parked session and waits until it answers. */
   "sessions.resume": { params: SessionRef; result: null };
+  /** A stand-in name for a new session that no session has: with a first prompt and autoName, the session names its branch after the prompt. */
+  "sessions.suggestName": { params: Empty; result: SuggestedName };
   /** The settings page: groups, fields and current values for the active cloud. */
   "settings.get": { params: Empty; result: Settings };
   /** The machine catalog the settings picker offers, around a current type. */

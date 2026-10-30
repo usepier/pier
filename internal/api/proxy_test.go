@@ -77,11 +77,18 @@ func TestProxy(t *testing.T) {
 	if !st.Running {
 		t.Errorf("watch = %+v", resp)
 	}
-	resp, _ = c.call("proxy.stop", map[string]any{})
+	resp, notes := c.call("proxy.stop", map[string]any{})
 	if resp["error"] != nil {
 		t.Errorf("stop = %v", resp)
 	}
-	remarshal(t, c.next("sub.event")["params"].(map[string]any)["data"], &st)
+	// The event can come before the stop's reply does.
+	ev := c.next
+	for _, n := range notes {
+		if n["method"] == "sub.event" {
+			ev = func(string) map[string]any { return n }
+		}
+	}
+	remarshal(t, ev("sub.event")["params"].(map[string]any)["data"], &st)
 	if st.Running {
 		t.Errorf("after stop = %+v", st)
 	}

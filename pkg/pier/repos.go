@@ -40,7 +40,10 @@ type Repo struct {
 	PoolAges                        []string
 	Sessions                        int     // live sessions of this repo
 	MonthlyUSD                      float64 // idle cost estimate: ready disks + image storage
-	Reminders                       []Reminder
+	ImageMonthlyUSD                 float64 // the image's share of it
+	// PoolFailure is the last fill, when it failed (nil once one succeeds).
+	PoolFailure *PoolFailure
+	Reminders   []Reminder
 }
 
 // Reminder is one piece of rebake guidance. pier never acts on it.
@@ -71,17 +74,17 @@ func (c *Client) Repos(sessions []Session, curRoot string) []Repo {
 // checkout. The first root wins when two share a name.
 func (c *Client) ReposFor(sessions []Session, roots []string) []Repo {
 	names := map[string]bool{}
-	for _, r := range c.cfg.PoolRepos() {
+	for _, r := range c.conf().PoolRepos() {
 		names[r] = true
 	}
-	for r := range c.cfg.Pool.Sizes {
+	for r := range c.conf().Pool.Sizes {
 		names[r] = true
 	}
-	for r := range c.cfg.Images {
+	for r := range c.conf().Images {
 		names[r] = true
 	}
 	for _, s := range sessions {
-		if s.Repo != "" {
+		if s.Repo != "" && !BakeMachine(s) {
 			names[s.Repo] = true
 		}
 	}
@@ -93,7 +96,7 @@ func (c *Client) ReposFor(sessions []Session, roots []string) []Repo {
 			rootOf[name] = root
 		}
 	}
-	maxAge, _ := c.cfg.PoolMaxAge() // unparsable → 0, which skips the age check
+	maxAge, _ := c.conf().PoolMaxAge() // unparsable → 0, which skips the age check
 	now := time.Now()
 	// The pool this machine can claim from is the members it made.
 	var own []Session
@@ -112,11 +115,11 @@ func (c *Client) ReposFor(sessions []Session, roots []string) []Repo {
 		st := FoldPool(own, name, cur, gen, maxAge, now)
 		r := Repo{
 			Name: name, Root: root,
-			Image:    c.cfg.BakedImage(name),
-			PoolSize: c.cfg.PoolSize(name),
+			Image:    c.conf().BakedImage(name),
+			PoolSize: c.conf().PoolSize(name),
 			Ready:    st.Ready, Filling: st.Filling, Stale: st.Stale, PoolAges: st.Ages,
 		}
-		if info, ok := c.cfg.Images[name]; ok && r.Image != "" {
+		if info, ok := c.conf().Images[name]; ok && r.Image != "" {
 			r.Baked = &info
 		}
 		for _, s := range sessions {
@@ -124,7 +127,9 @@ func (c *Client) ReposFor(sessions []Session, roots []string) []Repo {
 				r.Sessions++
 			}
 		}
-		r.MonthlyUSD = float64(st.Ready+st.Filling)*c.DiskMonthlyUSD() + imageMonthlyUSD(r.Image)
+		r.ImageMonthlyUSD = imageMonthlyUSD(r.Image)
+		r.MonthlyUSD = float64(st.Ready+st.Filling)*c.DiskMonthlyUSD() + r.ImageMonthlyUSD
+		r.PoolFailure = LastPoolFailure(name)
 		r.Reminders = c.reminders(name, root)
 		out = append(out, r)
 	}
@@ -136,7 +141,7 @@ func (c *Client) ReposFor(sessions []Session, roots []string) []Repo {
 // (gp3 / pd-balanced list prices, rounded up to cover the priciest regions).
 func (c *Client) DiskMonthlyUSD() float64 {
 	perGiB := 0.095
-	if c.cfg.Driver == "gcp-gce" {
+	if c.conf().Driver == "gcp-gce" {
 		perGiB = 0.10
 	}
 	return float64(c.DiskGiB()) * perGiB
@@ -214,11 +219,11 @@ func (c *Client) Reminders(repoRoot string) []Reminder {
 }
 
 func (c *Client) reminders(repo, root string) []Reminder {
-	if !c.cfg.Speed.BakeReminders {
+	if !c.conf().Speed.BakeReminders {
 		return nil
 	}
 	const bake = "pier bake"
-	image := c.cfg.BakedImage(repo)
+	image := c.conf().BakedImage(repo)
 	if image == "" {
 		// Only the repo we stand in: a stranger's repo row without an image
 		// is not something this machine can bake.
@@ -230,26 +235,27 @@ func (c *Client) reminders(repo, root string) []Reminder {
 			Action:  bake,
 		}}
 	}
-	info, ok := c.cfg.Images[repo]
+	info, ok := c.conf().Images[repo]
 	if !ok {
 		return nil // baked before pier recorded bake details: nothing honest to say
 	}
 	var out []Reminder
 	if root != "" {
-		if info.BakeSHA != fileSHA(filepath.Join(root, ".pier", "bake.sh")) {
+		base := payload.KnownBase(root)
+		if info.BakeSHA != bytesSHA(payload.FileAt(root, base, ".pier/bake.sh")) {
 			out = append(out, Reminder{
 				Message: ".pier/bake.sh changed since " + repo + "'s last bake. New sessions won't have its toolchains until you rebake.",
 				Action:  bake,
 			})
 		}
-		if info.SetupSHA != fileSHA(filepath.Join(root, ".pier", "setup.sh")) {
+		if info.SetupSHA != bytesSHA(payload.FileAt(root, base, ".pier/setup.sh")) {
 			out = append(out, Reminder{
 				Message: ".pier/setup.sh changed since " + repo + "'s last bake. Rebake so new sessions don't redo that work.",
 				Action:  bake,
 			})
 		}
 	}
-	if maxAge := c.cfg.ReminderAge(); maxAge > 0 && time.Since(info.BakedAt) >= maxAge {
+	if maxAge := c.conf().ReminderAge(); maxAge > 0 && time.Since(info.BakedAt) >= maxAge {
 		out = append(out, Reminder{
 			Message: fmt.Sprintf("%s's session image is %d days old. Rebake so new sessions start with current dependencies.",
 				repo, int(time.Since(info.BakedAt).Hours()/24)),
@@ -260,9 +266,9 @@ func (c *Client) reminders(repo, root string) []Reminder {
 }
 
 // fileSHA is the hex sha256 of a file, "" when it doesn't exist.
-func fileSHA(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
+// bytesSHA fingerprints a file's content; "" for none.
+func bytesSHA(b []byte) string {
+	if b == nil {
 		return ""
 	}
 	sum := sha256.Sum256(b)
@@ -276,6 +282,9 @@ type BakeRequest struct {
 	// true prebuilds the checkout into the image, false bakes toolchains only.
 	IncludeRepo *bool
 	Progress    Progress
+	// Events is the job's event file when the bake runs as one: its
+	// background finish carries the job on to the image's end.
+	Events string
 }
 
 // BakeResult is a bake whose image is being saved.
@@ -285,6 +294,9 @@ type BakeResult struct {
 	// FinishLog is where the background finish writes: it waits for the
 	// image, records it, deletes the images it replaces and fills the pool.
 	FinishLog string
+	// HandedOff says the finish carries the bake's job on (Events): the
+	// bake's own process must not end it.
+	HandedOff bool
 }
 
 // pendingBake is a bake handed to its background finish.
@@ -306,14 +318,32 @@ func (c *Client) Bake(ctx context.Context, req BakeRequest) (BakeResult, error) 
 	if pid := bakePID(name); pid != 0 && pid != os.Getpid() {
 		return BakeResult{}, fmt.Errorf("a bake of %s is already running — log: %s", name, BakeLogPath(name))
 	}
-	include := c.cfg.Speed.ImageRepo
+	include := c.conf().Speed.ImageRepo
 	if req.IncludeRepo != nil {
 		include = *req.IncludeRepo
 	}
+	// The image is made from what sessions are made from: origin's default
+	// branch as origin has it now, not this clone (which may be behind).
+	base := payload.OriginBase(ctx, req.RepoRoot)
+	req.Progress.emit(start, EventStep, "baking from "+base)
+	hook := payload.BakeHook(req.RepoRoot, base)
 	spec := driver.BakeSpec{
 		RepoName: name,
-		HookPath: driver.BakeHook(req.RepoRoot),
+		BaseRef:  base,
 		Progress: req.Progress.stepper(start),
+	}
+	if hook != nil {
+		f, err := os.CreateTemp("", "pier-bake-*.sh")
+		if err != nil {
+			return BakeResult{}, err
+		}
+		defer os.Remove(f.Name())
+		if _, err := f.Write(hook); err != nil {
+			f.Close()
+			return BakeResult{}, err
+		}
+		f.Close()
+		spec.HookPath = f.Name()
 	}
 	if include {
 		spec.RepoRoot = req.RepoRoot
@@ -324,8 +354,8 @@ func (c *Client) Bake(ctx context.Context, req BakeRequest) (BakeResult, error) 
 	}
 	pending, err := json.Marshal(pendingBake{Baked: baked, Info: config.ImageInfo{
 		BakedAt:      time.Now().UTC(),
-		SetupSHA:     fileSHA(filepath.Join(req.RepoRoot, ".pier", "setup.sh")),
-		BakeSHA:      fileSHA(filepath.Join(req.RepoRoot, ".pier", "bake.sh")),
+		SetupSHA:     bytesSHA(payload.FileAt(req.RepoRoot, base, ".pier/setup.sh")),
+		BakeSHA:      bytesSHA(hook),
 		RepoIncluded: include,
 	}})
 	if err != nil {
@@ -338,15 +368,27 @@ func (c *Client) Bake(ctx context.Context, req BakeRequest) (BakeResult, error) 
 		return BakeResult{}, err
 	}
 	res := BakeResult{Image: baked.Image, RepoIncluded: include, FinishLog: BakeFinishLogPath(name)}
-	pid, err := spawnDetachedPID(req.RepoRoot, res.FinishLog, false, "bake", "--finish")
+	args := []string{"bake", "--finish"}
+	if req.Events != "" {
+		args = append(args, "--events", req.Events)
+	}
+	pid, err := spawnDetachedPID(req.RepoRoot, res.FinishLog, false, args...)
 	if err != nil {
 		// No background process: finish here rather than leave the image
 		// and the bake instance to the sweeps.
 		res.FinishLog = ""
 		return res, c.FinishBake(ctx, req.RepoRoot, req.Progress)
 	}
-	// The finish is the bake's tail: BakeRunning stays true until it's done.
+	// The finish is the bake's tail: BakeRunning stays true until it's done,
+	// and so does the bake's job, which it carries on.
 	_ = os.WriteFile(bakePIDPath(name), []byte(strconv.Itoa(pid)), 0o600)
+	if req.Events != "" {
+		if err := handOffJob(req.Events, pid); err != nil {
+			c.logf("handing the bake's job to its finish: %v", err)
+		} else {
+			res.HandedOff = true
+		}
+	}
 	return res, nil
 }
 
@@ -374,7 +416,7 @@ func (c *Client) FinishBake(ctx context.Context, repoRoot string, progress Progr
 	}
 	os.Remove(pendingBakePath(name))
 	var replaced []string
-	// Update, not Save: c.cfg was read before the bake started. Saving it
+	// Update, not Save: the config was read before the bake started. Saving it
 	// wholesale would revert anything written meanwhile — including another
 	// repo's bake.
 	next, err := config.Update(func(cfg *config.Config) error {
@@ -386,7 +428,7 @@ func (c *Client) FinishBake(ctx context.Context, repoRoot string, progress Progr
 	if err != nil {
 		return err
 	}
-	c.cfg = next
+	c.setConf(next)
 	step("image " + p.Baked.Image + " ready — new " + name + " sessions start from it")
 	// Every earlier image of the repo goes: the config's previous pick (and
 	// on aws-ec2 the legacy shared image), and any the config lost track of.
@@ -428,29 +470,31 @@ func (c *Client) FinishBake(ctx context.Context, repoRoot string, progress Progr
 // generation fingerprint — which is why it must run from inside the repo
 // (the local setup script feeds the hash).
 func (c *Client) poolParams(repoRoot string, progress Progress, start time.Time) (pool.Params, error) {
-	maxAge, err := c.cfg.PoolMaxAge()
+	maxAge, err := c.conf().PoolMaxAge()
 	if err != nil {
 		return pool.Params{}, err
 	}
-	idle, err := config.ParkDuration(c.cfg.IdleTimeout)
+	idle, err := config.ParkDuration(c.conf().IdleTimeout)
 	if err != nil {
 		return pool.Params{}, err
 	}
-	cap_, err := config.ParkDuration(c.cfg.UnattendedCap)
+	cap_, err := config.ParkDuration(c.conf().UnattendedCap)
 	if err != nil {
 		return pool.Params{}, err
 	}
 	repo := filepath.Base(repoRoot)
-	image := c.cfg.BakedImage(repo)
+	image := c.conf().BakedImage(repo)
+	base := payload.KnownBase(repoRoot)
 	return pool.Params{
 		Driver:      c.drv,
 		RepoRoot:    repoRoot,
-		Gen:         pool.Generation(c.drv.Name(), image, c.MachineType(), c.DiskGiB(), pool.SetupScript(repoRoot)),
-		Size:        c.cfg.PoolSize(repo),
+		Base:        base,
+		Gen:         pool.Generation(c.drv.Name(), image, c.MachineType(), c.DiskGiB(), pool.SetupScript(repoRoot, base)),
+		Size:        c.conf().PoolSize(repo),
 		MaxAge:      maxAge,
 		Image:       image,
 		IdleTimeout: idle, UnattendedCap: cap_,
-		Manifest: c.cfg.Secrets.Manifest, SessionEnv: SessionEnv(c.cfg),
+		Manifest: c.conf().Secrets.Manifest, SessionEnv: SessionEnv(c.conf()),
 		Mine:     c.HasKey,
 		Progress: progress.stepper(start),
 		Out:      c.opts.Out,
@@ -477,7 +521,7 @@ func (c *Client) SetPoolSize(ctx context.Context, repoRoot string, n int, progre
 	if err != nil {
 		return "", err
 	}
-	c.cfg = next
+	c.setConf(next)
 	if n == 0 {
 		_, err := c.DrainPool(ctx, repo, progress)
 		return "", err
@@ -504,7 +548,9 @@ func (c *Client) FillPool(ctx context.Context, repoRoot string, progress Progres
 	if err != nil {
 		return err
 	}
-	return pool.Fill(ctx, pp)
+	err = pool.Fill(ctx, pp)
+	recordFill(filepath.Base(repoRoot), err)
+	return err
 }
 
 // FillLogPath is where a background refill of repo writes.
@@ -628,7 +674,7 @@ func (c *Client) LinkCheckout(dir string) (Checkout, error) {
 	if err != nil {
 		return Checkout{}, err
 	}
-	c.cfg = cfg
+	c.setConf(cfg)
 	return Checkout{Path: root, Name: filepath.Base(root), Origin: origin}, nil
 }
 
@@ -641,15 +687,15 @@ func (c *Client) UnlinkCheckout(root string) error {
 	if err != nil {
 		return err
 	}
-	c.cfg = cfg
+	c.setConf(cfg)
 	return nil
 }
 
 // Checkouts lists the linked checkouts by name, each with its current
 // origin (a remote can change after linking).
 func (c *Client) Checkouts() []Checkout {
-	out := make([]Checkout, 0, len(c.cfg.Checkouts))
-	for root, origin := range c.cfg.Checkouts {
+	out := make([]Checkout, 0, len(c.conf().Checkouts))
+	for root, origin := range c.conf().Checkouts {
 		co := Checkout{Path: root, Name: filepath.Base(root), Origin: origin}
 		if got, err := RepoRoot(root); err != nil || got != root {
 			co.Missing = true
@@ -690,6 +736,9 @@ type CheckoutInfo struct {
 	Head   string // short commit
 	Dirty  int    // uncommitted changes: tracked edits and untracked files
 	Base   string // the origin branch a session from HEAD builds on
+	// DefaultBranch is origin's default branch: where a session starts,
+	// and its pull request targets, unless told otherwise.
+	DefaultBranch string
 }
 
 // InspectCheckout describes the repository containing dir for a frontend
@@ -704,10 +753,11 @@ func InspectCheckout(dir string) (CheckoutInfo, error) {
 		return strings.TrimSpace(string(out))
 	}
 	info := CheckoutInfo{
-		Checkout: Checkout{Path: root, Name: filepath.Base(root), Origin: payload.RepoOrigin(root)},
-		Branch:   git("symbolic-ref", "--short", "-q", "HEAD"),
-		Head:     git("rev-parse", "--short", "HEAD"),
-		Base:     payload.BaseBranch(root, "HEAD"),
+		Checkout:      Checkout{Path: root, Name: filepath.Base(root), Origin: payload.RepoOrigin(root)},
+		Branch:        git("symbolic-ref", "--short", "-q", "HEAD"),
+		Head:          git("rev-parse", "--short", "HEAD"),
+		Base:          payload.BaseBranch(root, "HEAD"),
+		DefaultBranch: payload.DefaultBranch(root),
 	}
 	if st := git("status", "--porcelain"); st != "" {
 		info.Dirty = len(strings.Split(st, "\n"))

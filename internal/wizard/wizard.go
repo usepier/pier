@@ -23,6 +23,7 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 	"github.com/usepier/pier/internal/ui"
 	"github.com/usepier/pier/pkg/pier"
 )
@@ -306,10 +307,11 @@ func offerBake(ctx context.Context, in *bufio.Reader, opts pier.Options, repo st
 		return nil
 	}
 	fmt.Println("\n " + ui.Accent.Render("4 · "+name))
-	if _, err := os.Stat(filepath.Join(repo, ".pier", "setup.sh")); err != nil {
+	base := payload.OriginBase(context.Background(), repo)
+	if payload.FileAt(repo, base, ".pier/setup.sh") == nil {
 		fmt.Println(ui.Dim.Render("  no .pier/setup.sh yet — ask your agent to \"set this repo up for pier\" so sessions install its dependencies"))
 	}
-	if driver.BakeHook(repo) != "" {
+	if payload.BakeHook(repo, base) != nil {
 		fmt.Println("  No session image for " + name + " yet, and its .pier/bake.sh toolchains are required — baking one now.")
 	} else if !yes(in, "No session image for "+name+" yet. Bake one now? New sessions then start in a minute or two instead of running the full setup", true) {
 		fmt.Println(ui.Dim.Render("  later: `pier bake` in the repo"))

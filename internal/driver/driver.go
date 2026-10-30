@@ -12,9 +12,7 @@ package driver
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 
 	"github.com/usepier/pier/pkg/pier/wire"
@@ -126,10 +124,14 @@ type ChatSpec struct {
 	Agent  string // claude | codex
 	Model  string
 	Effort string
+	Fast   bool
 	Mode   string // permission mode
 	Prompt string
 	// PromptID makes the prompt's delivery happen once.
 	PromptID string
+	// NameBranch is the session's stand-in branch, to be named after the
+	// prompt in the session (and the session relabeled after it).
+	NameBranch string
 }
 
 // ClaimWindow bounds how long a claimed-but-not-ready session lists as
@@ -218,7 +220,8 @@ type ClaimSpec struct {
 type BakeSpec struct {
 	RepoName string // repo basename; keys the image to its repo
 	RepoRoot string // local repo root to prebuild from; "" = toolchains only
-	HookPath string // local path to the repo's .pier/bake.sh; "" = none
+	BaseRef  string // the commit to prebuild ("" = HEAD): origin's default branch
+	HookPath string // local path to the repo's .pier/bake.sh (as BaseRef has it); "" = none
 	Progress func(step string)
 }
 
@@ -245,17 +248,6 @@ func (s BakeSpec) Step(msg string) {
 	if s.Progress != nil {
 		s.Progress(msg)
 	}
-}
-
-// BakeHook returns the repo's .pier/bake.sh, "" when absent. It runs on the
-// bake instance (agent user, passwordless sudo, no repo checkout — bake
-// predates any session): toolchains belong here, repo state in .pier/setup.sh.
-func BakeHook(repoRoot string) string {
-	p := filepath.Join(repoRoot, ".pier", "bake.sh")
-	if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
-		return ""
-	}
-	return p
 }
 
 type Check struct {
@@ -303,6 +295,10 @@ type Driver interface {
 	// Supervisor returns the in-VM supervisor build for instances of this
 	// type (its CPU architecture): a claim installs it on the member.
 	Supervisor(ctx context.Context, instanceType string) ([]byte, error)
+
+	// Rename relabels a session — its name and branch — after the session
+	// renamed its branch itself.
+	Rename(ctx context.Context, id, name, branch string) error
 
 	// MarkReady writes the ready tag/label: the session is attachable. It's
 	// a create's last act, and a claim's — Claim clears it at its commit
@@ -367,4 +363,14 @@ type Driver interface {
 	// Headroom reports account capacity (vCPU quota) for the create-time
 	// opportunistic check and the TUI header.
 	Headroom(ctx context.Context) (Quota, error)
+}
+
+// BakeName is the name and repo a bake's temporary machine is listed under.
+const BakeName = "bake"
+
+// IsBakeMachine reports whether s is the temporary machine a bake runs on:
+// listed like a session, but no one's — frontends and the proxy leave it
+// out; the sweep doesn't.
+func IsBakeMachine(s Session) bool {
+	return s.Name == BakeName && s.Repo == BakeName && s.PoolGen == ""
 }

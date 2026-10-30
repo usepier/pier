@@ -44,6 +44,7 @@ const (
 type Params struct {
 	Driver   driver.Driver
 	RepoRoot string // local checkout; fill and claim run from inside it
+	Base     string // what members are made from: origin's default branch ("" = HEAD)
 	Gen      string // current generation (Generation(...))
 	Size     int    // desired warm member count
 	MaxAge   time.Duration
@@ -87,19 +88,18 @@ func Generation(driverName, image, instanceType string, diskGiB int, setupScript
 }
 
 // SetupScript returns the bytes of the setup script a session of this repo
-// would run: the PIER_SETUP_SCRIPT override when set, else the repo's
-// .pier/setup.sh, else nil. Feeds the generation fingerprint, and tells fill
-// whether a setup status is expected at all.
-func SetupScript(repoRoot string) []byte {
-	p := os.Getenv("PIER_SETUP_SCRIPT")
-	if p == "" {
-		p = filepath.Join(repoRoot, ".pier", "setup.sh")
+// made from base would run: the PIER_SETUP_SCRIPT override when set, else
+// base's .pier/setup.sh, else nil. Feeds the generation fingerprint, and
+// tells fill whether a setup status is expected at all.
+func SetupScript(repoRoot, base string) []byte {
+	if p := os.Getenv("PIER_SETUP_SCRIPT"); p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		return b
 	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return nil
-	}
-	return b
+	return payload.FileAt(repoRoot, base, ".pier/setup.sh")
 }
 
 // Members filters a List to the unclaimed pool members of one repo (basename).

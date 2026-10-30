@@ -106,6 +106,7 @@ func cmdBake(args []string) {
 			if err := open().FinishBake(ctx, repoRoot(), progress); err != nil {
 				fatal(err)
 			}
+			jobEvents.Finish(nil, "image ready — new sessions start from it")
 			return
 		case "--toolchain-only":
 			f := false
@@ -130,16 +131,19 @@ func cmdBake(args []string) {
 	}
 	fmt.Printf("%s %s\n", ui.Bold.Render("baking "+name), ui.Dim.Render("("+what+" on a temporary instance, then an image — ~$1-3/mo storage)"))
 	if withRepo {
-		stepLine("prebuilding from HEAD — the checkout and setup's artifacts go into the image; every secret pier pushed is scrubbed first")
+		stepLine("prebuilding the repo — the checkout and setup's artifacts go into the image; every secret pier pushed is scrubbed first")
 	}
 	// ctrl-c mid-bake must cancel the ctx (not just kill the process) so
 	// the bake's cleanup can terminate the temporary instance — it has no
 	// supervisor, so a leaked one never parks itself.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	res, err := c.Bake(ctx, pier.BakeRequest{RepoRoot: root, IncludeRepo: include, Progress: progress})
+	res, err := c.Bake(ctx, pier.BakeRequest{RepoRoot: root, IncludeRepo: include, Progress: progress, Events: jobEvents.Path()})
 	if err != nil {
 		fatal(err)
+	}
+	if res.HandedOff {
+		jobEvents.Handoff() // the finish ends the job
 	}
 	if res.FinishLog == "" {
 		// The finish couldn't go to the background and ran here instead.

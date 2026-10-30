@@ -40,7 +40,7 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	if err != nil {
 		return driver.Baked{}, err
 	}
-	cspec := driver.CreateSpec{Name: "bake", Repo: "bake", Branch: "bake"} // timeouts 0 = never park mid-bake
+	cspec := driver.CreateSpec{Name: driver.BakeName, Repo: driver.BakeName, Branch: driver.BakeName} // timeouts 0 = never park mid-bake
 	pub, err := d.newKeypair("bake")
 	if err != nil {
 		return driver.Baked{}, err
@@ -120,7 +120,7 @@ exit 1`
 				return d.sshRunOpts(ctx, id, extra, script)
 			},
 		}
-		if err := payload.Prebuild(ctx, spec.RepoRoot, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
+		if err := payload.Prebuild(ctx, spec.RepoRoot, spec.BaseRef, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
 			return driver.Baked{}, fmt.Errorf("prebuild failed — nothing baked: %w", err)
 		}
 	}

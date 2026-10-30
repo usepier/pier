@@ -374,9 +374,17 @@ func (t *codexThread) alive() bool {
 }
 
 // input is a prompt as codex reads it: text, images by path, other files
-// mentioned.
-func codexInput(p prompt) []map[string]any {
+// mentioned, and the skill a leading /name names.
+func codexInput(p prompt, skills []wire.AgentCommand) []map[string]any {
 	in := []map[string]any{}
+	if name, ok := slashName(p.Text); ok {
+		for _, s := range skills {
+			if s.Name == name && s.Path != "" {
+				in = append(in, map[string]any{"type": "skill", "name": s.Name, "path": s.Path})
+				break
+			}
+		}
+	}
 	text := p.Text
 	var others []string
 	for _, a := range p.Attachments {
@@ -395,12 +403,29 @@ func codexInput(p prompt) []map[string]any {
 	return in
 }
 
+// slashName is the command a prompt starts with ("/name ..."), if it does.
+func slashName(text string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(text), "/")
+	if !ok || rest == "" {
+		return "", false
+	}
+	name, _, _ := strings.Cut(rest, " ")
+	name, _, _ = strings.Cut(name, "\n")
+	return name, name != ""
+}
+
 func (t *codexThread) prompt(p prompt, steer bool) error {
 	t.mu.Lock()
 	turn := t.turn
 	t.mu.Unlock()
+	skills := loadCommands(t.s.h.home, "codex")
 	if steer && turn != "" {
-		_, err := t.s.call("turn/steer", map[string]any{"threadId": t.id, "expectedTurnId": turn, "input": codexInput(p)}, time.Minute)
+		_, err := t.s.call("turn/steer", map[string]any{"threadId": t.id, "expectedTurnId": turn, "input": codexInput(p, skills)}, time.Minute)
+		return err
+	}
+	// /compact is a request of its own, not a turn's text.
+	if strings.TrimSpace(p.Text) == "/"+chat.CodexCompact && len(p.Attachments) == 0 {
+		_, err := t.s.call("thread/compact/start", map[string]any{"threadId": t.id}, time.Minute)
 		return err
 	}
 	t.s.h.mu.Lock()
@@ -411,7 +436,7 @@ func (t *codexThread) prompt(p prompt, steer bool) error {
 	if model == "" {
 		model = t.model
 	}
-	params := map[string]any{"threadId": t.id, "input": codexInput(p), "approvalPolicy": approval, "sandboxPolicy": sandbox}
+	params := map[string]any{"threadId": t.id, "input": codexInput(p, skills), "approvalPolicy": approval, "sandboxPolicy": sandbox}
 	if rec.Model != "" {
 		params["model"] = rec.Model
 	}
@@ -419,6 +444,12 @@ func (t *codexThread) prompt(p prompt, steer bool) error {
 	if rec.Effort != "" {
 		params["effort"] = rec.Effort
 		effort = rec.Effort
+	}
+	// Every turn says its speed: a codex config the session carries can set
+	// a tier of its own, and the chat's choice wins.
+	params["serviceTierForTurn"] = "default"
+	if rec.Fast {
+		params["serviceTierForTurn"] = "fast"
 	}
 	planning := rec.Mode == "plan"
 	collab := "default"

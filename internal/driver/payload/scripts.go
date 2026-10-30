@@ -134,7 +134,7 @@ const tmuxEnsure = `# SSH_AUTH_SOCK points at the attach-refreshed symlink (dang
 # server, so .pier/setup.sh and the user's shells all get docker.sock denied.
 # sudo re-runs initgroups, picking up /etc/group as it stands after the
 # cloud-init wait above.
-tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
+tmux has-session -t main 2>/dev/null || { sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}" && tmux set-option -w -t main @pier-role home; }
 `
 
 // setupWindow runs the repo's .pier/setup.sh in its own tmux window, once,

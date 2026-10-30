@@ -61,6 +61,12 @@ func (d *Driver) Claim(ctx context.Context, id string, spec driver.ClaimSpec) er
 	return err
 }
 
+func (d *Driver) Rename(ctx context.Context, id, name, branch string) error {
+	_, err := d.gcloud(ctx, "compute", "instances", "add-metadata", id,
+		"--zone", d.Zone, "--metadata", MetaSession+"="+name+","+MetaBranch+"="+branch)
+	return err
+}
+
 func (d *Driver) MarkReady(ctx context.Context, id string) error {
 	_, err := d.gcloud(ctx, "compute", "instances", "add-labels", id,
 		"--zone", d.Zone, "--labels", LabelReady+"=1")

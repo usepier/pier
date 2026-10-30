@@ -64,6 +64,9 @@ type Session struct {
 	Chats []ChatSummary `json:"chats,omitempty"`
 	// PR is the branch's pull request, when it has one.
 	PR *PRSummary `json:"pr,omitempty"`
+	// PRChecked says GitHub was asked about the branch: until it has
+	// been, no PR says nothing.
+	PRChecked bool `json:"prChecked"`
 	// Attention says why the session needs the user, if it does:
 	// needs_input, create_failed, setup_failed, ci_failing,
 	// changes_requested, merged_cleanup or ready_to_merge.
@@ -143,6 +146,9 @@ type Repo struct {
 	ImageKind ImageKind  `json:"imageKind"`
 	BakedAt   *time.Time `json:"bakedAt,omitempty"`
 	Baking    bool       `json:"baking"` // a bake started on this machine is still running
+	// NeedsImage: no session image, and the checkout's .pier/bake.sh says
+	// sessions need one — none can start, nor the pool fill, until a bake.
+	NeedsImage bool `json:"needsImage"`
 	// The pool: Target members kept, Ready parked and claimable, Filling
 	// being set up, Stale about to recycle. Ages is one entry per member.
 	PoolTarget  int      `json:"poolTarget"`
@@ -152,11 +158,28 @@ type Repo struct {
 	PoolAges    []string `json:"poolAges"`
 	Sessions    int      `json:"sessions"`
 	MonthlyUSD  float64  `json:"monthlyUsd"` // pooled disks plus image storage
+	// ImageMonthlyUSD is the image's share of MonthlyUSD.
+	ImageMonthlyUSD float64 `json:"imageMonthlyUsd"`
+	// PoolError is the pool's last fill, when it failed: cleared by the
+	// next one that succeeds.
+	PoolError *PoolError `json:"poolError,omitempty"`
 	// HourlyUSD is what the repo's sessions bill right now; IdleMonthlyUSD
 	// what it costs while nothing runs: parked disks, the pool, the image.
 	HourlyUSD      float64    `json:"hourlyUsd"`
 	IdleMonthlyUSD float64    `json:"idleMonthlyUsd"`
 	Reminders      []Reminder `json:"reminders"`
+}
+
+// PoolError says why a pool's last fill failed (pool.log has the rest).
+type PoolError struct {
+	At      time.Time `json:"at"`
+	Message string    `json:"message"`
+}
+
+// PoolLogParams asks for the tail of a repo's pool log.
+type PoolLogParams struct {
+	Repo  string `json:"repo"`
+	Lines int    `json:"lines,omitempty"`
 }
 
 // Reminder is one piece of rebake guidance. pier never acts on it.
@@ -381,7 +404,17 @@ type Env struct {
 	Processes  []Process   `json:"processes"`
 	Ports      []Port      `json:"ports"`
 	Resources  *Resources  `json:"resources,omitempty"`
-	At         time.Time   `json:"at"`
+	// Load is the last few minutes of readings, oldest first — in the
+	// snapshot only; each event's resources is the next reading.
+	Load []LoadPoint `json:"load,omitempty"`
+	At   time.Time   `json:"at"`
+}
+
+// LoadPoint is one reading of a session's load, for graphs.
+type LoadPoint struct {
+	At      time.Time `json:"at"`
+	CPU     float64   `json:"cpu"` // % of all CPUs
+	MemUsed uint64    `json:"memUsed"`
 }
 
 // Container is one docker container in a session.

@@ -23,6 +23,7 @@ type createArgs struct {
 	Agent  string  `json:"agent"`
 	Model  string  `json:"model"`
 	Effort string  `json:"effort"`
+	Fast   bool    `json:"fast"`
 	Mode   string  `json:"mode"`
 	Title  string  `json:"title"`
 	Prompt *prompt `json:"prompt"`
@@ -62,7 +63,7 @@ func writeChat(home string, a createArgs) error {
 	if err := os.MkdirAll(filepath.Join(dir, "queue"), 0o700); err != nil {
 		return err
 	}
-	rec := chatRecord{ID: a.ID, Agent: a.Agent, Title: a.Title, Model: a.Model, Effort: a.Effort, Mode: a.Mode, Created: time.Now()}
+	rec := chatRecord{ID: a.ID, Agent: a.Agent, Title: a.Title, Model: a.Model, Effort: a.Effort, Fast: a.Fast, Mode: a.Mode, Created: time.Now()}
 	if rec.Agent == "claude" {
 		rec.Conversation = newUUID()
 	}
@@ -188,7 +189,7 @@ func (h *chatHost) send(chatID string, p prompt, mode string) error {
 func (h *chatHost) deliver(c *chatState) {
 	h.mu.Lock()
 	free := (c.state == wire.AgentReady) && !c.starting
-	dir := c.dir
+	dir, agent := c.dir, c.rec.Agent
 	h.mu.Unlock()
 	if !free {
 		return
@@ -198,6 +199,10 @@ func (h *chatHost) deliver(c *chatState) {
 		return
 	}
 	p := q[0]
+	// Naming the branch needs only the prompt: it starts while setup runs.
+	if p.NameBranch != "" {
+		h.nameBranch(agent, p.NameBranch, p.Text)
+	}
 	if p.First && h.setupRunning() {
 		return
 	}

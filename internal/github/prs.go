@@ -35,7 +35,6 @@ type Check struct {
 	State string
 	URL   string
 	JobID int64 // GitHub Actions: the job, for its log
-	RunID int64 // GitHub Actions: the workflow run, for re-runs
 }
 
 // ChecksState sums the checks up: failing if any fails, else pending if
@@ -64,7 +63,7 @@ headRefOid headRefName baseRefName additions deletions updatedAt
 headRepositoryOwner { login }
 commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
   __typename
-  ... on CheckRun { name status conclusion detailsUrl databaseId checkSuite { workflowRun { databaseId } } }
+  ... on CheckRun { name status conclusion detailsUrl databaseId }
   ... on StatusContext { context state targetUrl }
 } } } } } }`
 
@@ -106,12 +105,9 @@ type checkNode struct {
 	Conclusion string
 	DetailsURL string
 	DatabaseID int64
-	CheckSuite *struct {
-		WorkflowRun *struct{ DatabaseID int64 }
-	}
-	Context   string
-	State     string
-	TargetURL string
+	Context    string
+	State      string
+	TargetURL  string
 }
 
 func (n prNode) pr() PR {
@@ -162,9 +158,6 @@ func (x checkNode) check() Check {
 		return Check{Name: x.Context, State: st, URL: x.TargetURL}
 	}
 	c := Check{Name: x.Name, URL: x.DetailsURL, JobID: x.DatabaseID}
-	if x.CheckSuite != nil && x.CheckSuite.WorkflowRun != nil {
-		c.RunID = x.CheckSuite.WorkflowRun.DatabaseID
-	}
 	switch {
 	case x.Status != "COMPLETED":
 		c.State = "pending"
@@ -243,6 +236,7 @@ type Thread struct {
 type ThreadComment struct {
 	Author string
 	Body   string
+	HTML   string // the body as GitHub renders it
 }
 
 // Review is a reviewer's verdict.
@@ -250,6 +244,7 @@ type Review struct {
 	Author string
 	State  string // approved | changes_requested | commented
 	Body   string
+	HTML   string // the body as GitHub renders it
 }
 
 // Detail is a PR with its review conversations.
@@ -264,8 +259,8 @@ type Detail struct {
 func (c *Client) Get(ctx context.Context, r Repo, number int) (Detail, error) {
 	q := `query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $n) {
 ` + prFields + ` body
-reviewThreads(first: 50) { nodes { isResolved isOutdated path line comments(first: 20) { nodes { author { login } body } } } }
-latestOpinionatedReviews(first: 20) { nodes { author { login } state body } }
+reviewThreads(first: 50) { nodes { isResolved isOutdated path line comments(first: 20) { nodes { author { login } body bodyHTML } } } }
+latestOpinionatedReviews(first: 20) { nodes { author { login } state body bodyHTML } }
 } } }`
 	var data struct {
 		Repository struct {
@@ -280,17 +275,19 @@ latestOpinionatedReviews(first: 20) { nodes { author { login } state body } }
 						Line       int
 						Comments   struct {
 							Nodes []struct {
-								Author *struct{ Login string }
-								Body   string
+								Author   *struct{ Login string }
+								Body     string
+								BodyHTML string
 							}
 						}
 					}
 				}
 				LatestOpinionatedReviews struct {
 					Nodes []struct {
-						Author *struct{ Login string }
-						State  string
-						Body   string
+						Author   *struct{ Login string }
+						State    string
+						Body     string
+						BodyHTML string
 					}
 				}
 			}
@@ -313,26 +310,35 @@ latestOpinionatedReviews(first: 20) { nodes { author { login } state body } }
 	for _, t := range n.ReviewThreads.Nodes {
 		th := Thread{Path: t.Path, Line: t.Line, Resolved: t.IsResolved, Outdated: t.IsOutdated}
 		for _, cm := range t.Comments.Nodes {
-			th.Comments = append(th.Comments, ThreadComment{Author: login(cm.Author), Body: cm.Body})
+			th.Comments = append(th.Comments, ThreadComment{Author: login(cm.Author), Body: cm.Body, HTML: cm.BodyHTML})
 		}
 		d.Threads = append(d.Threads, th)
 	}
 	for _, rv := range n.LatestOpinionatedReviews.Nodes {
-		d.Reviews = append(d.Reviews, Review{Author: login(rv.Author), State: strings.ToLower(rv.State), Body: rv.Body})
+		d.Reviews = append(d.Reviews, Review{Author: login(rv.Author), State: strings.ToLower(rv.State), Body: rv.Body, HTML: rv.BodyHTML})
 	}
 	return d, nil
 }
 
 // Merge merges a pull request — only if its head is still expectedHead,
-// the commit that was reviewed (ErrHeadMoved otherwise). method: merge,
-// squash or rebase.
-func (c *Client) Merge(ctx context.Context, r Repo, prID, method, expectedHead string) error {
-	m := map[string]string{"merge": "MERGE", "squash": "SQUASH", "rebase": "REBASE"}[method]
-	if m == "" {
-		return fmt.Errorf("unknown merge method %q", method)
-	}
+// the commit that was reviewed (ErrHeadMoved otherwise) — the way GitHub's
+// own merge button would: with the repository's default method for you.
+func (c *Client) Merge(ctx context.Context, r Repo, prID, expectedHead string) error {
 	if expectedHead == "" {
 		return fmt.Errorf("a merge needs the head that was reviewed")
+	}
+	var repo struct {
+		Node struct {
+			BaseRepository struct{ ViewerDefaultMergeMethod string }
+		}
+	}
+	if err := c.graphql(ctx, r.Host, `query($id: ID!) { node(id: $id) { ... on PullRequest { baseRepository { viewerDefaultMergeMethod } } } }`,
+		map[string]any{"id": prID}, &repo); err != nil {
+		return err
+	}
+	m := repo.Node.BaseRepository.ViewerDefaultMergeMethod
+	if m == "" {
+		m = "MERGE"
 	}
 	q := `mutation($id: ID!, $m: PullRequestMergeMethod!, $head: GitObjectID!) {
   mergePullRequest(input: {pullRequestId: $id, mergeMethod: $m, expectedHeadOid: $head}) { pullRequest { merged } } }`
@@ -343,12 +349,6 @@ func (c *Client) Merge(ctx context.Context, r Repo, prID, method, expectedHead s
 		return ErrHeadMoved
 	}
 	return err
-}
-
-// Rerun re-runs a workflow run's failed jobs.
-func (c *Client) Rerun(ctx context.Context, r Repo, runID int64) error {
-	_, rest := c.base(r.Host)
-	return c.do(ctx, r.Host, "POST", fmt.Sprintf("%s/repos/%s/%s/actions/runs/%d/rerun-failed-jobs", rest, r.Owner, r.Name, runID), struct{}{}, nil)
 }
 
 // JobLog is the end of a GitHub Actions job's log.

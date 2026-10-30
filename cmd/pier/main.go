@@ -56,8 +56,9 @@ var helpSections = []helpSection{
 	{
 		title: "Sessions",
 		items: []helpItem{
-			{"pier <branch> [base]", "new session off base (default HEAD), then attach"},
+			{"pier <branch> [base]", "new session off base (default origin's main branch; HEAD: this clone as it is), then attach"},
 			{"pier new <branch> [base]", "the same, for a branch named like a command (new, ls, ...)"},
+			{"pier new -p <prompt>", "a session with a stand-in name; its branch is named after the prompt"},
 			{"  -d, --detach", "create without attaching"},
 			{"  --idle <dur|never>", "park after this much idle time (default from settings)"},
 			{"  --cap <dur|never>", "runaway cap for this session"},
@@ -66,6 +67,7 @@ var helpSections = []helpSection{
 			{"  --agent <claude|codex>", "start an agent in its own window (with -p, its first prompt)"},
 			{"  -p, --prompt <text>", "the agent's first prompt, typed in once setup is done"},
 			{"  --model <model>", "the agent's model"},
+			{"  --fast", "the agent's fast mode: faster output from the same model"},
 			{"pier ls [--json]", "list sessions"},
 			{"pier attach <session>", "attach; a parked session resumes with its tmux restored"},
 			{"  -a, --agent", "open on the session's chats, live (t continues one in the terminal)"},

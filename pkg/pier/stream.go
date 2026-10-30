@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/usepier/pier/internal/driver/payload"
@@ -104,7 +105,7 @@ func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string
 		if busyChats(s) {
 			return c.followAs(ctx, s, topics, extra, fn, true)
 		}
-		if uerr := c.UpgradeSupervisor(ctx, s); uerr != nil {
+		if uerr := c.upgrade(ctx, s); uerr != nil {
 			return fmt.Errorf("upgrading the session's supervisor: %w", uerr)
 		}
 		return c.follow(ctx, s, topics, extra, fn)
@@ -113,7 +114,7 @@ func (c *Client) followUpgrading(ctx context.Context, s Session, topics []string
 		if busyChats(s) {
 			return errUpgradeLater
 		}
-		if uerr := c.UpgradeSupervisor(ctx, s); uerr != nil {
+		if uerr := c.upgrade(ctx, s); uerr != nil {
 			return fmt.Errorf("upgrading the session's supervisor: %w", uerr)
 		}
 		err = c.follow(ctx, s, topics, extra, fn)
@@ -203,6 +204,56 @@ func (c *Client) followAs(ctx context.Context, s Session, topics []string, extra
 	return errors.New("session stream ended")
 }
 
+// upgradeQuiet is how long after installing a session's supervisor a call
+// that finds it missing takes it to be still starting, not stale.
+const upgradeQuiet = 2 * time.Minute
+
+type sessionUpgrade struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+// upgrade replaces a stale supervisor once, however many callers find it
+// so at once — every view of a session (its chats, checkout, environment)
+// follows it, and each would otherwise install it again, each install
+// restarting it under the others. The rest wait for that one; and one
+// installed moments ago, still starting (its socket not up yet), is given
+// a moment rather than installed again.
+func (c *Client) upgrade(ctx context.Context, s Session) error {
+	return c.upgradeOnce(ctx, s.ID, func() error { return c.UpgradeSupervisor(ctx, s) })
+}
+
+func (c *Client) upgradeOnce(ctx context.Context, id string, install func() error) error {
+	c.upgradeMu.Lock()
+	if c.upgrades == nil {
+		c.upgrades = map[string]*sessionUpgrade{}
+	}
+	u := c.upgrades[id]
+	if u == nil {
+		u = &sessionUpgrade{}
+		c.upgrades[id] = u
+	}
+	c.upgradeMu.Unlock()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !u.at.IsZero() && time.Since(u.at) < upgradeQuiet {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(supervisorStart):
+			return nil
+		}
+	}
+	if err := install(); err != nil {
+		return err
+	}
+	u.at = time.Now()
+	return nil
+}
+
+// supervisorStart is about how long a supervisor takes to come up.
+var supervisorStart = 3 * time.Second
+
 // UpgradeSupervisor replaces a session's supervisor with this pier's and
 // restarts it — the same install a create or claim does. The restart
 // resets its idle clock, which only delays a park.
@@ -257,7 +308,7 @@ func (c *Client) OpID(ctx context.Context, s Session, id, op string, args any) (
 		if busyChats(s) {
 			return nil, errUpgradeLater
 		}
-		if uerr := c.UpgradeSupervisor(ctx, s); uerr != nil {
+		if uerr := c.upgrade(ctx, s); uerr != nil {
 			return nil, uerr
 		}
 		out, err = run()
@@ -275,7 +326,17 @@ type Env struct {
 	Processes  []Process
 	Ports      []Port
 	Res        *Resources
-	At         time.Time
+	// Load is the last few minutes of readings, oldest first: only in the
+	// first message of a follow.
+	Load []LoadPoint
+	At   time.Time
+}
+
+// LoadPoint is one reading of a session's load.
+type LoadPoint struct {
+	At      time.Time
+	CPU     float64 // % of all CPUs
+	MemUsed uint64  // bytes
 }
 
 // Container is one docker container in a session.
@@ -314,12 +375,20 @@ func ParseEnv(data json.RawMessage) (Env, error) {
 			DiskTotal uint64  `json:"disk_total"`
 			Load1     float64 `json:"load1"`
 		} `json:"res"`
+		Load []struct {
+			T   int64   `json:"t"`
+			CPU float64 `json:"cpu"`
+			Mem uint64  `json:"mem"`
+		} `json:"load"`
 		At time.Time `json:"at"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return Env{}, err
 	}
 	e := Env{Windows: parseWindows(raw.Windows), Processes: raw.Processes, At: raw.At}
+	for _, p := range raw.Load {
+		e.Load = append(e.Load, LoadPoint{At: time.Unix(p.T, 0), CPU: p.CPU, MemUsed: p.Mem})
+	}
 	for _, p := range raw.Ports {
 		e.Ports = append(e.Ports, Port{Port: p.Port, Process: p.Process, PID: p.PID})
 	}

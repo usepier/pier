@@ -71,6 +71,12 @@ func (d *Driver) Claim(ctx context.Context, id string, spec driver.ClaimSpec) er
 	return err
 }
 
+func (d *Driver) Rename(ctx context.Context, id, name, branch string) error {
+	_, err := d.aws(ctx, "ec2", "create-tags", "--resources", id, "--tags",
+		"Key=Name,Value=pier-"+name, "Key="+TagSession+",Value="+name, "Key="+TagBranch+",Value="+branch)
+	return err
+}
+
 func (d *Driver) MarkReady(ctx context.Context, id string) error {
 	_, err := d.aws(ctx, "ec2", "create-tags", "--resources", id,
 		"--tags", "Key="+TagReady+",Value=1")

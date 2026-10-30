@@ -174,10 +174,10 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 		default:
 			live := map[string]driver.Session{}
 			for _, s := range sessions {
-				if s.PoolGen != "" {
-					// Unclaimed pool members run while they fill — plumbing,
-					// not work. No hostname, and no proxy connection holding
-					// one open past its self-park.
+				if s.PoolGen != "" || driver.IsBakeMachine(s) {
+					// Unclaimed pool members run while they fill, and a bake
+					// runs on its own machine — plumbing, not work. No
+					// hostname, and no proxy connection holding one open.
 					continue
 				}
 				switch s.State {

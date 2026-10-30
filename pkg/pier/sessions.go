@@ -57,12 +57,18 @@ func (c *Client) Enrich(ctx context.Context, sessions []Session) []Session {
 	return out
 }
 
+// BakeMachine reports whether s is the temporary machine a bake runs on
+// (driver.IsBakeMachine).
+func BakeMachine(s Session) bool { return driver.IsBakeMachine(s) }
+
 // SplitPool separates real sessions from unclaimed pooled sessions (warm
 // pool members): those are inventory, not work, and never sit in the
-// session table. Members on their way out are in neither.
+// session table. Members on their way out are in neither, and bake
+// machines in neither.
 func SplitPool(all []Session) (sessions, pooled []Session) {
 	for _, s := range all {
 		switch {
+		case BakeMachine(s):
 		case s.PoolGen == "":
 			sessions = append(sessions, s)
 		case s.State != driver.StateDeleting:
@@ -89,6 +95,7 @@ func PoolCounts(pooled []Session) (ready, filling int) {
 // session's supervisor beacon in parallel.
 func (c *Client) enrich(ctx context.Context, sessions []Session) {
 	var wg sync.WaitGroup
+	branches := make([]string, len(sessions))
 	for i := range sessions {
 		// Pooled sessions run headless between create and park; their beacon
 		// detail is nobody's business until they're claimed.
@@ -96,7 +103,7 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 			continue
 		}
 		wg.Add(1)
-		go func(s *Session) {
+		go func(i int, s *Session) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
@@ -115,6 +122,10 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 			if json.Unmarshal([]byte(out), &st) != nil {
 				return
 			}
+			branches[i] = st.Branch
+			if branches[i] == "" {
+				branches[i] = st.Renamed
+			}
 			// Supervisor up but bootstrap not done: the repo is still on its
 			// way (or the create died) — either way, not attachable yet.
 			if st.Bootstrapping {
@@ -132,9 +143,42 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 			s.Strained = st.Strained
 			s.Setup = st.Setup
 			st.apply(s)
-		}(&sessions[i])
+		}(i, &sessions[i])
 	}
 	wg.Wait()
+	c.relabel(ctx, sessions, branches)
+}
+
+// relabel catches the cloud up with sessions whose branch changed — named
+// after their first prompt, or one the agent started and pushed — so the
+// session's pull request is found by it. A session named after its branch
+// takes the new one's name (made unique among the others); one given a
+// name of its own keeps it. A relabel that fails is tried again next time.
+func (c *Client) relabel(ctx context.Context, sessions []Session, branches []string) {
+	names := map[string]bool{}
+	for _, s := range sessions {
+		names[s.Name] = true
+	}
+	for i := range sessions {
+		s := &sessions[i]
+		branch := branches[i]
+		if branch == "" || branch == s.Branch || branch == s.Base {
+			continue
+		}
+		name := s.Name
+		if s.Name == s.Branch {
+			name = branch
+			for n := 2; names[name] && name != s.Name; n++ {
+				name = fmt.Sprintf("%s-%d", branch, n)
+			}
+		}
+		if err := c.drv.Rename(ctx, s.ID, name, branch); err != nil {
+			continue
+		}
+		delete(names, s.Name)
+		names[name] = true
+		s.Name, s.Branch = name, branch
+	}
 }
 
 // beacon is /run/pier/status.json as the supervisor writes it. Fields newer
@@ -161,6 +205,11 @@ type beacon struct {
 	ParkAt *time.Time         `json:"park_at"`
 	CapAt  *time.Time         `json:"cap_at"`
 	Chats  []wire.ChatSummary `json:"chats"`
+	// Renamed is the branch the session named itself after its first
+	// prompt; Branch the checkout's own branch once it's pushed — an agent
+	// may start one — which wins.
+	Renamed string `json:"renamed"`
+	Branch  string `json:"branch"`
 }
 
 // apply copies the beacon's load, ports and countdowns onto s.

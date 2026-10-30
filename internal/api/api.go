@@ -72,6 +72,7 @@ type Server struct {
 	claudeToken string
 
 	overview *overviewPoller
+	fetches  checkoutFetches
 	termReg  *terminals
 	notices  *notices
 	prs      *prCache
@@ -285,10 +286,16 @@ func (c *Call) Progress(e wire.Event) {
 
 // backend returns the current backend, opening it on first use. A failed
 // open (no config yet) is retried on the next call, so finishing setup
-// mid-session just works.
+// mid-session just works; so is one whose cloud settings were changed
+// since by another process (the TUI, `pier setup`).
 func (s *Server) backend() (Backend, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.be != nil && s.be.Stale() {
+		old := s.be
+		s.be = nil
+		go old.Close()
+	}
 	if s.be != nil {
 		return s.be, nil
 	}

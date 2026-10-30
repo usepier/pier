@@ -144,7 +144,7 @@ type Window struct {
 	Name    string
 	Command string // the active pane's foreground command
 	Active  bool   // main's current window
-	Role    string // what pier made it for: "agent", "setup", or "" for anything else
+	Role    string // what pier made it for: "agent", "setup", "home" (main's own shell), or "" for anything else
 }
 
 const windowFormat = "#{window_id}|#{window_index}|#{window_active}|#{pane_current_command}|#{@pier-role}|#{window_name}"
@@ -184,31 +184,25 @@ func (c *Client) NewWindow(ctx context.Context, s Session, name string) (Window,
 	if err := CheckReady(s); err != nil {
 		return Window{}, err
 	}
-	args := "-d -t main: -P -F '#{window_id}'"
+	// tmux says what it made — id, index, name, command — in one round trip.
+	args := "-d -t main: -P -F '#{window_id}|#{window_index}|#{pane_current_command}|#{window_name}'"
 	if name != "" {
 		args += " -n " + shellQuote(name)
 	}
-	script := "tmux has-session -t main 2>/dev/null || tmux new-session -d -s main\n" +
+	script := payload.EnsureMain + "\n" +
 		"cd ~/work/" + shellQuote(s.Repo) + " 2>/dev/null || cd\n" +
 		"tmux new-window " + args + " -c \"$PWD\""
 	out, err := c.exec(ctx, s.ID, script)
 	if err != nil {
 		return Window{}, err
 	}
-	id := strings.TrimSpace(out)
-	if !strings.HasPrefix(id, "@") {
-		return Window{}, fmt.Errorf("tmux did not report the new window (%q)", id)
+	// The name goes last: it may hold the separator.
+	f := strings.SplitN(strings.TrimSpace(out), "|", 4)
+	if !strings.HasPrefix(f[0], "@") || len(f) < 4 {
+		return Window{}, fmt.Errorf("tmux did not report the new window (%q)", strings.TrimSpace(out))
 	}
-	ws, err := c.Windows(ctx, s)
-	if err != nil {
-		return Window{ID: id, Name: name}, nil
-	}
-	for _, w := range ws {
-		if w.ID == id {
-			return w, nil
-		}
-	}
-	return Window{ID: id, Name: name}, nil
+	index, _ := strconv.Atoi(f[1])
+	return Window{ID: f[0], Index: index, Command: f[2], Name: f[3]}, nil
 }
 
 // KillWindow closes a tmux window and whatever runs in it.

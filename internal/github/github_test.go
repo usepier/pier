@@ -32,8 +32,8 @@ const prJSON = `{"id":"PR_1","number":12,"title":"Fix login","url":"https://gith
 "mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","reviewDecision":"CHANGES_REQUESTED","headRefOid":"abc","headRefName":"fix-login","baseRefName":"main",
 "additions":10,"deletions":2,"updatedAt":"2026-10-08T10:00:00Z","headRepositoryOwner":{"login":"acme"},
 "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
- {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"u1","databaseId":77,"checkSuite":{"workflowRun":{"databaseId":9}}},
- {"__typename":"CheckRun","name":"lint","status":"IN_PROGRESS","conclusion":null,"detailsUrl":"u2","databaseId":78,"checkSuite":{"workflowRun":{"databaseId":9}}},
+ {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"u1","databaseId":77},
+ {"__typename":"CheckRun","name":"lint","status":"IN_PROGRESS","conclusion":null,"detailsUrl":"u2","databaseId":78},
  {"__typename":"StatusContext","context":"deploy/preview","state":"SUCCESS","targetUrl":"u3"}
 ]}}}}]}}`
 
@@ -57,7 +57,7 @@ func TestForBranches(t *testing.T) {
 	if p.Number != 12 || p.State != "open" || p.Review != "changes_requested" || p.Mergeable != "blocked" || p.HeadOid != "abc" {
 		t.Errorf("pr = %+v", p)
 	}
-	if p.ChecksState() != "failing" || p.Checks[0].JobID != 77 || p.Checks[0].RunID != 9 || p.Checks[1].State != "pending" || p.Checks[2].State != "passing" {
+	if p.ChecksState() != "failing" || p.Checks[0].JobID != 77 || p.Checks[1].State != "pending" || p.Checks[2].State != "passing" {
 		t.Errorf("checks = %+v", p.Checks)
 	}
 	if c.Limit().Remaining != 4321 {
@@ -67,17 +67,21 @@ func TestForBranches(t *testing.T) {
 
 func TestMergeGuardsTheHead(t *testing.T) {
 	c := server(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		if strings.HasPrefix(body["query"].(string), "query") {
+			io.WriteString(w, `{"data":{"node":{"baseRepository":{"viewerDefaultMergeMethod":"SQUASH"}}}}`)
+			return
+		}
 		v := body["variables"].(map[string]any)
 		if v["head"] != "abc" || v["m"] != "SQUASH" {
 			t.Errorf("vars = %v", v)
 		}
 		io.WriteString(w, `{"data":{"mergePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"Head branch was modified. Review and try the merge again."}]}`)
 	})
-	err := c.Merge(context.Background(), Repo{"github.com", "acme", "shop"}, "PR_1", "squash", "abc")
+	err := c.Merge(context.Background(), Repo{"github.com", "acme", "shop"}, "PR_1", "abc")
 	if !errors.Is(err, ErrHeadMoved) {
 		t.Errorf("merge = %v", err)
 	}
-	if err := c.Merge(context.Background(), Repo{"github.com", "acme", "shop"}, "PR_1", "squash", ""); err == nil {
+	if err := c.Merge(context.Background(), Repo{"github.com", "acme", "shop"}, "PR_1", ""); err == nil {
 		t.Error("a merge without the reviewed head went ahead")
 	}
 }
@@ -125,7 +129,7 @@ func TestTypedRefusals(t *testing.T) {
 	}))
 	defer spent.Close()
 	c := &Client{API: spent.URL, Token: func(string) string { return "tok" }}
-	err := c.Rerun(context.Background(), repo, 9)
+	_, err := c.JobLog(context.Background(), repo, 9, 100)
 	var ge *Error
 	if !errors.Is(err, ErrRateLimited) || !errors.As(err, &ge) || ge.Status != 403 {
 		t.Errorf("a spent limit = %v", err)
@@ -135,5 +139,30 @@ func TestTypedRefusals(t *testing.T) {
 	})
 	if _, err := notFound.ForBranches(context.Background(), repo, []string{"x"}); !errors.As(err, &ge) || ge.Type != "NOT_FOUND" || errors.Is(err, ErrRateLimited) {
 		t.Errorf("not found = %v", err)
+	}
+}
+
+// A pull request's conversations come with their bodies as GitHub renders
+// them, next to the markdown they were written in.
+func TestGetReadsRenderedBodies(t *testing.T) {
+	c := server(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		if q := body["query"].(string); !strings.Contains(q, "comments(first: 20) { nodes { author { login } body bodyHTML }") {
+			t.Errorf("query = %s", q)
+		}
+		pr := strings.TrimSuffix(prJSON, "}") + `,"body":"",
+"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"path":"a.go","line":3,"comments":{"nodes":[
+ {"author":{"login":"rev"},"body":"<details><summary>Why</summary>x</details>","bodyHTML":"<details><summary>Why</summary><p>x</p></details>"}]}}]},
+"latestOpinionatedReviews":{"nodes":[{"author":null,"state":"APPROVED","body":"**ok**","bodyHTML":"<p><strong>ok</strong></p>"}]}}`
+		io.WriteString(w, `{"data":{"repository":{"pullRequest":`+pr+`}}}`)
+	})
+	d, err := c.Get(context.Background(), Repo{"github.com", "acme", "shop"}, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cm := d.Threads[0].Comments[0]; cm.HTML != "<details><summary>Why</summary><p>x</p></details>" || cm.Body == "" {
+		t.Errorf("comment = %+v", cm)
+	}
+	if rv := d.Reviews[0]; rv.HTML != "<p><strong>ok</strong></p>" || rv.Author != "ghost" || rv.State != "approved" {
+		t.Errorf("review = %+v", rv)
 	}
 }

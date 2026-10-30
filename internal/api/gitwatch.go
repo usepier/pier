@@ -109,6 +109,23 @@ func (f *gitFollower) offline(be Sessions, sess pier.Session) {
 	f.fail(unreadable(be, sess))
 }
 
+// kept shows what this machine kept while the first live read is on its
+// way — a first connection takes seconds over a tunnel — so the changes
+// show at once, marked as of then, and go live when it lands.
+func (f *gitFollower) kept(sess pier.Session) {
+	f.mu.Lock()
+	shown := f.state != nil
+	f.mu.Unlock()
+	if shown {
+		return
+	}
+	if c, at, ok := pier.CachedChanges(sess.ID); ok {
+		w := wireChanges(c, nil)
+		w.AsOf = asOf(at)
+		f.set(w)
+	}
+}
+
 func (f *gitFollower) run(ctx context.Context) {
 	for attempt := 0; ctx.Err() == nil; attempt++ {
 		be, sess, err := f.s.sessionFor(ctx, f.id)
@@ -119,6 +136,7 @@ func (f *gitFollower) run(ctx context.Context) {
 		case !readable(be, sess):
 			f.offline(be, sess)
 		default:
+			f.kept(sess)
 			// A recheck (the session parked) ends the follow at once: its
 			// connection could take a minute to notice.
 			fctx, stop := context.WithCancel(ctx)

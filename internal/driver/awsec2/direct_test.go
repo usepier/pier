@@ -2,7 +2,6 @@ package awsec2
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -64,7 +63,7 @@ func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
 	// and happens before tmux starts.
 	gate := strings.Index(remote, `[ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]`)
 	wait := strings.Index(remote, `[ -e /run/pier/restored ] && break`)
-	exec := strings.Index(remote, "exec tmux new-session -A -s main")
+	exec := strings.Index(remote, "tmux has-session -t main")
 	if gate < 0 || wait < gate || exec < wait {
 		t.Errorf("attach must wait for the restore marker, gated, before tmux; got %q", remote)
 	}
@@ -122,30 +121,6 @@ func TestDemoteDirectSendsRetryThroughTunnel(t *testing.T) {
 // remote command that exits nonzero would do so identically over the tunnel,
 // so retrying it there is pointless — and demoting on it would drag every
 // session onto the slow path for ordinary script failures.
-func TestTransportBroken(t *testing.T) {
-	for in, want := range map[string]bool{
-		"ssh: connect to host 3.78.221.163 port 22: Network is unreachable": true,
-		"scp: Connection closed":                                     true,
-		"client_loop: send disconnect: Broken pipe":                  true,
-		"ssh: connect to host 10.0.0.1 port 22: Operation timed out": true,
-		// waitSSH has already seen sshd answer, so a refusal during the push
-		// is a bounced service, not a shut port — probeDirect reads it the
-		// same way, and destroying an instance over it would be absurd.
-		"ssh: connect to host 10.0.0.1 port 22: Connection refused": true,
-		"no route to host":               true,
-		"bootstrap: exit status 1":       false,
-		"scp: /tmp/x: Permission denied": false,
-		"Error 127: pnpm: No such file":  false,
-		"":                               false,
-	} {
-		if got := transportBroken(errors.New(in)); got != want {
-			t.Errorf("transportBroken(%q) = %v, want %v", in, got, want)
-		}
-	}
-	if transportBroken(nil) {
-		t.Error("transportBroken(nil) must be false")
-	}
-}
 
 func TestSanitizeRuleName(t *testing.T) {
 	for in, want := range map[string]string{

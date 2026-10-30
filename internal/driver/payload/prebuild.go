@@ -40,12 +40,13 @@ type Remote struct {
 }
 
 // Prebuild turns a bake instance (harnesses and bake hook already in place)
-// into a setup-complete checkout of repoRoot, then scrubs it for imaging.
-// The cargo is exactly a create's, off the laptop's HEAD, so setup runs with
+// into a setup-complete checkout of repoRoot at base (origin's default
+// branch; "" = HEAD), then scrubs it for imaging. The cargo is exactly a
+// create's, so setup runs with
 // the secrets and env files a real session gets; the scrub then removes every
 // file that cargo delivered. What setup itself derived from them (an env
 // value compiled into a build, a seeded database) is the repo's to keep out.
-func Prebuild(ctx context.Context, repoRoot string, supervisor []byte, manifest []string, env map[string]string, r Remote, progress func(string)) error {
+func Prebuild(ctx context.Context, repoRoot, base string, supervisor []byte, manifest []string, env map[string]string, r Remote, progress func(string)) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -54,7 +55,7 @@ func Prebuild(ctx context.Context, repoRoot string, supervisor []byte, manifest 
 		return err
 	}
 	defer os.RemoveAll(work)
-	spec := driver.CreateSpec{Name: PrebuildBranch, Repo: repoRoot, Branch: PrebuildBranch}
+	spec := driver.CreateSpec{Name: PrebuildBranch, Repo: repoRoot, Branch: PrebuildBranch, BaseRef: base}
 	pl, err := Build(ctx, work, spec, supervisor, manifest, env, progress)
 	if err != nil {
 		return err
@@ -84,7 +85,7 @@ func Prebuild(ctx context.Context, repoRoot string, supervisor []byte, manifest 
 	if out, err := r.Run(ctx, fwd, "bash /tmp/pier-bootstrap.sh"); err != nil {
 		return fmt.Errorf("prebuild checkout: %w\n%s", err, out)
 	}
-	if hasSetup(repoRoot) {
+	if hasSetup(repoRoot, base) {
 		progress("running .pier/setup.sh to completion — the slow part every session now skips")
 		start := time.Now()
 		exec := func(ctx context.Context, cmd string) (string, error) { return r.Run(ctx, nil, cmd) }
@@ -104,13 +105,12 @@ func Prebuild(ctx context.Context, repoRoot string, supervisor []byte, manifest 
 }
 
 // hasSetup mirrors the setup window's choice: the PIER_SETUP_SCRIPT override
-// when it resolves, else the repo's .pier/setup.sh.
-func hasSetup(repoRoot string) bool {
+// when it resolves, else the repo's .pier/setup.sh as base has it.
+func hasSetup(repoRoot, base string) bool {
 	if src, _ := setupScriptOverride(repoRoot); src != "" {
 		return true
 	}
-	fi, err := os.Stat(filepath.Join(repoRoot, ".pier", "setup.sh"))
-	return err == nil && fi.Mode().IsRegular()
+	return len(FileAt(repoRoot, base, ".pier/setup.sh")) > 0
 }
 
 // WaitSetup polls the setup status file (the one the supervisor beacons to

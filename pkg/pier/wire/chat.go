@@ -127,6 +127,12 @@ type ChatInfo struct {
 	ChatSummary
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	// Fast: the agent's fast mode is asked for.
+	Fast bool `json:"fast,omitempty"`
+	// FastOff is why it's off all the same, as the agent last said:
+	// preference (the organization turned it off), free (a paid plan
+	// needs it), extra_usage_disabled, model_not_allowed, …
+	FastOff string `json:"fastOff,omitempty"`
 	// Mode is its permission mode: default, acceptEdits, plan,
 	// bypassPermissions (codex: readOnly, default, plan, bypassPermissions).
 	Mode    string    `json:"mode,omitempty"`
@@ -279,6 +285,7 @@ type ChatCreateParams struct {
 	Agent     string `json:"agent"` // claude | codex
 	Model     string `json:"model,omitempty"`
 	Effort    string `json:"effort,omitempty"`
+	Fast      bool   `json:"fast,omitempty"`
 	Mode      string `json:"mode,omitempty"`
 	Title     string `json:"title,omitempty"`
 	// Prompt starts it, when given.
@@ -334,8 +341,10 @@ type ChatConfigureParams struct {
 	ChatID    string `json:"chatId"`
 	Model     string `json:"model,omitempty"`
 	Effort    string `json:"effort,omitempty"`
-	Mode      string `json:"mode,omitempty"`
-	Title     string `json:"title,omitempty"`
+	// Fast turns the agent's fast mode on or off; absent leaves it.
+	Fast  *bool  `json:"fast,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+	Title string `json:"title,omitempty"`
 }
 
 // DecideParams answers what a chat waits on: allow or deny a tool use
@@ -373,6 +382,19 @@ type AgentModels struct {
 	Agent  string      `json:"agent"`
 	Models []ModelInfo `json:"models"`
 	Modes  []ModeInfo  `json:"modes"`
+	// Commands are the slash commands the agent offers, as it says: its
+	// own, custom ones, skills.
+	Commands []AgentCommand `json:"commands"`
+}
+
+// AgentCommand is a slash command: typed as /Name, followed by what Hint
+// says.
+type AgentCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Hint        string `json:"hint,omitempty"`
+	// Path is where a skill is defined, for an agent that's handed it.
+	Path string `json:"path,omitempty"`
 }
 
 // ModelInfo is one model an agent can run.
@@ -383,7 +405,16 @@ type ModelInfo struct {
 	Efforts     []string `json:"efforts,omitempty"`
 	// DefaultEffort is the effort it runs at unless told otherwise.
 	DefaultEffort string `json:"defaultEffort,omitempty"`
-	Default       bool   `json:"default,omitempty"`
+	// Default: the model a chat runs when none is picked.
+	Default bool `json:"default,omitempty"`
+	// Fast: it has a fast mode (faster output from the same model).
+	Fast bool `json:"fast,omitempty"`
+	// Resolved is the model an alias stands for ("opus" → claude-opus-5-5).
+	Resolved string `json:"resolved,omitempty"`
+	// Long: it has a 1M-context variant, run as ID + "[1m]". LongDefault:
+	// the agent's default runs that variant.
+	Long        bool `json:"long,omitempty"`
+	LongDefault bool `json:"longDefault,omitempty"`
 }
 
 // ModeInfo is one permission mode.

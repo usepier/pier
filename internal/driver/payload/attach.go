@@ -33,8 +33,14 @@ fi
 ` + then
 }
 
+// EnsureMain starts tmux's main session when there is none. Its first
+// window is the session's home shell (@pier-role home): it keeps main
+// alive, and frontends that show windows as tabs leave it out unless
+// something runs in it.
+const EnsureMain = "tmux has-session -t main 2>/dev/null || { tmux new-session -d -s main && tmux set-option -w -t main @pier-role home; }"
+
 // MainAttach is the classic attach: straight into tmux's main session.
-const MainAttach = "exec tmux new-session -A -s main"
+const MainAttach = EnsureMain + "\nexec tmux attach-session -t main"
 
 var tmuxID = regexp.MustCompile(`^@[0-9]+$`)
 var tabID = regexp.MustCompile(`^[a-z0-9]{1,24}$`)
@@ -51,7 +57,7 @@ func TabAttach(tab, window string) (string, error) {
 		return "", fmt.Errorf("bad window id %q", window)
 	}
 	s := "pier-tab-" + tab
-	script := "tmux has-session -t main 2>/dev/null || tmux new-session -d -s main\n" +
+	script := EnsureMain + "\n" +
 		"tmux kill-session -t " + s + " 2>/dev/null\n" +
 		"tmux new-session -d -t main -s " + s + "\n"
 	if window != "" {

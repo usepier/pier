@@ -9,6 +9,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -38,8 +39,10 @@ type claudeProc struct {
 
 	mu  sync.Mutex
 	ctl map[string]chan ctlResult
-	// The model, effort and mode the process runs with now.
+	// The model, effort, fast mode and permission mode the process runs
+	// with now.
 	model, effort, mode string
+	fast                bool
 }
 
 type ctlResult struct {
@@ -62,8 +65,15 @@ func claudeArgs(rec chatRecord) []string {
 	if rec.Mode != "" {
 		args = append(args, "--permission-mode", rec.Mode)
 	}
-	if rec.Effort != "" {
+	if rec.Effort == "ultracode" {
+		// Ultracode is xhigh with dynamic workflows: it starts at xhigh and
+		// is switched on once claude answers (startClaude).
+		args = append(args, "--effort", "xhigh")
+	} else if rec.Effort != "" {
 		args = append(args, "--effort", rec.Effort)
+	}
+	if rec.Fast {
+		args = append(args, "--settings", `{"fastMode":true}`)
 	}
 	return args
 }
@@ -89,7 +99,7 @@ func startClaude(h *chatHost, c *chatState) (agentProc, error) {
 	}
 	p := &claudeProc{h: h, c: c, cmd: cmd, in: in, stream: chat.NewClaudeStream(newOpID() + "-"),
 		stderr: newTailBuffer(filepath.Join(c.dir, "agent.log")), ctl: map[string]chan ctlResult{},
-		model: rec.Model, effort: rec.Effort, mode: rec.Mode}
+		model: rec.Model, effort: rec.Effort, mode: rec.Mode, fast: rec.Fast}
 	cmd.Stderr = p.stderr
 	p.done, err = startPiped(cmd, p.read, func(err error) {
 		why := p.stderr.tail()
@@ -109,6 +119,14 @@ func startClaude(h *chatHost, c *chatState) (agentProc, error) {
 		return nil, fmt.Errorf("claude didn't start: %w", err)
 	}
 	h.cacheClaudeModels(res)
+	if rec.Effort == "ultracode" {
+		if _, err := p.request(map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": "ultracode"}}, 30*time.Second); err != nil {
+			c.log.put(wire.ChatItem{ID: newOpID(), Kind: wire.ChatStatus, Time: time.Now(), Text: "Ultracode isn't available here (" + err.Error() + "): running at Extra high."})
+			p.mu.Lock()
+			p.effort = "xhigh"
+			p.mu.Unlock()
+		}
+	}
 	return p, nil
 }
 
@@ -202,7 +220,34 @@ func (p *claudeProc) line(line []byte) {
 	case "control_cancel_request":
 		p.h.cancel(p.c, m.RequestID)
 	default:
+		p.noteFast(line)
 		p.h.apply(p.c, p.stream.Feed(line))
+	}
+}
+
+// noteFast keeps what claude says of its fast mode at a turn's start and
+// end: on, or off and why.
+func (p *claudeProc) noteFast(line []byte) {
+	if !bytes.Contains(line, []byte(`"fast_mode_state"`)) {
+		return
+	}
+	var m struct {
+		State  string `json:"fast_mode_state"`
+		Reason string `json:"fast_mode_disabled_reason"`
+	}
+	if json.Unmarshal(line, &m) != nil || m.State == "" {
+		return
+	}
+	reason := ""
+	if m.State == "off" {
+		reason = m.Reason
+	}
+	p.h.mu.Lock()
+	changed := p.c.fastOff != reason
+	p.c.fastOff = reason
+	p.h.mu.Unlock()
+	if changed {
+		p.h.notify()
 	}
 }
 
@@ -391,7 +436,7 @@ func (p *claudeProc) interrupt() error {
 
 func (p *claudeProc) configure(rec chatRecord) error {
 	p.mu.Lock()
-	model, effort, mode := p.model, p.effort, p.mode
+	model, effort, mode, fast := p.model, p.effort, p.mode, p.fast
 	p.mu.Unlock()
 	var errs []error
 	if rec.Model != model {
@@ -415,8 +460,15 @@ func (p *claudeProc) configure(rec chatRecord) error {
 			effort = rec.Effort
 		}
 	}
+	if rec.Fast != fast {
+		if _, err := p.request(map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"fastMode": rec.Fast}}, 30*time.Second); err != nil {
+			errs = append(errs, fmt.Errorf("fast: %w", err))
+		} else {
+			fast = rec.Fast
+		}
+	}
 	p.mu.Lock()
-	p.model, p.effort, p.mode = model, effort, mode
+	p.model, p.effort, p.mode, p.fast = model, effort, mode, fast
 	p.mu.Unlock()
 	return errors.Join(errs...)
 }

@@ -14,7 +14,7 @@ import (
 func (h *chatHost) info(c *chatState) wire.ChatInfo {
 	in := wire.ChatInfo{
 		ChatSummary: h.summary(c),
-		Model:       c.rec.Model, Effort: c.rec.Effort, Mode: c.rec.Mode,
+		Model:       c.rec.Model, Effort: c.rec.Effort, Fast: c.rec.Fast, FastOff: c.fastOff, Mode: c.rec.Mode,
 		Created: c.rec.Created, Error: c.rec.Error, Queue: []wire.QueuedPrompt{},
 	}
 	if len(c.pending) > 0 {

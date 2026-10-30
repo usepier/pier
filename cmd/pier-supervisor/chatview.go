@@ -98,6 +98,8 @@ func windowMain(args []string) int {
 			fmt.Fprintln(os.Stderr, "pier-supervisor: tmux:", strings.TrimSpace(string(out)))
 			return 1
 		}
+		// Its first window is main's home shell (payload.EnsureMain).
+		exec.Command("tmux", "set-option", "-w", "-t", "main", "@pier-role", "home").Run()
 	}
 	home, _ := os.UserHomeDir()
 	if takeover {

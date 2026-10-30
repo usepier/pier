@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -75,7 +76,7 @@ func TestSet(t *testing.T) {
 	// sensible default (credentials, org-specific ids) are empty until setup;
 	// agent models and efforts are empty for "what the agent defaults to".
 	emptyOK := map[string]bool{"aws.profile": true, "aws.region": true, "aws.subnet": true, "gcp.project": true,
-		"agents.claude_model": true, "agents.claude_effort": true, "agents.codex_model": true, "agents.codex_effort": true}
+		"agents.model": true, "agents.effort": true}
 	for _, s := range Settings {
 		if Get(cfg, s.Key) == "" && !emptyOK[s.Key] {
 			t.Errorf("Get(%q) is empty on a default config", s.Key)
@@ -85,8 +86,8 @@ func TestSet(t *testing.T) {
 
 func TestAgentSettings(t *testing.T) {
 	cfg := Default()
-	for k, v := range map[string]string{"agents.default": "codex", "agents.claude_model": "opus", "agents.claude_effort": "max",
-		"agents.claude_mode": "acceptEdits", "agents.codex_effort": "minimal", "agents.codex_mode": "readOnly"} {
+	for k, v := range map[string]string{"agents.default": "codex", "agents.model": "gpt-6-astra", "agents.effort": "minimal",
+		"agents.claude_mode": "acceptEdits", "agents.codex_mode": "readOnly"} {
 		if err := Set(&cfg, k, v); err != nil {
 			t.Fatalf("%s=%s: %v", k, v, err)
 		}
@@ -94,11 +95,15 @@ func TestAgentSettings(t *testing.T) {
 	if cfg.Agents.Agent() != "codex" {
 		t.Error("default agent")
 	}
-	if m, e, mode := cfg.Agents.For("claude"); m != "opus" || e != "max" || mode != "acceptEdits" {
+	// One default model: the other agent runs its own default.
+	if m, e, mode := cfg.Agents.For("codex"); m != "gpt-6-astra" || e != "minimal" || mode != "readOnly" {
+		t.Errorf("codex defaults = %s %s %s", m, e, mode)
+	}
+	if m, e, mode := cfg.Agents.For("claude"); m != "" || e != "" || mode != "acceptEdits" {
 		t.Errorf("claude defaults = %s %s %s", m, e, mode)
 	}
 	for k, v := range map[string]string{"agents.default": "gemini", "agents.codex_mode": "acceptEdits", "agents.claude_mode": "readOnly",
-		"agents.codex_effort": "very high", "agents.claude_model": "opus; rm -rf /"} {
+		"agents.effort": "very high", "agents.model": "opus; rm -rf /"} {
 		if err := Set(&cfg, k, v); err == nil {
 			t.Errorf("%s=%s was accepted", k, v)
 		}
@@ -154,5 +159,32 @@ func TestSetValidation(t *testing.T) {
 		if !c.ok && err == nil {
 			t.Errorf("Set(%q, %q) should be rejected, but was accepted", c.key, c.val)
 		}
+	}
+}
+
+// A config from before one default model keeps the default agent's model
+// and effort, and the next write drops the per-agent keys.
+func TestAgentsLegacyModels(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(Dir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := "[agents]\ndefault = \"codex\"\nclaude_model = \"opus\"\ncodex_model = \"gpt-6-astra\"\ncodex_effort = \"high\"\n"
+	if err := os.WriteFile(Path(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Agents.Model != "gpt-6-astra" || c.Agents.Effort != "high" {
+		t.Errorf("carried over %q %q", c.Agents.Model, c.Agents.Effort)
+	}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(Path())
+	if strings.Contains(string(b), "claude_model") || strings.Contains(string(b), "codex_model") {
+		t.Errorf("old keys kept:\n%s", b)
 	}
 }

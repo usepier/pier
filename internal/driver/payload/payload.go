@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -75,6 +76,7 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 // dir. Callers prepend their script pushes, keeping the biggest cargo last so
 // its meter is the wait the user watches.
 func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manifest []string, env map[string]string, progress func(string)) (p *Payload, mode, sha, origin string, err error) {
+	fetchBase(ctx, spec.Repo, baseRef(spec))
 	sha, err = gitOut(spec.Repo, "rev-parse", "--verify", baseRef(spec)+"^{commit}")
 	if err != nil {
 		return nil, "", "", "", fmt.Errorf("base ref %q not found", baseRef(spec))
@@ -112,12 +114,12 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 		}
 	}
 	// Local dirty state travels only when the session's base IS the laptop's
-	// HEAD — branching a session off another commit and grafting today's
-	// tracked edits or untracked files onto it would be a lie about what that
-	// base contained.
+	// HEAD, asked for as such — a session from origin's branch is that
+	// branch, even when the clone sits on its commit with edits on top:
+	// grafting them on would be a lie about what that base contained.
 	patch := ""
 	var untracked []string
-	if head, _ := gitOut(spec.Repo, "rev-parse", "HEAD"); head == sha {
+	if head, _ := gitOut(spec.Repo, "rev-parse", "HEAD"); head == sha && baseRef(spec) == "HEAD" {
 		pp := filepath.Join(dir, "pier-dirty.patch")
 		switch ok, err := dirtyPatch(spec.Repo, pp); {
 		case err != nil:
@@ -134,7 +136,7 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 	if warn != "" {
 		progress(warn)
 	}
-	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(spec.Repo))
+	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(spec.Repo, baseRef(spec)))
 	filesTar := filepath.Join(dir, "pier-files.tar")
 	chatFiles, err := chatEntries(spec.Chat)
 	if err != nil {
@@ -181,6 +183,19 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 		p.Notes = append(p.Notes, "mcp "+strings.Join(names, ", ")+": log in from inside the session (e.g. claude's /mcp) — while you're attached it opens in your browser here")
 	}
 	return p, mode, sha, origin, nil
+}
+
+// fetchBase brings an origin/<branch> base up to date: a session from an
+// origin branch starts from it as origin has it now, not as this checkout
+// last fetched it. Offline, the last fetch stands.
+func fetchBase(ctx context.Context, repo, ref string) {
+	b, ok := strings.CutPrefix(ref, "origin/")
+	if !ok || checkName(b) != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "git", "-C", repo, "fetch", "--quiet", "origin", b).Run()
 }
 
 func baseRef(spec driver.CreateSpec) string {
@@ -264,7 +279,7 @@ func chatEntries(c *driver.ChatSpec) ([]tarEntry, error) {
 	if c == nil {
 		return nil, nil
 	}
-	rec := chatfile.Record{ID: c.ID, Agent: c.Agent, Model: c.Model, Effort: c.Effort, Mode: c.Mode, Created: time.Now().UTC(), Title: titleOf(c.Prompt)}
+	rec := chatfile.Record{ID: c.ID, Agent: c.Agent, Model: c.Model, Effort: c.Effort, Fast: c.Fast, Mode: c.Mode, Created: time.Now().UTC(), Title: titleOf(c.Prompt)}
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return nil, err
@@ -272,7 +287,7 @@ func chatEntries(c *driver.ChatSpec) ([]tarEntry, error) {
 	dir := "home/" + chatfile.Dir(c.ID)
 	out := []tarEntry{{Name: dir + "/chat.json", Data: b, Mode: 0o600}}
 	if strings.TrimSpace(c.Prompt) != "" {
-		p, err := json.Marshal(chatfile.Prompt{ID: c.PromptID, Text: c.Prompt, At: time.Now().UTC(), First: true})
+		p, err := json.Marshal(chatfile.Prompt{ID: c.PromptID, Text: c.Prompt, At: time.Now().UTC(), First: true, NameBranch: c.NameBranch})
 		if err != nil {
 			return nil, err
 		}

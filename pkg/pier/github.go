@@ -104,23 +104,14 @@ func (c *Client) PullRequest(ctx context.Context, s Session, number int) (PRDeta
 	return c.gh.Get(ctx, r, number)
 }
 
-// MergePR merges a session's pull request if its head is still
-// expectedHead (ErrHeadMoved otherwise).
-func (c *Client) MergePR(ctx context.Context, s Session, prID, method, expectedHead string) error {
+// MergePR merges a session's pull request, with the repository's default
+// method, if its head is still expectedHead (ErrHeadMoved otherwise).
+func (c *Client) MergePR(ctx context.Context, s Session, prID, expectedHead string) error {
 	r, err := repoOf(s)
 	if err != nil {
 		return err
 	}
-	return c.gh.Merge(ctx, r, prID, method, expectedHead)
-}
-
-// RerunChecks re-runs a workflow run's failed jobs.
-func (c *Client) RerunChecks(ctx context.Context, s Session, runID int64) error {
-	r, err := repoOf(s)
-	if err != nil {
-		return err
-	}
-	return c.gh.Rerun(ctx, r, runID)
+	return c.gh.Merge(ctx, r, prID, expectedHead)
 }
 
 // CheckLog is the end of a check's job log (GitHub Actions).

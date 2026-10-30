@@ -105,7 +105,7 @@ func init() {
 			}
 			return wire.CheckoutInfo{
 				Checkout: wireCheckout(info.Checkout),
-				Branch:   info.Branch, Head: info.Head, Dirty: info.Dirty, Base: info.Base,
+				Branch:   info.Branch, Head: info.Head, Dirty: info.Dirty, Base: info.Base, DefaultBranch: info.DefaultBranch,
 			}, nil
 		})
 	handle("pool.setSize", "Sets how many pooled sessions the checkout's repo keeps (0 turns the pool off and drains it).",

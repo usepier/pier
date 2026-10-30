@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -222,4 +223,54 @@ func psMain() int {
 		return 1
 	}
 	return 0
+}
+
+// loadPoint is one tick's load, for the graphs a frontend draws.
+type loadPoint struct {
+	At  int64   `json:"t"` // unix seconds
+	CPU float64 `json:"cpu"`
+	Mem uint64  `json:"mem"`
+}
+
+// loadKeep is how far back the load history goes: a frontend's graphs
+// start full instead of from when it looked.
+const loadKeep = 10 * time.Minute
+
+type loadHistory struct {
+	mu     sync.Mutex
+	points []loadPoint
+}
+
+var load loadHistory
+
+func (h *loadHistory) add(at time.Time, r resources) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.points = append(h.points, loadPoint{At: at.Unix(), CPU: r.CPU, Mem: r.MemUsed})
+	cut := 0
+	for cut < len(h.points) && at.Unix()-h.points[cut].At > int64(loadKeep.Seconds()) {
+		cut++
+	}
+	h.points = h.points[cut:]
+}
+
+func (h *loadHistory) all() []loadPoint {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]loadPoint{}, h.points...)
+}
+
+// withLoad adds the load history to an env message, for a subscriber's
+// first one (the ticks after it carry only the newest reading).
+func withLoad(env json.RawMessage) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(env, &m) != nil {
+		return env
+	}
+	m["load"], _ = json.Marshal(load.all())
+	b, err := json.Marshal(m)
+	if err != nil {
+		return env
+	}
+	return b
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -483,11 +484,11 @@ func TestChecks(t *testing.T) {
 	if err := h.configure(configureArgs{Chat: "x", Mode: "readOnly"}); err == nil {
 		t.Error("a mode claude doesn't have")
 	}
-	if err := h.configure(configureArgs{Chat: "x", Model: "opus", Effort: "high", Title: "Renamed"}); err != nil {
+	if err := h.configure(configureArgs{Chat: "x", Model: "opus", Effort: "high", Fast: "on", Title: "Renamed"}); err != nil {
 		t.Fatal(err)
 	}
 	c, _ := chatInfo(h, "x")
-	if c.Model != "opus" || c.Effort != "high" || c.Title != "Renamed" {
+	if c.Model != "opus" || c.Effort != "high" || !c.Fast || c.Title != "Renamed" {
 		t.Errorf("configured = %+v", c)
 	}
 	if err := h.send("x", prompt{ID: "a b", Text: "hi"}, "queue"); err == nil {
@@ -511,8 +512,11 @@ func TestClaudeArgs(t *testing.T) {
 			t.Errorf("args %q lack %q", got, want)
 		}
 	}
-	if got := strings.Join(claudeArgs(chatRecord{Conversation: "c-1", Started: true}), " "); !strings.Contains(got, "--resume c-1") || strings.Contains(got, "--session-id") {
+	if got := strings.Join(claudeArgs(chatRecord{Conversation: "c-1", Started: true}), " "); !strings.Contains(got, "--resume c-1") || strings.Contains(got, "--session-id") || strings.Contains(got, "fastMode") {
 		t.Errorf("a started conversation resumes: %q", got)
+	}
+	if got := strings.Join(claudeArgs(chatRecord{Conversation: "c-1", Fast: true}), " "); !strings.Contains(got, `--settings {"fastMode":true}`) {
+		t.Errorf("a fast chat's args %q lack its fast mode", got)
 	}
 }
 
@@ -571,9 +575,18 @@ func TestUserMessage(t *testing.T) {
 	if len(blocks) != 2 || blocks[0]["type"] != "text" || !strings.Contains(blocks[0]["text"].(string), "spec.pdf") || blocks[1]["type"] != "image" {
 		t.Errorf("blocks = %+v", blocks)
 	}
-	in := codexInput(prompt{Text: "look", Attachments: []wire.Attachment{{Name: "shot.png", Path: png, Mime: "image/png"}}})
+	in := codexInput(prompt{Text: "look", Attachments: []wire.Attachment{{Name: "shot.png", Path: png, Mime: "image/png"}}}, nil)
 	if len(in) != 2 || in[1]["type"] != "localImage" {
 		t.Errorf("codex input = %+v", in)
+	}
+	// A leading /name that's a skill hands codex the skill, the words kept.
+	skills := []wire.AgentCommand{{Name: "compact"}, {Name: "deploy", Path: "/home/agent/.codex/skills/deploy/SKILL.md"}}
+	in = codexInput(prompt{Text: "/deploy staging"}, skills)
+	if len(in) != 2 || in[0]["type"] != "text" || in[0]["text"] != "/deploy staging" || in[1]["type"] != "skill" || in[1]["name"] != "deploy" {
+		t.Errorf("skill input = %+v", in)
+	}
+	if in = codexInput(prompt{Text: "/unknown thing"}, skills); len(in) != 1 {
+		t.Errorf("no such skill = %+v", in)
 	}
 }
 
@@ -616,5 +629,59 @@ func TestUntarAll(t *testing.T) {
 	}
 	if got := pinDirOf(pinBin("/h", pins["codex"]), pins["codex"]); got != "/h/.local/share/pier/agents/codex/0.159.3" {
 		t.Errorf("its directory is %s", got)
+	}
+}
+
+// What claude says of its fast mode reaches the chat: off, and why.
+func TestClaudeFastModeNote(t *testing.T) {
+	h := newChatHost(t.TempDir())
+	c := &chatState{}
+	p := &claudeProc{h: h, c: c}
+	p.noteFast([]byte(`{"type":"system","subtype":"init","fast_mode_state":"off","fast_mode_disabled_reason":"preference"}`))
+	if c.fastOff != "preference" {
+		t.Errorf("fastOff = %q", c.fastOff)
+	}
+	p.noteFast([]byte(`{"type":"result","fast_mode_state":"on"}`))
+	if c.fastOff != "" {
+		t.Errorf("fast mode on, fastOff = %q", c.fastOff)
+	}
+}
+
+// Ultracode starts claude at xhigh; the switch to it happens once claude
+// answers.
+func TestClaudeArgsUltracode(t *testing.T) {
+	got := strings.Join(claudeArgs(chatRecord{Conversation: "c-1", Effort: "ultracode"}), " ")
+	if !strings.Contains(got, "--effort xhigh") || strings.Contains(got, "ultracode") {
+		t.Errorf("args = %q", got)
+	}
+}
+
+// Loads that run at once (a create's, the tick's) open a chat once: a
+// second opening would take the first's turn for one the session stopped.
+func TestChatLoadsAtOnceOpenItOnce(t *testing.T) {
+	home := t.TempDir()
+	if err := writeChat(home, createArgs{ID: "c", Agent: "claude", Title: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	// As a turn just begun leaves it on disk.
+	h0 := newChatHost(home)
+	h0.load()
+	h0.mu.Lock()
+	h0.setState(h0.chats["c"], wire.AgentWorking, "")
+	h0.mu.Unlock()
+
+	h := newChatHost(home)
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.load()
+		}()
+	}
+	wg.Wait()
+	items, _ := chatItems(h, "c")
+	if n := len(items); n != 1 {
+		t.Errorf("opened %d times: %+v", n, items)
 	}
 }

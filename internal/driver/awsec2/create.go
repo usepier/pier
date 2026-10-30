@@ -183,7 +183,7 @@ func (d *Driver) push(ctx context.Context, id, local, remote string, progress fu
 		if ctx.Err() != nil {
 			return err
 		}
-		if !transportBroken(err) {
+		if !driver.TransportBroken(err) {
 			return err // the remote refused it; retrying changes nothing
 		}
 		if i == attempts-1 {

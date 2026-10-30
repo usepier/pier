@@ -27,10 +27,8 @@ type PRCheck struct {
 	// State: pending | passing | failing | skipped
 	State string `json:"state"`
 	URL   string `json:"url"`
-	// JobID reads the log (pr.log); RunID re-runs it (pr.rerun). GitHub
-	// Actions only.
+	// JobID reads the log (pr.log). GitHub Actions only.
 	JobID int64 `json:"jobId,omitempty"`
-	RunID int64 `json:"runId,omitempty"`
 }
 
 // PRThread is a review conversation on a line.
@@ -46,6 +44,8 @@ type PRThread struct {
 type PRComment struct {
 	Author string `json:"author"`
 	Body   string `json:"body"`
+	// HTML is the body as GitHub renders it (markdown, its HTML, mentions).
+	HTML string `json:"html,omitempty"`
 }
 
 // PRReview is a reviewer's verdict.
@@ -53,6 +53,8 @@ type PRReview struct {
 	Author string `json:"author"`
 	State  string `json:"state"` // approved | changes_requested | commented
 	Body   string `json:"body"`
+	// HTML is the body as GitHub renders it.
+	HTML string `json:"html,omitempty"`
 }
 
 // PRDetail is a session's pull request in full.
@@ -72,16 +74,9 @@ type PRLogParams struct {
 	JobID     int64  `json:"jobId"`
 }
 
-// PRRerunParams re-runs a workflow run's failed jobs.
-type PRRerunParams struct {
-	SessionID string `json:"sessionId"`
-	RunID     int64  `json:"runId"`
-}
-
 // PRMergeParams merges a session's pull request.
 type PRMergeParams struct {
 	SessionID string `json:"sessionId"`
-	Method    string `json:"method"` // merge | squash | rebase
 	// ExpectedHeadOid is the head that was reviewed: if the pull request
 	// moved past it, the merge fails with kind head_moved.
 	ExpectedHeadOid string `json:"expectedHeadOid"`

@@ -39,6 +39,7 @@ type overviewPoller struct {
 	fast      int
 
 	have     bool
+	first    chan struct{} // closed once there is an overview to show
 	last     wire.Overview
 	sessions []pier.Session // the latest listing, enriched when available
 	at       time.Time      // when sessions was read
@@ -51,7 +52,7 @@ type overviewPoller struct {
 }
 
 func newOverviewPoller(s *Server) *overviewPoller {
-	return &overviewPoller{s: s, listeners: map[int]func(wire.Overview){}, kickc: make(chan struct{}, 1)}
+	return &overviewPoller{s: s, listeners: map[int]func(wire.Overview){}, kickc: make(chan struct{}, 1), first: make(chan struct{})}
 }
 
 // subscribe adds a listener and starts the loop if it isn't running. The
@@ -104,8 +105,16 @@ func (p *overviewPoller) kick(n int) {
 	}
 }
 
+// configCheck is how often the loop looks for a change to the config file
+// another process made (a bake's finish recording its image, a setting
+// changed elsewhere), to show it at once rather than on the next round.
+var configCheck = 2 * time.Second
+
 func (p *overviewPoller) loop(ctx context.Context, done chan struct{}) {
 	defer close(done)
+	cfg := pier.ConfigStamp()
+	check := time.NewTicker(configCheck)
+	defer check.Stop()
 	for {
 		p.mu.Lock()
 		stale := time.Since(p.at) >= pollFast/2
@@ -113,14 +122,28 @@ func (p *overviewPoller) loop(ctx context.Context, done chan struct{}) {
 		if stale { // a watch that just refreshed doesn't need another round
 			p.refresh(ctx)
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(p.interval()):
-		case <-p.kickc:
-			p.mu.Lock()
-			p.at = time.Time{} // a kick always refreshes
-			p.mu.Unlock()
+		next := time.After(p.interval())
+	wait:
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-next:
+				break wait
+			case <-check.C:
+				if now := pier.ConfigStamp(); now != cfg {
+					cfg = now
+					p.mu.Lock()
+					p.at = time.Time{}
+					p.mu.Unlock()
+					break wait
+				}
+			case <-p.kickc:
+				p.mu.Lock()
+				p.at = time.Time{} // a kick always refreshes
+				p.mu.Unlock()
+				break wait
+			}
 		}
 	}
 }
@@ -189,6 +212,7 @@ func (p *overviewPoller) refresh(ctx context.Context) {
 		p.mu.Unlock()
 	}
 	p.quotaDue(ctx, be)
+	p.s.fetchCheckouts(be)
 	fresh := append([]pier.Session(nil), all...)
 	p.publish(be, pier.CarryStatus(prev, all), false)
 	ectx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -198,8 +222,12 @@ func (p *overviewPoller) refresh(ctx context.Context) {
 		return
 	}
 	p.publish(be, enriched, true)
-	p.s.notices.poll(enriched)
-	p.s.keepSnapshots(be, enriched)
+	if p.s.prs.unchecked(enriched) {
+		p.s.prs.kick() // a session GitHub wasn't asked about yet (new, or its branch changed)
+	}
+	own := ownSessions(enriched)
+	p.s.notices.poll(own)
+	p.s.keepSnapshots(be, own)
 	p.s.refill(be, enriched)
 	if sweep {
 		ids := make([]string, len(enriched))
@@ -208,6 +236,18 @@ func (p *overviewPoller) refresh(ctx context.Context) {
 		}
 		pier.PruneMirrors(ids)
 	}
+}
+
+// ownSessions leaves out the machines a bake runs on: listed like sessions,
+// but no one's to notify about or keep a snapshot of.
+func ownSessions(all []pier.Session) []pier.Session {
+	out := make([]pier.Session, 0, len(all))
+	for _, s := range all {
+		if !pier.BakeMachine(s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (p *overviewPoller) quotaDue(ctx context.Context, be Account) {
@@ -232,8 +272,13 @@ func (p *overviewPoller) publish(be Backend, sessions []pier.Session, enriched b
 	p.mu.Lock()
 	quota := p.quota
 	p.mu.Unlock()
-	o := buildOverview(be, sessions, quota, enriched, p.s.prs.snapshot())
+	prs, checked := p.s.prs.snapshot()
+	o := buildOverview(be, sessions, quota, enriched, prs, checked)
 	p.mu.Lock()
+	if !p.have {
+		close(p.first)
+		defer p.s.prs.kick() // the first listing: its pull requests are due
+	}
 	p.have, p.last, p.sessions, p.at, p.lastErr = true, o, sessions, time.Now(), nil
 	fns := make([]func(wire.Overview), 0, len(p.listeners))
 	for _, fn := range p.listeners {
@@ -279,6 +324,9 @@ func (p *overviewPoller) fail(err error) {
 	if o.Sessions == nil {
 		o.Sessions, o.Repos, o.Checkouts = []wire.Session{}, []wire.Repo{}, []wire.Checkout{}
 	}
+	if !p.have {
+		close(p.first)
+	}
 	p.last, p.have = o, true
 	fns := make([]func(wire.Overview), 0, len(p.listeners))
 	for _, fn := range p.listeners {
@@ -288,6 +336,19 @@ func (p *overviewPoller) fail(err error) {
 	for _, fn := range fns {
 		fn(o)
 	}
+}
+
+// latest is the overview as it is now — or, before there's any, the first
+// one: the sessions as listed, which their statuses (read from each VM,
+// seconds apiece over a tunnel) follow as an update.
+func (p *overviewPoller) latest(ctx context.Context) wire.Overview {
+	select {
+	case <-p.first:
+	case <-ctx.Done():
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.last
 }
 
 // current returns the latest overview, refreshing first when there is none
@@ -300,9 +361,13 @@ func (p *overviewPoller) current(ctx context.Context, maxAge time.Duration) wire
 		return o
 	}
 	p.refresh(ctx)
-	// Without a watch no loop reads pull requests: read them once.
-	if sessions, ok := p.listed(); ok && p.s.prs.never() {
-		if be, err := p.s.backend(); err == nil && p.s.prs.refresh(ctx, be, sessions) {
+	// Without a watch no loop reads pull requests: read them here, when
+	// they're as due as they would be for a client looking at them.
+	p.mu.Lock()
+	looping := p.cancel != nil
+	p.mu.Unlock()
+	if sessions, ok := p.listed(); ok && !looping {
+		if be, err := p.s.backend(); err == nil && p.s.prs.wait(true, be.GitHubLimit()) == 0 && p.s.prs.refresh(ctx, be, sessions) {
 			p.republish(be)
 		}
 	}
@@ -345,12 +410,11 @@ func init() {
 		})
 	watch("overview", "The overview, pushed after every refresh.",
 		func(ctx context.Context, s *Server, _ wire.Empty, sub *Sub[wire.Overview]) (wire.Overview, error) {
-			snap := s.overview.current(ctx, 3*time.Second)
 			unsubscribe := s.overview.subscribe(sub.Emit)
 			go func() {
 				<-sub.Done()
 				unsubscribe()
 			}()
-			return snap, nil
+			return s.overview.latest(ctx), nil
 		})
 }

@@ -1,11 +1,10 @@
 package api
 
 import (
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver/payload"
 	"github.com/usepier/pier/pkg/pier"
 	"github.com/usepier/pier/pkg/pier/wire"
 )
@@ -98,7 +97,7 @@ func wireRepo(r pier.Repo, co *wire.Checkout, origin string) wire.Repo {
 		Name: r.Name, Origin: origin, Checkout: co, Image: r.Image,
 		Baking:     pier.BakeRunning(r.Name),
 		PoolTarget: r.PoolSize, PoolReady: r.Ready, PoolFilling: r.Filling, PoolStale: r.Stale,
-		PoolAges: append([]string{}, r.PoolAges...), Sessions: r.Sessions, MonthlyUSD: r.MonthlyUSD,
+		PoolAges: append([]string{}, r.PoolAges...), Sessions: r.Sessions, MonthlyUSD: r.MonthlyUSD, ImageMonthlyUSD: r.ImageMonthlyUSD,
 		Reminders: []wire.Reminder{},
 	}
 	switch {
@@ -114,10 +113,14 @@ func wireRepo(r pier.Repo, co *wire.Checkout, origin string) wire.Repo {
 	if r.Baked != nil {
 		out.BakedAt = wire.TimeOrNil(r.Baked.BakedAt)
 	}
+	if f := r.PoolFailure; f != nil {
+		out.PoolError = &wire.PoolError{At: f.At.UTC(), Message: f.Message}
+	}
 	if co != nil && !co.Missing {
-		if st, err := os.Stat(filepath.Join(co.Path, ".pier")); err == nil && st.IsDir() {
-			out.HasPier = true
-		}
+		// As new sessions get it: origin's default branch (last fetched).
+		base := payload.KnownBase(co.Path)
+		out.HasPier = payload.HasDir(co.Path, base, ".pier")
+		out.NeedsImage = r.Image == "" && payload.BakeHook(co.Path, base) != nil
 	}
 	for _, m := range r.Reminders {
 		out.Reminders = append(out.Reminders, wire.Reminder{Message: m.Message, Action: m.Action})
@@ -126,7 +129,7 @@ func wireRepo(r pier.Repo, co *wire.Checkout, origin string) wire.Repo {
 }
 
 // buildOverview assembles the wire overview from one listing.
-func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched bool, prs map[string]pier.PR) wire.Overview {
+func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched bool, prs map[string]pier.PR, checked map[string]string) wire.Overview {
 	checkouts := be.Checkouts()
 	var roots []string
 	byName := map[string]*wire.Checkout{}
@@ -152,11 +155,22 @@ func buildOverview(be Backend, all []pier.Session, quota *wire.Quota, enriched b
 	disk := be.DiskMonthlyUSD()
 	hourly, parked := map[string]float64{}, map[string]int{}
 	for _, s := range all {
+		if pier.BakeMachine(s) {
+			// No one's session: it shows as its repo baking. What it costs
+			// while it runs is spent all the same.
+			if pier.Running(s) || s.State == pier.StateCreating {
+				o.Totals.HourlyUSD += pier.HourlyUSD(s)
+			}
+			continue
+		}
+		// A pull request read for another branch (the session moved to a
+		// new one) isn't this branch's.
 		var pr *pier.PR
-		if p, ok := prs[s.ID]; ok {
+		if p, ok := prs[s.ID]; ok && (p.HeadRef == "" || p.HeadRef == s.Branch) {
 			pr = &p
 		}
 		w := wireSession(be, s, pr)
+		w.PRChecked = s.Branch != "" && checked[s.ID] == s.Branch
 		o.Sessions = append(o.Sessions, w)
 		if s.Origin != "" && origins[s.Repo] == "" {
 			origins[s.Repo] = s.Origin

@@ -211,11 +211,13 @@ type configureArgs struct {
 	Chat   string `json:"chat"`
 	Model  string `json:"model"`
 	Effort string `json:"effort"`
+	Fast   string `json:"fast"` // on | off | "" (as it is)
 	Mode   string `json:"mode"`
 	Title  string `json:"title"`
 }
 
-// configure changes a chat's model, effort, mode or title.
+// configure changes a chat's model, effort, fast mode, permission mode or
+// title.
 func (h *chatHost) configure(a configureArgs) error {
 	h.mu.Lock()
 	c := h.chats[a.Chat]
@@ -233,6 +235,9 @@ func (h *chatHost) configure(a configureArgs) error {
 	if a.Effort != "" {
 		c.rec.Effort = a.Effort
 	}
+	if a.Fast != "" {
+		c.rec.Fast = a.Fast == "on"
+	}
 	if a.Mode != "" {
 		c.rec.Mode = a.Mode
 	}
@@ -243,7 +248,7 @@ func (h *chatHost) configure(a configureArgs) error {
 	rec, rt := c.rec, c.rt
 	h.mu.Unlock()
 	h.notify()
-	if rt != nil && rt.alive() && (a.Model != "" || a.Effort != "" || a.Mode != "") {
+	if rt != nil && rt.alive() && (a.Model != "" || a.Effort != "" || a.Fast != "" || a.Mode != "") {
 		return rt.configure(rec)
 	}
 	return nil

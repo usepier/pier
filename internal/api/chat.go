@@ -162,7 +162,7 @@ func init() {
 			if err != nil {
 				return wire.ChatCreated{}, err
 			}
-			req := pier.ChatRequest{ID: p.ChatID, Agent: p.Agent, Model: p.Model, Effort: p.Effort, Mode: p.Mode, Title: p.Title}
+			req := pier.ChatRequest{ID: p.ChatID, Agent: p.Agent, Model: p.Model, Effort: p.Effort, Fast: p.Fast, Mode: p.Mode, Title: p.Title}
 			var local []string
 			if p.Prompt != nil {
 				prompt := *p.Prompt
@@ -251,7 +251,7 @@ func init() {
 	handle("chat.configure", "Changes a chat's model, effort, permission mode or title as it goes on.",
 		func(ctx context.Context, s *Server, _ *Call, p wire.ChatConfigureParams) (*wire.Empty, error) {
 			return nil, s.withSession(ctx, p.SessionID, func(be Backend, sess pier.Session) error {
-				return be.ConfigureChat(ctx, sess, p.ChatID, pier.ChatConfig{Model: p.Model, Effort: p.Effort, Mode: p.Mode, Title: p.Title})
+				return be.ConfigureChat(ctx, sess, p.ChatID, pier.ChatConfig{Model: p.Model, Effort: p.Effort, Fast: p.Fast, Mode: p.Mode, Title: p.Title})
 			})
 		})
 	handle("chat.close", "Stops a chat and puts it away.",
