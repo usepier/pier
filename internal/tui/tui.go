@@ -34,7 +34,7 @@ type Backend interface {
 	Remove(ctx context.Context, s pier.Session) error
 	Keep(ctx context.Context, s pier.Session) error
 	Resume(ctx context.Context, s pier.Session) error
-	Resize(ctx context.Context, s pier.Session, machineType string) error
+	StartResize(s pier.Session, machineType string) (pier.Job, error)
 	Machines(s pier.Session) []pier.Machine
 	Attach(ctx context.Context, s pier.Session) (*exec.Cmd, func(), error)
 	WaitReachable(ctx context.Context, s pier.Session, timeout time.Duration) error
@@ -749,11 +749,29 @@ func (m model) keyResize(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.note("resizing " + s.Name + " to " + t + " — parks, resizes, resumes (~1-2 min)")
 		return m, act(func() doneMsg {
-			err := m.be.Resize(context.Background(), s, t)
+			err := resize(m.be, s, t)
 			return doneMsg{note: s.Name + " is now a " + t, err: err, refresh: true}
 		})
 	}
 	return m, nil
+}
+
+// resize runs as a background job, followed to its end: quitting the app
+// halfway leaves the resize to finish rather than the session parked.
+func resize(be Backend, s pier.Session, machineType string) error {
+	j, err := be.StartResize(s, machineType)
+	if err != nil {
+		return err
+	}
+	var failed error
+	if err := pier.FollowJob(context.Background(), j.ID, 0, func(e pier.Event) {
+		if e.Kind == pier.EventFailed {
+			failed = errors.New(e.Message)
+		}
+	}); err != nil {
+		return err
+	}
+	return failed
 }
 
 // --- repos ---------------------------------------------------------------------------

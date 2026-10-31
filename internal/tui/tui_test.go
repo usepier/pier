@@ -80,7 +80,7 @@ func (f *fake) Keep(_ context.Context, s pier.Session) error {
 	return nil
 }
 func (f *fake) Resume(context.Context, pier.Session) error         { return nil }
-func (f *fake) Resize(context.Context, pier.Session, string) error { return nil }
+func (f *fake) StartResize(pier.Session, string) (pier.Job, error) { return pier.Job{}, nil }
 func (f *fake) Machines(pier.Session) []pier.Machine {
 	return []pier.Machine{{Type: "t4g.medium", CPU: "2", Mem: "4", Cost: "~$0.03/h"}, {Type: "t4g.xlarge", CPU: "4", Mem: "16", Cost: "~$0.13/h"}}
 }

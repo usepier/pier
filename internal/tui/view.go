@@ -666,6 +666,7 @@ func (m model) helpView() string {
 		"",
 		sec("Sessions"),
 		row("enter", "attach — a parked session resumes with tmux restored"),
+		row("c", "attach to the session's chats window"),
 		row("n", "new session from this repo (runs in the background)"),
 		row("l", "setup log, live"),
 		row("m", "resize the VM"),

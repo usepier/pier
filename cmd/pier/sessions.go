@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -533,8 +534,39 @@ func cmdResize(args []string) {
 	} else {
 		fmt.Printf("%s %s\n", ui.Bold.Render("resizing "+s.Name+" to "+itype), ui.Dim.Render("(parks, resizes, resumes ~1-2 min)"))
 	}
-	if err := c.Resize(context.Background(), s, itype); err != nil {
+	if jobEvents != nil {
+		// The background job itself: do the resize.
+		if err := c.Resize(context.Background(), s, itype); err != nil {
+			fatal(err)
+		}
+		jobEvents.Finish(nil, s.Name+" is now a "+itype)
+		return
+	}
+	// A resize stopped halfway would leave the session parked, so it runs
+	// as a background job this command only follows: ctrl-c stops the
+	// following, not the resize.
+	j, err := c.StartResize(s, itype)
+	if err != nil {
 		fatal(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var failed error
+	err = pier.FollowJob(ctx, j.ID, 0, func(e pier.Event) {
+		switch e.Kind {
+		case pier.EventFailed:
+			failed = errors.New(e.Message)
+		case pier.EventDone:
+		default:
+			progress(e)
+		}
+	})
+	if err != nil {
+		fmt.Println(ui.Dim.Render("the resize goes on in the background — log: " + ui.Tilde(j.Log)))
+		return
+	}
+	if failed != nil {
+		fatal(failed)
 	}
 	fmt.Println(ui.OK.Render(s.Name + " is now a " + itype))
 }
