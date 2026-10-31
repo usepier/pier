@@ -200,6 +200,21 @@ test("an action that takes a while says so on its button, and can't be pressed t
   await expect(fix).not.toHaveAttribute("data-pending", "true");
 });
 
+test("with its last chat closed, Fix CI's prompt waits in a new chat", async ({ page }) => {
+  await page.goto("/#/session/i-02");
+  const tab = page.getByRole("tab", { name: "Create hello.txt" });
+  await tab.click();
+  await tab.press("Delete");
+  await page.getByRole("alertdialog").getByRole("button", { name: "Close" }).click();
+  await expect(page.getByText("No chats in this session yet.")).toBeVisible();
+  await page.getByRole("tab", { name: "PR #41" }).click();
+  await page.getByRole("button", { name: "Fix CI…" }).click();
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(/check fails/);
+  // It's a chat with the default agent and model, as New Chat makes.
+  await expect(page.getByText("New chat with Claude")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Model" })).toContainText("Opus 5.5");
+});
+
 test("a new session starts from origin's branch unless the clone is asked for", async ({ page }) => {
   const creates: Record<string, unknown>[] = [];
   page.on("websocket", (ws) =>

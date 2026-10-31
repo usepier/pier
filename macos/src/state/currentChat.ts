@@ -1,9 +1,13 @@
 // The chat a session's "send to the agent" goes to: the chat tab open in
-// it, else its most recently active chat, else a new one.
-import type { Session } from "@/api/protocol.gen";
+// it, else its most recently active chat, else a new one — never one that
+// was closed, though the tab or the session's last look may still name it.
+import type { Session, Settings } from "@/api/protocol.gen";
+import { queryClient } from "@/api/queryClient";
+import { liveChats } from "./chat";
 import { useDocs } from "./docs";
 import { type NewChat, useNewChats } from "./newChats";
 import { sendPrompt } from "./outbox";
+import { chatDefaults } from "./settings";
 
 export interface Target {
   chatId: string;
@@ -14,20 +18,18 @@ export interface Target {
 export function currentChat(s: Session): Target {
   const active = useDocs.getState().active[s.id];
   const drafts = useNewChats.getState().chats[s.id] ?? [];
-  if (active?.startsWith("chat:")) {
-    const id = active.slice(5);
-    return { chatId: id, draft: drafts.find((d) => d.id === id) };
+  const chats = liveChats(s.id) ?? s.chats ?? [];
+  const id = active?.startsWith("chat:") ? active.slice(5) : undefined;
+  if (id) {
+    const draft = drafts.find((d) => d.id === id);
+    if (draft || chats.some((c) => c.id === id)) return { chatId: id, draft };
   }
-  const recent = [...(s.chats ?? [])].sort((a, b) => b.since.localeCompare(a.since))[0];
+  const recent = [...chats].sort((a, b) => b.since.localeCompare(a.since))[0];
   if (recent) return { chatId: recent.id };
   if (drafts[0]) return { chatId: drafts[0].id, draft: drafts[0] };
-  // pier fills the model, effort and mode from the agent settings.
   const draft: NewChat = {
     id: crypto.randomUUID().replace(/-/g, "").slice(0, 16),
-    agent: "",
-    model: "",
-    effort: "",
-    mode: "",
+    ...chatDefaults(queryClient.getQueryData<Settings>(["settings"])),
   };
   useNewChats.getState().open(s.id, draft);
   return { chatId: draft.id, draft };

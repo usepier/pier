@@ -265,6 +265,12 @@ export function useChats(sessionId: string): ChatsState {
   return useSyncExternalStore(s.subscribe, s.get);
 }
 
+/** A session's chats as its watch last had them; undefined when nothing watches them. */
+export function liveChats(sessionId: string): ChatInfo[] | undefined {
+  const st = listStores.get(sessionId)?.get();
+  return st?.loaded ? st.chats : undefined;
+}
+
 /** Whether a chat is mid-turn or waiting: busy, in a list. */
 export function chatBusy(c: { state: string }): boolean {
   return c.state === "working" || c.state === "waiting";

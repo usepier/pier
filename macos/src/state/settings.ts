@@ -18,19 +18,22 @@ export function useSetting(key: string): string {
  * How a new chat starts: the default model (its agent, model and effort),
  * or another agent's own default; each agent's permission mode.
  */
+export function chatDefaults(settings: Settings | undefined, agent?: string) {
+  const get = (k: string) => settings?.settings.find((s) => s.key === k)?.value ?? "";
+  const def = get("agents.default") || "claude";
+  const a = agent || def;
+  return {
+    agent: a,
+    model: a === def ? get("agents.model") : "",
+    effort: a === def ? get("agents.effort") : "",
+    mode: get(`agents.${a}_mode`) || "default",
+  };
+}
+
+/** chatDefaults, with the settings as they load. */
 export function useChatDefaults() {
   const q = useSettings();
-  const get = (k: string) => q.data?.settings.find((s) => s.key === k)?.value ?? "";
-  return (agent?: string) => {
-    const def = get("agents.default") || "claude";
-    const a = agent || def;
-    return {
-      agent: a,
-      model: a === def ? get("agents.model") : "",
-      effort: a === def ? get("agents.effort") : "",
-      mode: get(`agents.${a}_mode`) || "default",
-    };
-  };
+  return (agent?: string) => chatDefaults(q.data, agent);
 }
 
 /**
