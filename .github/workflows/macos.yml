@@ -110,14 +110,14 @@ jobs:
           path: Pier.app.zip
           retention-days: 3
 
-  # The bundle opens on the oldest macOS it supports and the newest runner:
-  # the window comes up and starts its pier.
+  # The bundle opens on the oldest and the newest macOS GitHub runs: the
+  # window comes up and starts its pier.
   launch:
     needs: app
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/download-artifact@v4
