@@ -82,6 +82,8 @@ func TestLocalEditsRideOnlyALocalBase(t *testing.T) {
 	runGit(t, origin, "commit", "-q", "-m", "first")
 	clone := filepath.Join(t.TempDir(), "shop")
 	runGit(t, filepath.Dir(clone), "clone", "-q", origin, clone)
+	runGit(t, clone, "config", "user.name", "a")
+	runGit(t, clone, "config", "user.email", "a@b")
 	os.WriteFile(filepath.Join(clone, "a.txt"), []byte("edited here\n"), 0o644)
 
 	patched := func(base string) bool {
