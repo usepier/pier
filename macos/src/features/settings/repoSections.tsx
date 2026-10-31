@@ -61,7 +61,7 @@ export function useRepoSections(): Section[] {
               width={120}
               value={String(r.poolTarget)}
               onChange={(v) => void attempt(() => rpc.call("pool.setSize", { path, size: Number(v) }))}
-              options={[0, 1, 2, 3, 4, 5].map((n) => ({
+              options={[0, 1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({
                 value: String(n),
                 label: n === 0 ? "None" : String(n),
               }))}

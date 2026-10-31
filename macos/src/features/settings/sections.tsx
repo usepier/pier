@@ -24,7 +24,7 @@ const pierSections: { group: string; id: string; title: string; icon: typeof Bot
     title: "Agents",
     icon: Bot,
     description:
-      "How new chats start — in the app, the TUI and `pier <branch> -p`. A chat can change its model, effort and permissions as it goes.",
+      "How new chats start — in the app and with `pier <branch> -p`. A chat can change its model, effort and permissions as it goes.",
   },
   { group: "cloud", id: "cloud", title: "Cloud", icon: Cloud },
   { group: "sessions", id: "sessions", title: "New sessions", icon: Rocket },

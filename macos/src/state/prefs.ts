@@ -16,8 +16,6 @@ export interface Prefs {
   autoRemoveMerged: boolean;
   /** Start the proxy (sessions as <session>.pier) when the app opens. */
   proxyOnLaunch: boolean;
-  /** Whether a new session starts with a chat (its agent comes from pier's agent settings). */
-  startWithChat: boolean;
   /** enter: Return sends, ⇧Return breaks the line; cmdEnter: ⌘Return sends. */
   sendKey: "enter" | "cmdEnter";
   /** steer: a message sent mid-turn goes into the turn (⌘⇧Return queues);
@@ -37,7 +35,6 @@ export const usePrefs = create<Prefs>()(
       diffSplit: false,
       autoRemoveMerged: false,
       proxyOnLaunch: false,
-      startWithChat: true,
       sendKey: "enter",
       followUp: "steer",
       expandTools: false,

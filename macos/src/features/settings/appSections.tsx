@@ -94,20 +94,6 @@ export function useAppSections(): Section[] {
           ),
         },
         {
-          id: "startWithChat",
-          title: "Start new sessions with a chat",
-          description:
-            "New Session opens on a chat with your default agent; its first message goes in once the session is set up.",
-          text: "new session agent chat prompt",
-          control: (
-            <Switch
-              label="Start new sessions with a chat"
-              isSelected={p.startWithChat}
-              onChange={(v) => p.set({ startWithChat: v })}
-            />
-          ),
-        },
-        {
           id: "autoRemove",
           title: "Remove merged sessions",
           description:
