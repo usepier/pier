@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,9 +36,40 @@ func (d *Driver) gcloud(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		n := min(len(args), 3)
-		return "", fmt.Errorf("gcloud %s: %s", strings.Join(args[:n], " "), gcloudErr(errb.String()))
+		err := fmt.Errorf("gcloud %s: %s", strings.Join(args[:n], " "), gcloudErr(errb.String()))
+		if loginExpired(errb.String()) {
+			return "", &driver.LoginError{Login: gcloudLogin, Err: err}
+		}
+		return "", cloudError(errb.String(), err)
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// quotaError is how gcloud reports a quota refusing a request: in words
+// for a request it sends, by code for an operation that failed.
+var quotaError = regexp.MustCompile(`Quota '([A-Z_0-9]+)' exceeded|\bQUOTA_EXCEEDED\b`)
+
+// cloudError types a gcloud failure the request can't get past: gcloud
+// prints API codes only for some, so the refusals pier acts on are
+// recognized here, once.
+func cloudError(stderr string, err error) error {
+	if m := quotaError.FindStringSubmatch(stderr); m != nil {
+		msg := "a quota was exceeded"
+		if m[1] != "" {
+			msg = "quota " + m[1] + " exceeded"
+		}
+		return &driver.CloudError{Code: "QUOTA_EXCEEDED", Message: msg, Err: err}
+	}
+	return err
+}
+
+// gcloudLogin renews (or makes) the gcloud account login pier runs as.
+var gcloudLogin = []string{"gcloud", "auth", "login"}
+
+// loginExpired recognizes gcloud's refusal to refresh an expired login.
+func loginExpired(stderr string) bool {
+	return strings.Contains(stderr, "Reauthentication") ||
+		strings.Contains(stderr, "problem refreshing your current auth tokens")
 }
 
 // gcloudErr compacts gcloud's stderr to its ERROR line. Crashes append
@@ -50,13 +82,8 @@ func (d *Driver) gcloud(ctx context.Context, args ...string) (string, error) {
 // ("Reauthentication failed. cannot prompt during non-interactive
 // execution") describes pier's subprocess plumbing, not the fix.
 func gcloudErr(stderr string) string {
-	for _, marker := range []string{
-		"Reauthentication",
-		"problem refreshing your current auth tokens",
-	} {
-		if strings.Contains(stderr, marker) {
-			return "gcloud auth has expired — run `gcloud auth login`, then retry"
-		}
+	if loginExpired(stderr) {
+		return "gcloud auth has expired — run `gcloud auth login`, then retry"
 	}
 	first := ""
 	for _, line := range strings.Split(stderr, "\n") {
@@ -86,7 +113,7 @@ func (d *Driver) user(ctx context.Context) (string, error) {
 	}
 	acct, _, _ := strings.Cut(out, "\n")
 	if acct == "" {
-		return "", fmt.Errorf("no active gcloud account — run `gcloud auth login`")
+		return "", &driver.LoginError{Login: gcloudLogin, Err: errors.New("no active gcloud account — run `gcloud auth login`")}
 	}
 	d.principal = acct
 	return acct, nil

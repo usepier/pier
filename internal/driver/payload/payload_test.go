@@ -2,6 +2,8 @@ package payload
 
 import (
 	"archive/tar"
+	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/usepier/pier/internal/chatfile"
 	"github.com/usepier/pier/internal/driver"
 )
 
@@ -321,7 +324,7 @@ func TestEnvFilesNotCarried(t *testing.T) {
 	write("debug.log", "x\n")                    // ignored non-env
 	git("add", ".gitignore", "apps/api/.env.example")
 
-	if files := pierIncludeFiles(root); files != nil {
+	if files := pierIncludeFiles(root, "HEAD"); files != nil {
 		t.Errorf("no .pier/include must mean no explicit extras, got %v", files)
 	}
 	untracked, err := untrackedFiles(root)
@@ -437,7 +440,7 @@ func TestUntrackedFilesTravelAndIgnoredFilesRequireInclude(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(root))
+	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(root, "HEAD"))
 	wantFiles := []string{".env", ".pier/include", ".pier/setup.sh", "notes.txt"}
 	if !slices.Equal(repoFiles, wantFiles) {
 		t.Fatalf("repo files = %v, want %v", repoFiles, wantFiles)
@@ -502,7 +505,7 @@ func TestPierInclude(t *testing.T) {
 	write("secrets.txt")
 	write(".env") // root env NOT listed — the file is the whole selection
 
-	got := pierIncludeFiles(root)
+	got := pierIncludeFiles(root, "HEAD")
 	want := []string{"apps/api/.env", "apps/api/.env.local", "apps/web/.env",
 		"secrets.txt", "uploads/fixtures/a.bin"}
 	if !slices.Equal(got, want) {
@@ -544,12 +547,12 @@ func TestPierIncludeDereferencesDirectFileSymlinks(t *testing.T) {
 	// The glob directly matches apps/api/.env, so its target is carried.
 	// Broken and directory links are ineligible, and the uploads directory
 	// walk must not follow the nested link it encounters.
-	if got, want := pierIncludeFiles(root), []string{"apps/api/.env"}; !slices.Equal(got, want) {
+	if got, want := pierIncludeFiles(root, "HEAD"), []string{"apps/api/.env"}; !slices.Equal(got, want) {
 		t.Fatalf("pierIncludeFiles() = %v, want %v", got, want)
 	}
 
 	dst := filepath.Join(t.TempDir(), "files.tar")
-	if err := buildFilesTar(dst, nil, root, pierIncludeFiles(root), nil, ""); err != nil {
+	if err := buildFilesTar(dst, nil, root, pierIncludeFiles(root, "HEAD"), nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(dst)
@@ -599,7 +602,7 @@ func TestFilesTarWidensCarriedModes(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "files.tar")
-	if err := buildFilesTar(dst, nil, root, pierIncludeFiles(root), nil, ""); err != nil {
+	if err := buildFilesTar(dst, nil, root, pierIncludeFiles(root, "HEAD"), nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(dst)
@@ -666,5 +669,82 @@ func TestGitConfigCarriesTheEffectiveIdentity(t *testing.T) {
 
 	if _, _, ok := parseIdent(" <dev@example.com> 1700000000 +0000"); ok {
 		t.Error("an identity without a name must be rejected")
+	}
+}
+
+// One multiplexed connection carries a frontend's terminals, streams and
+// commands; sshd's default of 10 channels is too few. New VMs and older
+// ones alike get the higher limit.
+func TestSSHDAllowsMultiplexing(t *testing.T) {
+	if !strings.Contains(sshdConf, "MaxSessions 64") {
+		t.Fatal("pier's sshd drop-in must raise MaxSessions")
+	}
+	up := sessionUp(false)
+	if !strings.Contains(up, "grep -q MaxSessions") || !strings.Contains(up, sshdConf) {
+		t.Error("sessions from older images must pick the limit up on bootstrap or claim")
+	}
+}
+
+// A session made with a chat carries its record and first prompt to the
+// supervisor, in the layout it reads; one without carries neither.
+func TestChatEntries(t *testing.T) {
+	none, err := chatEntries(nil)
+	if err != nil || none != nil {
+		t.Fatalf("no chat = %v %v", none, err)
+	}
+	es, err := chatEntries(&driver.ChatSpec{ID: "c1", Agent: "claude", Mode: "plan", Prompt: "fix the login bug\nthe one on /login", PromptID: "p1", NameBranch: "oslo"})
+	if err != nil || len(es) != 2 {
+		t.Fatalf("entries = %+v %v", es, err)
+	}
+	var rec chatfile.Record
+	if json.Unmarshal(es[0].Data, &rec) != nil || es[0].Name != "home/.pier/chats/c1/chat.json" || rec.Agent != "claude" || rec.Mode != "plan" || rec.Title != "fix the login bug" || es[0].Mode != 0o600 {
+		t.Errorf("record = %s %s", es[0].Name, es[0].Data)
+	}
+	var p chatfile.Prompt
+	if json.Unmarshal(es[1].Data, &p) != nil || es[1].Name != "home/.pier/chats/c1/queue/p1.json" || !p.First || p.ID != "p1" || p.NameBranch != "oslo" {
+		t.Errorf("prompt = %s %s", es[1].Name, es[1].Data)
+	}
+	if es, _ := chatEntries(&driver.ChatSpec{ID: "c2", Agent: "codex"}); len(es) != 1 {
+		t.Error("no prompt, no queue entry")
+	}
+}
+
+func TestScriptsLeaveAgentsToTheSupervisor(t *testing.T) {
+	if strings.Contains(sessionUp(true), "agent launch") || strings.Contains(installSupervisor, "install-hooks") {
+		t.Error("agents run headless under the supervisor: nothing launches them in tmux")
+	}
+	if !strings.Contains(installSupervisor, "rm -f /etc/pier/claude-hooks.json") {
+		t.Error("an upgraded session drops the old hooks file")
+	}
+	if !strings.Contains(installSupervisor, "apparmor_restrict_unprivileged_userns=0") {
+		t.Error("agent sandboxes need user namespaces")
+	}
+}
+
+// A session from origin's branch starts from origin's latest commit, not
+// the checkout's stale copy of it.
+func TestFetchBase(t *testing.T) {
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	remote, clone, other := t.TempDir(), t.TempDir(), t.TempDir()
+	git(remote, "init", "-q", "--bare", "-b", "main")
+	for _, d := range []string{clone, other} {
+		git(d, "init", "-q", "-b", "main")
+		git(d, "remote", "add", "origin", remote)
+	}
+	git(other, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "one")
+	git(other, "push", "-q", "origin", "main")
+	git(clone, "fetch", "-q", "origin")
+	git(other, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "two")
+	git(other, "push", "-q", "origin", "main")
+	fetchBase(context.Background(), clone, "origin/main")
+	if got, want := git(clone, "rev-parse", "origin/main"), git(other, "rev-parse", "main"); got != want {
+		t.Errorf("origin/main = %s, want origin's %s", got, want)
 	}
 }

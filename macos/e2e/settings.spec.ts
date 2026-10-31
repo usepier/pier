@@ -1,0 +1,75 @@
+import { expect, test } from "@playwright/test";
+
+test("settings: sections in a sidebar, rows with their controls, a search across them", async ({ page }) => {
+  await page.goto("/#/settings");
+  await expect(page.getByRole("heading", { name: "General" })).toBeVisible();
+  await page.getByRole("button", { name: "Follow-up behavior" }).click();
+  await page.getByRole("option", { name: "Queue" }).click();
+  await expect(page.getByRole("button", { name: "Follow-up behavior" })).toContainText("Queue");
+
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
+  await page.getByRole("button", { name: "Claude permissions" }).click();
+  await page.getByRole("option", { name: /plan/ }).click();
+  await expect(page.getByText("Saved")).toBeVisible();
+
+  await page.getByRole("button", { name: "shop", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "shop" })).toBeVisible();
+  await expect(page.getByText("Pool size")).toBeVisible();
+
+  await page.getByRole("textbox", { name: "Search settings" }).fill("park after");
+  await expect(page.getByRole("heading", { name: "Idle & cost" })).toBeVisible();
+  await expect(page.getByText("Park after")).toBeVisible();
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page).not.toHaveURL(/settings/);
+});
+
+test("review comments go to the agent under the user's own heading", async ({ page }) => {
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "Prompts" }).click();
+  const box = page.getByRole("textbox", { name: "Review comments prompt", exact: true });
+  await box.fill("Please look at these:");
+  await box.blur();
+  await expect(page.getByText("Saved")).toBeVisible();
+  await page.goto("/#/session/i-01");
+  await page.getByRole("tab", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "src", exact: true }).click();
+  await page.getByRole("button", { name: "checkout", exact: true }).click();
+  await page.getByRole("button", { name: "PayButton.tsx" }).click();
+  await page.getByText("return null;").click();
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await page.getByPlaceholder("What should change here?").fill("Return the button");
+  await page.getByPlaceholder("What should change here?").press("Meta+Enter");
+  await page.getByRole("button", { name: "Send 1 to agent" }).click();
+  await expect(page.getByText("Please look at these:", { exact: false })).toBeVisible();
+});
+
+test("an AWS profile that asks for an MFA code takes one in setup", async ({ page }) => {
+  await page.goto("/#/setup");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel("AWS profile").fill("mfa");
+  await page.getByRole("button", { name: "Check the sign-in" }).click();
+  await expect(page.getByText("asks for a code from arn:aws:iam::111122223333:mfa/dev")).toBeVisible();
+  await page.getByLabel("MFA code").fill("123456");
+  await page.getByRole("button", { name: "Use code" }).click();
+  await expect(page.getByText("arn:aws:iam::111122223333:user/dev (mfa)")).toBeVisible();
+});
+
+test("removing pier from the account shows each step", async ({ page }) => {
+  await page.goto("/#/settings");
+  await page.getByRole("button", { name: "Account" }).click();
+  // The confirmation is the app's own modal, not a system alert.
+  page.once("dialog", () => {
+    throw new Error("a system dialog opened");
+  });
+  await page.getByRole("button", { name: "Remove…" }).click();
+  const modal = page.getByRole("alertdialog");
+  await expect(modal).toBeVisible();
+  await modal.getByRole("button", { name: "Cancel" }).click();
+  await expect(modal).toHaveCount(0);
+  await page.getByRole("button", { name: "Remove…" }).click();
+  await page.keyboard.press("Enter"); // Return takes the action
+  await expect(page.getByText("deleting the security group pier")).toBeVisible();
+  await expect(page.getByText("the account is clean")).toBeVisible();
+  await page.getByRole("button", { name: "Done" }).click();
+});

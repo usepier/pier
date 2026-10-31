@@ -3,6 +3,7 @@ package gcpgce
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -121,6 +122,9 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 		c := driver.Check{Name: name, OK: err == nil}
 		if err != nil {
 			c.Detail = hint
+			if strings.HasPrefix(hint, "brew ") {
+				c.Fix = hint
+			}
 		}
 		checks = append(checks, c)
 	}
@@ -138,12 +142,18 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	default:
 		gh.OK = false
 		gh.Detail = "none found (optional) — private repos use the slow bundle path and sessions can't push; fix: `gh auth login`"
+		gh.Fix = "gh auth login"
 	}
 	checks = append(checks, gh)
 
 	me, err := d.user(ctx)
 	if err != nil {
-		checks = append(checks, driver.Check{Name: "GCP credentials", Detail: err.Error()})
+		c := driver.Check{Name: "GCP credentials", Detail: err.Error()}
+		var le *driver.LoginError
+		if errors.As(err, &le) {
+			c.Fix = strings.Join(le.Login, " ")
+		}
+		checks = append(checks, c)
 		return checks // everything below needs credentials
 	}
 	checks = append(checks, driver.Check{Name: "GCP credentials", OK: true, Detail: me + " / " + d.Project})
@@ -158,6 +168,7 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	c := driver.Check{Name: "groundwork (APIs, firewall rules)", OK: allowErr == nil && denyErr == nil}
 	if !c.OK {
 		c.Detail = "run `pier setup`"
+		c.Fix = "pier setup"
 	}
 	checks = append(checks, c)
 

@@ -50,6 +50,7 @@ func (d *Driver) Claim(ctx context.Context, id string, spec driver.ClaimSpec) er
 	if _, err := d.gcloud(ctx, "compute", "instances", "add-metadata", id,
 		"--zone", d.Zone, "--metadata",
 		MetaSession+"="+spec.Name+","+MetaBranch+"="+spec.Branch+","+
+			MetaOrigin+"="+spec.Origin+","+MetaBase+"="+spec.Base+","+
 			MetaCreated+"="+time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return err
 	}
@@ -57,6 +58,12 @@ func (d *Driver) Claim(ctx context.Context, id string, spec driver.ClaimSpec) er
 	// regular session.
 	_, err = d.gcloud(ctx, "compute", "instances", "remove-labels", id,
 		"--zone", d.Zone, "--labels", LabelPool+","+LabelClaim+","+LabelReady)
+	return err
+}
+
+func (d *Driver) Rename(ctx context.Context, id, name, branch string) error {
+	_, err := d.gcloud(ctx, "compute", "instances", "add-metadata", id,
+		"--zone", d.Zone, "--metadata", MetaSession+"="+name+","+MetaBranch+"="+branch)
 	return err
 }
 

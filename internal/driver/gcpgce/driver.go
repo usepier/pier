@@ -57,6 +57,8 @@ const (
 	MetaBranch    = "pier-branch"
 	MetaUser      = "pier-user"    // full principal; the label form is lossy
 	MetaCreated   = "pier-created" // RFC3339; set at claim so AGE starts then, not at fill
+	MetaOrigin    = "pier-origin"  // canonical origin remote (host/path), for grouping and PR lookups
+	MetaBase      = "pier-base"    // origin branch the session came off
 
 	stockImageProject = "ubuntu-os-cloud"
 	stockImageFamily  = "ubuntu-2404-lts-%s" // amd64 | arm64
@@ -187,6 +189,10 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Repo = m.Value
 			case MetaBranch:
 				s.Branch = m.Value
+			case MetaOrigin:
+				s.Origin = m.Value
+			case MetaBase:
+				s.Base = m.Value
 			case MetaUser:
 				owner = m.Value
 			case MetaCreated:
@@ -386,20 +392,7 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 	if err := d.needKey(id); err != nil {
 		return nil, err
 	}
-	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
-[ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
-# SSH forwards the client's TERM, but newer terminals (for example Ghostty)
-# may not exist in the VM image's terminfo database yet. Keep the richer entry
-# when it is installed and otherwise use the portable 256-colour baseline.
-if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
-# A woken session rebuilds its saved tmux layout at boot (pier-restore.service);
-# give that a moment so this attach lands in the restored windows instead of
-# racing it to an empty main. Sessions without the unit or a saved layout
-# never wait.
-if [ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]; then
-  for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
-fi
-exec tmux new-session -A -s main`
+	remote := payload.AttachScript(payload.MainAttach)
 	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
 	cmd := execCommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -421,8 +414,15 @@ func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]i
 }
 
 func (d *Driver) SSHTarget(ctx context.Context, id string) ([]string, string, error) {
+	if err := d.needKey(id); err != nil {
+		return nil, "", err
+	}
 	return d.sshOpts(id), "agent@" + id, nil
 }
+
+// InvalidateTarget is a no-op: every connection rides the IAP tunnel by
+// instance name, so nothing about reaching a session is cached.
+func (d *Driver) InvalidateTarget(string) {}
 
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)

@@ -9,13 +9,17 @@ package payload
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/usepier/pier/internal/chatfile"
 	"github.com/usepier/pier/internal/driver"
 )
 
@@ -72,6 +76,7 @@ func Build(ctx context.Context, dir string, spec driver.CreateSpec, supervisor [
 // dir. Callers prepend their script pushes, keeping the biggest cargo last so
 // its meter is the wait the user watches.
 func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manifest []string, env map[string]string, progress func(string)) (p *Payload, mode, sha, origin string, err error) {
+	fetchBase(ctx, spec.Repo, baseRef(spec))
 	sha, err = gitOut(spec.Repo, "rev-parse", "--verify", baseRef(spec)+"^{commit}")
 	if err != nil {
 		return nil, "", "", "", fmt.Errorf("base ref %q not found", baseRef(spec))
@@ -109,12 +114,12 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 		}
 	}
 	// Local dirty state travels only when the session's base IS the laptop's
-	// HEAD — branching a session off another commit and grafting today's
-	// tracked edits or untracked files onto it would be a lie about what that
-	// base contained.
+	// HEAD, asked for as such — a session from origin's branch is that
+	// branch, even when the clone sits on its commit with edits on top:
+	// grafting them on would be a lie about what that base contained.
 	patch := ""
 	var untracked []string
-	if head, _ := gitOut(spec.Repo, "rev-parse", "HEAD"); head == sha {
+	if head, _ := gitOut(spec.Repo, "rev-parse", "HEAD"); head == sha && baseRef(spec) == "HEAD" {
 		pp := filepath.Join(dir, "pier-dirty.patch")
 		switch ok, err := dirtyPatch(spec.Repo, pp); {
 		case err != nil:
@@ -131,9 +136,13 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 	if warn != "" {
 		progress(warn)
 	}
-	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(spec.Repo))
+	repoFiles := mergeRepoFiles(untracked, pierIncludeFiles(spec.Repo, baseRef(spec)))
 	filesTar := filepath.Join(dir, "pier-files.tar")
-	if err := buildFilesTar(filesTar, manifest, spec.Repo, repoFiles, env, setupSrc); err != nil {
+	chatFiles, err := chatEntries(spec.Chat)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	if err := buildFilesTar(filesTar, manifest, spec.Repo, repoFiles, env, setupSrc, chatFiles...); err != nil {
 		return nil, "", "", "", err
 	}
 	if miss := envFilesNotCarried(spec.Repo, repoFiles); len(miss) > 0 {
@@ -174,6 +183,19 @@ func buildCommon(ctx context.Context, dir string, spec driver.CreateSpec, manife
 		p.Notes = append(p.Notes, "mcp "+strings.Join(names, ", ")+": log in from inside the session (e.g. claude's /mcp) — while you're attached it opens in your browser here")
 	}
 	return p, mode, sha, origin, nil
+}
+
+// fetchBase brings an origin/<branch> base up to date: a session from an
+// origin branch starts from it as origin has it now, not as this checkout
+// last fetched it. Offline, the last fetch stands.
+func fetchBase(ctx context.Context, repo, ref string) {
+	b, ok := strings.CutPrefix(ref, "origin/")
+	if !ok || checkName(b) != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "git", "-C", repo, "fetch", "--quiet", "origin", b).Run()
 }
 
 func baseRef(spec driver.CreateSpec) string {
@@ -248,4 +270,40 @@ func Sanitize(name string) string {
 		s = "session"
 	}
 	return s
+}
+
+// chatEntries are the files that start a session's first chat: its
+// record, and its first prompt in its queue (the supervisor delivers it
+// once setup is done).
+func chatEntries(c *driver.ChatSpec) ([]tarEntry, error) {
+	if c == nil {
+		return nil, nil
+	}
+	rec := chatfile.Record{ID: c.ID, Agent: c.Agent, Model: c.Model, Effort: c.Effort, Fast: c.Fast, Mode: c.Mode, Created: time.Now().UTC(), Title: titleOf(c.Prompt)}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return nil, err
+	}
+	dir := "home/" + chatfile.Dir(c.ID)
+	out := []tarEntry{{Name: dir + "/chat.json", Data: b, Mode: 0o600}}
+	if strings.TrimSpace(c.Prompt) != "" {
+		p, err := json.Marshal(chatfile.Prompt{ID: c.PromptID, Text: c.Prompt, At: time.Now().UTC(), First: true, NameBranch: c.NameBranch})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tarEntry{Name: dir + "/queue/" + c.PromptID + ".json", Data: p, Mode: 0o600})
+	}
+	return out, nil
+}
+
+// titleOf names a chat after its first prompt.
+func titleOf(text string) string {
+	t := strings.TrimSpace(text)
+	if i := strings.IndexByte(t, '\n'); i >= 0 {
+		t = t[:i]
+	}
+	if r := []rune(t); len(r) > 48 {
+		t = strings.TrimSpace(string(r[:47])) + "…"
+	}
+	return t
 }

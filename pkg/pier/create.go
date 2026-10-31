@@ -2,6 +2,7 @@ package pier
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 	"github.com/usepier/pier/internal/pool"
 	"github.com/usepier/pier/internal/tombstone"
 )
@@ -22,8 +24,22 @@ type CreateRequest struct {
 	// (nil = config; 0 = never).
 	Idle, Cap *time.Duration
 	// NoPool skips claiming one of the repo's pooled sessions.
-	NoPool   bool
+	NoPool bool
+	// Chat starts the session with a chat, optionally with a first prompt.
+	Chat *ChatRequest
+	// AutoName: Branch only stands in (SuggestName); the session names its
+	// branch after the chat's first prompt, and itself after the branch.
+	AutoName bool
 	Progress Progress
+}
+
+// newUUID is a random (v4) UUID.
+func newUUID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // CreateResult is a finished create.
@@ -45,9 +61,11 @@ type CreateResult struct {
 func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, error) {
 	start := time.Now()
 	step := req.Progress.stepper(start)
+	// Origin's default branch as origin has it now, unless a base is named
+	// (HEAD: the clone as it is, uncommitted work and all).
 	base := req.Base
 	if base == "" {
-		base = "HEAD"
+		base = payload.OriginBase(ctx, req.RepoRoot)
 	}
 	sessions, err := c.drv.List(ctx)
 	if err != nil {
@@ -58,16 +76,16 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 			return CreateResult{}, fmt.Errorf("session %q already exists — `pier attach %s`", req.Branch, req.Branch)
 		}
 	}
-	idle, err := c.duration(req.Idle, c.cfg.IdleTimeout)
+	idle, err := c.duration(req.Idle, c.conf().IdleTimeout)
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("idle timeout: %w", err)
 	}
-	cap_, err := c.duration(req.Cap, c.cfg.UnattendedCap)
+	cap_, err := c.duration(req.Cap, c.conf().UnattendedCap)
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("runaway cap: %w", err)
 	}
 	repo := filepath.Base(req.RepoRoot)
-	if c.cfg.BakedImage(repo) == "" {
+	if c.conf().BakedImage(repo) == "" {
 		// The config may just have lost track of an image the cloud still
 		// holds (a reset config, another laptop's bake).
 		if _, err := c.ReconcileImages(ctx); err != nil {
@@ -77,9 +95,19 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 	if err := c.needImage(req.RepoRoot); err != nil {
 		return CreateResult{}, err
 	}
-	image := c.cfg.BakedImage(repo)
+	image := c.conf().BakedImage(repo)
 
-	poolable := c.cfg.PoolSize(repo) > 0 && !req.NoPool
+	if req.Chat != nil {
+		c.withDefaults(req.Chat)
+	}
+	chat, err := chatSpec(req.Chat)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	if req.AutoName && chat != nil && chat.Prompt != "" {
+		chat.NameBranch = req.Branch
+	}
+	poolable := c.conf().PoolSize(repo) > 0 && !req.NoPool
 	var res CreateResult
 	if poolable {
 		pp, err := c.poolParams(req.RepoRoot, req.Progress, start)
@@ -87,6 +115,7 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 			return CreateResult{}, err
 		}
 		pp.IdleTimeout, pp.UnattendedCap = idle, cap_
+		pp.Chat = chat
 		sess, err := pool.Claim(ctx, pp, sessions, req.Branch, req.Branch, base)
 		if err != nil {
 			// A pooled session accelerates, never gates: whatever broke the
@@ -102,7 +131,7 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (CreateResult, e
 	if !res.Claimed {
 		sess, err := c.drv.Create(ctx, driver.CreateSpec{
 			Name: req.Branch, Repo: req.RepoRoot, Branch: req.Branch, BaseRef: base, Image: image,
-			IdleTimeout: idle, UnattendedCap: cap_,
+			IdleTimeout: idle, UnattendedCap: cap_, Chat: chat,
 			Progress: step,
 		})
 		if err != nil {
@@ -134,22 +163,20 @@ func CreateLogPath(branch string) string {
 }
 
 // SpawnCreate runs a create for branch in the background (a detached
-// `pier <branch> --detach` working in repoRoot) and returns its log path.
+// `pier new <branch> --detach` working in repoRoot; `new` keeps a branch
+// named like a subcommand a branch) and returns its log path.
 // It survives the frontend closing; the session lists as creating until
 // it's ready.
 func (c *Client) SpawnCreate(repoRoot, branch string) (string, error) {
-	if repoRoot == "" {
-		return "", ErrNotInRepo
-	}
-	logPath := CreateLogPath(branch)
-	return logPath, spawnDetached(repoRoot, logPath, false, branch, "--detach")
+	j, err := c.StartCreate(CreateRequest{RepoRoot: repoRoot, Branch: branch})
+	return j.Log, err
 }
 
 // bury records a failed create. Best-effort: the create already failed and
 // its own error is what the user acts on — a record write that fails must
 // not mask it.
 func (c *Client) bury(req CreateRequest, cause error) {
-	drv := c.cfg.Driver
+	drv := c.conf().Driver
 	if drv == "" {
 		drv = "aws-ec2"
 	}
@@ -168,12 +195,17 @@ func fileExists(p string) bool {
 	return err == nil && !fi.IsDir()
 }
 
+// DefaultBase is what a session of the repo starts from unless told
+// otherwise: origin's default branch ("origin/main"), as this clone last
+// fetched it (a create fetches it first); HEAD for a repo with no origin.
+func DefaultBase(repoRoot string) string { return payload.KnownBase(repoRoot) }
+
 // needImage refuses a repo with a bake hook but no session image. The hook
 // declares that the stock image isn't enough: a session launched from it
 // runs .pier/setup.sh without the toolchains and fails minutes later.
 func (c *Client) needImage(repoRoot string) error {
 	repo := filepath.Base(repoRoot)
-	if c.cfg.BakedImage(repo) == "" && driver.BakeHook(repoRoot) != "" {
+	if c.conf().BakedImage(repo) == "" && len(payload.BakeHook(repoRoot, payload.KnownBase(repoRoot))) > 0 {
 		if BakeRunning(repo) {
 			return fmt.Errorf("%s's first session image is still being baked or saved — sessions can start once it's done (log: %s)",
 				repo, BakeFinishLogPath(repo))

@@ -40,7 +40,7 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	if err != nil {
 		return driver.Baked{}, err
 	}
-	cspec := driver.CreateSpec{Name: "bake", Repo: "bake", Branch: "bake"} // timeouts 0 = never park mid-bake
+	cspec := driver.CreateSpec{Name: driver.BakeName, Repo: driver.BakeName, Branch: driver.BakeName} // timeouts 0 = never park mid-bake
 	pub, err := d.newKeypair("bake")
 	if err != nil {
 		return driver.Baked{}, err
@@ -72,8 +72,15 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	}()
 	os.Rename(d.keyPath("bake"), d.keyPath(id))
 	os.Rename(d.keyPath("bake")+".pub", d.keyPath(id)+".pub")
-	defer os.Remove(d.keyPath(id))
-	defer os.Remove(d.keyPath(id) + ".pub")
+	// The key stays while the instance does: it marks the instance as this
+	// machine's for the sweep, which collects a handed-off bake instance
+	// whose FinishBake never ran.
+	defer func() {
+		if !handedOff {
+			os.Remove(d.keyPath(id))
+			os.Remove(d.keyPath(id) + ".pub")
+		}
+	}()
 	spec.Step("bake instance " + id + " launched — installing harnesses (a few minutes)")
 
 	if err := d.waitSSH(ctx, id, 240*time.Second); err != nil {
@@ -113,7 +120,7 @@ exit 1`
 				return d.sshRunOpts(ctx, id, extra, script)
 			},
 		}
-		if err := payload.Prebuild(ctx, spec.RepoRoot, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
+		if err := payload.Prebuild(ctx, spec.RepoRoot, spec.BaseRef, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
 			return driver.Baked{}, fmt.Errorf("prebuild failed — nothing baked: %w", err)
 		}
 	}
@@ -165,8 +172,13 @@ func (d *Driver) FinishBake(ctx context.Context, b driver.Baked, step func(strin
 		// its instance (the sweep collects stale bake instances).
 		return err
 	}
-	if _, terr := d.aws(context.WithoutCancel(ctx), "ec2", "terminate-instances", "--instance-ids", b.Instance); terr != nil && err == nil {
-		return terr
+	if _, terr := d.aws(context.WithoutCancel(ctx), "ec2", "terminate-instances", "--instance-ids", b.Instance); terr != nil {
+		if err == nil {
+			return terr
+		}
+	} else {
+		os.Remove(d.keyPath(b.Instance))
+		os.Remove(d.keyPath(b.Instance) + ".pub")
 	}
 	if err != nil {
 		_ = d.DeleteImage(context.WithoutCancel(ctx), b.Image) // it failed: nothing will ever use it
@@ -199,8 +211,10 @@ func (d *Driver) Images(ctx context.Context) ([]driver.Image, error) {
 		if len(r) < 4 || r[0] == nil || r[2] == nil {
 			continue
 		}
-		if r[3] != nil && *r[3] != me {
-			continue // a teammate's
+		if r[3] == nil || *r[3] != me {
+			// A teammate's — or one with no owner at all, from before
+			// images carried one: never assumed to be yours.
+			continue
 		}
 		img := driver.Image{ID: *r[0], Repo: *r[2]}
 		if r[1] != nil {

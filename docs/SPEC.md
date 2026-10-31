@@ -84,7 +84,11 @@ in provider APIs + tags/labels — **no server, no database, no laptop daemon**.
 - Instance profile `pier-session`: `AmazonSSMManagedInstanceCore` only.
 - `InstanceInitiatedShutdownBehavior=stop` → in-VM `shutdown -h now` parks.
 - Tags: `pier:managed`, `pier:user` (STS ARN), `pier:session`, `pier:repo`,
-  `pier:branch`.
+  `pier:branch`, `pier:origin` (the origin remote as `host/owner/repo`,
+  credentials stripped) and `pier:base` (the origin branch the session came
+  off). GCE carries the last two as `pier-origin`/`pier-base` metadata. In
+  the checkout, `refs/pier/base` and `git config pier.base` record the same
+  starting point for in-VM tooling.
 - No AWS SDK: the driver shells out to `aws --output json` (the CLI is already
   required for the SSM plugin, and SSO/profiles/MFA come for free).
 
@@ -169,13 +173,78 @@ derives:
   connection; a forgotten tab keeping it awake is deliberately the user's
   problem. App→app loopback traffic (dev server holding a DB pool) doesn't
   count — only sshd's forward dials do.
-- `busy` — agent process-tree CPU above threshold in window, or recent pty
-  output (heuristic; harnesses stay stock, no hooks)
+- `busy` — a chat's turn running, agent process-tree CPU above threshold
+  in window (agents started by hand in a terminal), or recent pty output.
+  Waiting on the human is not busy: a session parked mid-question says so
+  in its chat and goes on with the conversation on the next prompt.
 
 Rules: attached or busy resets the idle clock; detached+quiet past
 `idle_timeout` → park; detached+busy past `unattended_cap` → park (runaway
 brake, so a looping agent can't burn compute for days). Reason lands in
-`/run/pier/status.json` for the TUI.
+`/run/pier/status.json` for the TUI. The beacon also carries the session's
+load (CPU, memory, disk, load average), which process holds each listening
+port, and when it stops on its own (`park_at` while quiet and detached,
+`cap_at` while it works unattended), so frontends can say "parks in 12m".
+
+The supervisor also serves `/run/pier/supervisor.sock` (agent-only), relayed
+over ssh by `pier-supervisor stream`: frontends follow a session live
+(status, and what runs in it — windows, containers, heaviest processes,
+ports) on one channel of the session's connection, which never counts as
+attached. Changes a frontend asks for (`pier-supervisor op`) run inside the
+supervisor rather than the ssh channel that asked, so a dropped connection
+can't leave one half done, and each carries an id that makes a retry a
+no-op. A session whose supervisor predates the stream gets this pier's on
+first contact, the same install a create or claim does.
+
+A session holds any number of **chats**, each a conversation with claude
+or codex that the supervisor runs headless as its own child, speaking the
+programs' protocols: claude in print mode with stream-json in and out
+(`--permission-prompt-tool stdio`, one process per chat), codex as one app
+server per session (`codex app-server`, a thread per chat). The programs
+are pinned — the versions this pier was built against, downloaded once per
+session or image and checked against their published checksums — so a chat
+never depends on an agent updating itself into a protocol the supervisor
+doesn't speak; what the user runs in a terminal is whatever they installed.
+A chat lives in `~/.pier/chats/<id>`: its record (agent, model, effort,
+permission mode, the agent's own conversation id), its log of items, and
+its prompt queue. The supervisor turns what the agent streams into chat
+items (`pkg/pier/chat`), appends them to the log, and streams the text the
+agent is writing as deltas. Everything the agent would ask in its terminal
+— a tool approval, its questions, its plan — waits on a frontend for as
+long as it takes; approving a plan can switch the permission mode, sending
+it back carries feedback. A prompt sent mid-turn either joins the running
+turn (steer) or waits in the queue for the turn to end, each once by id;
+the first prompt of a session's first chat travels in the create's files
+and waits for setup. Idle programs are stopped after 20 minutes and resume
+their conversation on the next prompt; one that keeps failing puts its chat
+in an error state instead of restarting forever. A chat cut off by a park
+or a supervisor restart says so and goes on with the next prompt.
+Agents started by hand in a terminal stay plain terminal programs: pier
+doesn't follow or drive them. The chats show in tmux too: `pier attach
+--agent` (or `c` in the TUI) opens a window following them live and
+read-only, and `t` there continues the chat shown in the agent's own
+interface (`claude --resume`, `codex resume`) — the chat waits meanwhile,
+queues what is sent to it, and takes back what happened in the terminal
+when the program exits, read from the agent's own record of the
+conversation.
+
+The stream carries the chats' state (`chats` topic: what each waits on,
+its queue) and, per chat a frontend follows, its log from the offset the
+frontend already has (`tail`, pushed as items are appended — no polling)
+plus the deltas being written. The laptop keeps a copy of each chat's log
+and of the chat list (under the user cache directory, one writer at a
+time, capped to its newest items), so chats read while their session is
+parked and a reconnect fetches only what is new. The status beacon carries
+a summary of each chat — enough for notifications without holding a stream
+open to every working session. Replacing the supervisor would end the
+chats' programs, so an older one is replaced only while no chat is mid-turn
+or waiting.
+
+`pier park <match>` parks a session on demand: a cloud stop, like any other.
+A stop from outside reaches the supervisor as systemd's SIGTERM, and it takes
+one last tmux snapshot then — its unit stops before pier-restore.service,
+which holds the tmux server — so a park from the laptop or a resize keeps
+the freshest layout too.
 
 Configurable at wizard time and in config: `idle_timeout` (default 30m,
 `"never"` allowed), `unattended_cap` (default 8h, disable-able). Per-session:
@@ -241,7 +310,7 @@ A session either exists fully set up or not at all — no half-states:
 
 ### 6.1 Hostnames: `pier proxy`
 
-`pier proxy` (foreground, ctrl-c to stop) gives every **running** session its
+`pier proxy` gives every **running** session its
 own hostname: `http://<session>.pier:3000` in the browser, `psql -h
 <session>.pier` — real port numbers, any TCP client, zero per-port commands.
 All machinery lives in `internal/proxy`; the rest of the product contributes
@@ -255,9 +324,18 @@ only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
   32 slots; the resolver sits on 127.94.0.53:5533 — a high port plus a `port`
   directive in the resolver file, because macOS lets unprivileged processes
   bind low ports only on the wildcard address). macOS needs `ifconfig lo0
-  alias` per IP — the one sudo, disclosed before it runs; aliases are inert
-  /32s that vanish at reboot. Per-session IPs are what let two sessions both
-  serve :3000 without colliding — pier's most normal situation.
+  alias` per IP — root, disclosed before it runs; aliases are inert /32s
+  that vanish at reboot, so the same setup installs a boot task (a launchd
+  job, `com.usepier.pier.loopback`) that adds them as the Mac starts: the
+  password is asked once. `pier proxy forget` takes it all away again.
+  Per-session IPs are what let two sessions both serve :3000 without
+  colliding — pier's most normal situation.
+- **One per machine**: whichever proxy runs — `pier proxy` in the
+  foreground, or the background one `pier proxy start` and the app start,
+  which outlives them — answers on a control socket in pier's state dir.
+  Others follow its state and stop it there (`pier proxy status | stop`)
+  rather than start a second one that would fight it for the resolver and
+  the addresses.
 - **Forwards**: one multiplexed OpenSSH master per running session
   (`-M -S <ctl> -N` over the SSM tunnel). Beacon polls ride the mux as exec
   channels (no new SSM sessions, no AWS API); forwards are added/removed
@@ -329,8 +407,9 @@ protected by the repository's `.gitignore`.
    attach-ready in 72s but `.pier/setup.sh` then ran ~9 min (container
    builds with zero cache hits, dependency stores downloaded from scratch),
    so baked and stock felt the same. The bake therefore also prebuilds: after
-   the hook, the bake instance receives a create's exact cargo off the
-   laptop's HEAD (placeholder branch `pier-prebuild`), bootstraps, and runs
+   the hook, the bake instance receives a create's exact cargo off origin's
+   default branch, freshly fetched (placeholder branch `pier-prebuild`;
+   a repo without an origin uses the laptop's HEAD), bootstraps, and runs
    `.pier/setup.sh` to completion; a failed setup aborts the bake. A scrub
    then deletes, by exact path, every file the files tar delivered, plus
    containers (their config embeds `env_file` values), setup logs and
@@ -398,8 +477,9 @@ protected by the repository's `.gitignore`.
    session's working tree starts exactly as the laptop's, staged edits
    arriving unstaged. Non-ignored untracked files ride in the files tar and
    are extracted after checkout + patch. (Both happen only when the session's
-   base is the laptop's HEAD; a session created off another commit carries no
-   dirty state.) Ignored files travel **only** when **`.pier/include`** names
+   base is the laptop's HEAD, asked for as such; a session from origin's
+   branch — the default — or any other commit carries no dirty state, even
+   when the clone sits on that commit.) Ignored files travel **only** when **`.pier/include`** names
    them: one path or glob per line, matched against the disk with no
    git-status distinction — listed = travels. Directly matched file symlinks
    are dereferenced into regular files at their repo-relative paths;
@@ -442,8 +522,8 @@ polling.
 One-way copy from the laptop at create; never stored anywhere else, never
 written back. Sources:
 
-- non-ignored untracked repo files, automatically, plus ignored files named by
-  `.pier/include` (path or glob per line). The create warns about ignored env
+- ignored files named by `.pier/include` (path or glob per line), plus, for a
+  session from the laptop's HEAD, non-ignored untracked repo files. The create warns about ignored env
   files left behind. Directly matched file symlinks carry their target
   contents under the link's repo-relative path. Tracked content arrives with
   the fetch, dirty edits to it via the patch.
@@ -523,20 +603,142 @@ shows headroom (e.g. `12/32 vCPU`).
 ## 11. CLI
 
 Every frontend — this CLI, the app (`pier` with no arguments), and the
-coming Mac app — runs on `pkg/pier`, which owns the capabilities and never
-prints, exits or reads stdin. The Mac app will reach it through a
-`pier api` JSON-RPC server over stdio (the LSP model: a child process, no
-daemon, no port).
+Mac app — runs on `pkg/pier`, which owns the capabilities and never
+prints, exits or reads stdin. The Mac app reaches it through `pier api`.
+
+### 11.1 `pier api`
+
+JSON-RPC 2.0 over stdin/stdout, one message per line: a child process of
+its client, never a daemon, no port. It exits when its stdin closes, giving
+in-flight work three seconds to see its cancellation.
+
+- **Handshake.** `initialize` returns the protocol version, pier's version
+  and whether this machine is set up. The Mac app bundles its own pier, so
+  a protocol mismatch is a broken install.
+- **Calls** run concurrently. `$/cancelRequest {id}` cancels one; long ones
+  report `$/progress {id, event}` as they go.
+- **Live data** is a subscription. `<topic>.watch` returns
+  `{sub, seq, snapshot}` and pushes `sub.event {sub, seq, topic, data}`
+  with seq counting up by one, until `sub.cancel {sub}`. A gap means a
+  missed event: resubscribe. `overview` carries everything the sidebar,
+  Home and the cockpits show, refreshed on the TUI's cadence (fast while
+  something changes, slow when quiet, slower when the client reports
+  `client.activity {focused: false}`); the stray sweep runs at most every
+  ten minutes.
+- **Chat.** `chats.watch` lists a session's chats (agent, model, state,
+  what each waits on); `chat.watch` sends one chat's newest items, then
+  changes (append, update, reset, the chat's state) and the text its agent
+  is writing as it streams. A parked session answers from this machine's
+  copy with `live: false` and `asOf`; `chat.history` pages older items in.
+  `chat.create` starts a chat and `chat.send` sends it a prompt once per
+  id — mid-turn, it steers the turn or waits its turn in the queue
+  (`chat.dequeue` takes it back); on a parked session, through a
+  background job that wakes it. `chat.decide` answers a permission
+  request, a question or a plan; `chat.interrupt` stops a turn;
+  `chat.configure` changes model, effort or mode; `chat.close` ends a
+  chat. `chats.window` and `chat.takeover` open a chat in the session's
+  terminal, to watch or to carry on in the agent's own interface.
+  `agents.models` lists an agent's models, efforts and modes.
+  `files.upload` puts an attachment into the session (or keeps it here
+  for a parked one) and `files.list` lists its checkout for @-mentions.
+  `notify` tells the client once about a finished turn, a needed answer, a
+  failed setup or create.
+- **Review.** `git.watch` sends everything a session's branch changed
+  against its base (the merge base with the origin branch it came off,
+  else the commit recorded at create), committed or not, with line counts
+  — then again whenever it changes: the session's supervisor watches the
+  checkout (inotify) and pushes, so nothing polls. `git.changes` reads it
+  once. `git.diff` gives one file's unified diff, with as much context as
+  asked (the whole file). While a session is watched, this machine keeps
+  what a parked one shows — its changes, every changed file's diff and
+  contents, its file list — reading again only what changed; a parked
+  session answers from that copy (`live: false`, `asOf`; read-only).
+  `files.read` returns a file (or, `at: base`, the base's copy) with the
+  sha of what was read, and `files.write` saves it only if the session's
+  copy still has that sha (kind `conflict` otherwise). `search.watch`
+  streams matches from the session's ripgrep as they're found; a new
+  search ends the last. Reads run in the supervisor too, which finds the
+  checkout itself (kind `no_checkout` before there is one). Saves,
+  `git.commit` and `git.push` run there — a save is written to a
+  temporary file, synced and renamed into place — and each carries an id
+  that makes a retry a no-op.
+- **Pull requests.** The overview carries each session's pull request —
+  found by its branch on the origin's GitHub host, one query per
+  repository, with this machine's own login (gh's, else git's) — with its
+  checks, review and mergeability, refreshed every 30 seconds while checks
+  run, every minute otherwise, every five while the app is out of sight,
+  and never into the last of the hour's rate limit. Sessions say why they
+  need you (`attention`): an agent waiting, a failed create or setup,
+  failing checks, requested changes, a merge to clean up, a pull request
+  ready to merge. `pr.get` reads one in full — its comments and reviews also as GitHub
+  renders them — and `pr.log` a check's log; `pr.merge` merges with the
+  repository's default method, only at the head that was reviewed (kind
+  `head_moved` otherwise). `chat.compose` writes the
+  prompt for fixing CI (with the failing logs), addressing review comments
+  or opening a pull request, for the composer. Those prompts, the
+  onboarding one and the heading of review comments are the user's to
+  word (`prompts.get`, `prompts.set`; `[prompts]` in config.toml), for
+  every repo or one (`[prompts.repos.<repo>]`). `sessions.removeMerged` removes a merged
+  session only when everything in it is committed and its head is the
+  merged one, reading the pull request from GitHub then rather than the
+  last look.
+- **Setup.** `pier setup`'s steps, for a form: `setup.detect` (tools,
+  cloud logins, agent config, the saved answers), `setup.check` (who a
+  login is; an expired one is kind `auth_expired` with the login that
+  fixes it, and a profile that asks for an MFA code is kind
+  `mfa_required` until the code comes with the check), `setup.regions`
+  (an account's regions or a project's zones), `setup.defaults` (what a
+  draft gives new sessions, with costs), `setup.apply` (groundwork,
+  config, checks, the onboarding skill; kinds `no_default_vpc`,
+  `no_billing` and `no_permission` say what to do) and `setup.adminDoc`.
+  `setup.login` runs a cloud login, narrating its browser prompts; logins
+  that want a terminal (gh, a Claude token) run in local ones
+  (`term.openLocal`) — pier reads the token `claude setup-token` prints
+  and keeps it itself (`term.captured`). `account.teardown` removes pier
+  from the account, narrating each step.
+  `doctor.run` and `pier doctor --json` give each check the command that
+  fixes it.
+- **Proxy and ports.** `proxy.start` starts the machine's proxy in the
+  background (§6.1) — it keeps running after the app quits — after its
+  one-time network setup, asked for through the macOS administrator
+  prompt. `proxy.watch` follows it, however it was started: each session's
+  name and mirrored ports. `proxy.stop` stops it, `proxy.forget` also takes
+  its network setup away, and `proxy.trustCA` trusts its certificate for
+  https.
+  `ports.forward` is `pier port` for the app, lasting as long as pier api
+  does. `cli.install` links /usr/local/bin/pier to the app's own pier,
+  behind the same prompt when the directory isn't writable.
+- **Errors** carry `data.kind` (`auth_expired` with the login command that
+  fixes it, `not_set_up`, `parked`, `no_key`, …) so clients never parse
+  messages.
+- **Jobs.** Creates, bakes, pool fills and resizes run as detached pier
+  processes, so they finish whatever happens to the app. Each writes its
+  human log plus a JSON-lines event file ending in a `done` or `failed`
+  event, and a registry entry under `~/.config/pier/jobs/`. `job.watch`
+  streams one; `jobs.list` finds them again after the app restarts;
+  `jobs.cancel` stops one the way ctrl-c would, cleanup included. A job
+  whose process died without a final event reads `lost`.
+- **Shapes** live in `pkg/pier/wire`. `make api-types` regenerates the Mac
+  app's TypeScript from them (`internal/api/tsgen`), and CI fails when the
+  generated file is stale.
+- **Stdout is the protocol's.** The real descriptor moves aside and fd 1
+  becomes stderr, so a stray print can only reach the log.
+- **Environment.** A GUI-launched process gets launchd's minimal PATH, so
+  `pier api` adopts the login shell's PATH and cloud/GitHub variables.
 
 ```
 pier                    the app: Sessions · Repos · Settings tabs (new = background create,
                         listed as "creating" until the create writes its ready tag)
-pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
+pier <branch> [base]    create from cwd repo (branch off base, default origin's default branch,
+                        fetched; HEAD is the clone as it is, uncommitted edits included) and attach
+pier new <branch> [base]  the same, for a branch named like a command
+pier new -p <prompt>    a stand-in name; the session's agent names the branch after the prompt
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
 pier proxy              every running session as <session>.pier, listening ports mirrored
                         live onto a per-session loopback IP and onto localhost, HTTP
-                        accelerated (§6.1; macOS, one sudo)
+                        accelerated (§6.1; macOS, one sudo); start | stop | status in
+                        the background, forget to undo its setup
 pier port <match> <p> [p...]  manual port forwards, zero-sudo any-OS fallback (3000 or 8080:3000)
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
@@ -546,9 +748,36 @@ pier pool [set <n> | fill | drain [repo]]  the cwd repo's warm pool
 pier setup              wizard (--print-admin for the no-IAM-rights path,
                         --skills to refresh the bundled agent skill only)
 pier bake               build/refresh the repo's session image (--toolchain-only)
-pier doctor             checks
+pier doctor             checks (--json: each with the command that fixes it)
 pier teardown           remove account groundwork
 ```
+
+### 11.2 The Mac app
+
+`macos/`: a React UI in a thin native shell (Tauri), with this pier inside
+it as `pier api`'s binary — one release, one version. Everything it shows
+comes from `pier api`; the shell only adds what a web view can't do:
+notifications whose clicks open the session, the Dock badge, `pier://`
+links (`pier://session/<id>`, `pier://repo/<name>`, `pier://new?repo=…`),
+and updates. It is a viewer: agents, the prompt queue and every change run
+in the session or in a detached pier job, so quitting or crashing mid-turn
+loses nothing — prompts not yet acknowledged by their session stay in an
+outbox and go out, once, when the app is back.
+
+Its pickers offer what each agent reports — models by name and version,
+their efforts (with Claude's ultracode), fast mode, the 1M-context variant,
+slash commands and skills — asked of the agents' own CLIs on this Mac
+until a session has answered, with the agent's own default model and
+effort marked. The default model is one pier setting (`agents.default`,
+`agents.model`, `agents.effort`); the permission mode last picked in a chat
+becomes its agent's default, plan mode excepted. Background jobs read as
+their stages and current step; a bake's job carries on through its image
+save, and the app checks running jobs against `jobs.list` so none outlives
+its end.
+
+Releases ship it per CPU arch, signed with a Developer ID and notarized, as
+a DMG on the tag's GitHub release and a cask in usepier/homebrew-tap; the
+app updates itself from the same release.
 
 ## 12. Config (`~/.config/pier/config.toml`)
 

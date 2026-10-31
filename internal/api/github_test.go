@@ -1,0 +1,116 @@
+package api
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/usepier/pier/pkg/pier"
+	"github.com/usepier/pier/pkg/pier/wire"
+)
+
+func TestPullRequests(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	c := start(t, &fake{sessions: []pier.Session{{ID: "i-1", Name: "fix", Repo: "shop", Branch: "fix", Origin: "github.com/acme/shop", State: pier.StateRunning}}})
+	resp, _ := c.call("overview.get", map[string]any{})
+	var o wire.Overview
+	remarshal(t, resp["result"], &o)
+	s := o.Sessions[0]
+	if s.PR == nil || s.PR.Number != 7 || s.PR.Checks != "failing" || s.Attention != "merged_cleanup" {
+		t.Errorf("session = %+v pr %+v", s, s.PR)
+	}
+
+	resp, _ = c.call("pr.merge", map[string]any{"sessionId": "i-1", "expectedHeadOid": "old"})
+	if errKind(resp) != "head_moved" {
+		t.Errorf("merge past the reviewed head = %v", resp)
+	}
+	resp, _ = c.call("chat.compose", map[string]any{"sessionId": "i-1", "kind": "fixCI"})
+	text, _ := resp["result"].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "PR #7") || !strings.Contains(text, "--- FAIL: TestLogin") {
+		t.Errorf("fixCI prompt = %q", text)
+	}
+	// The user's own wording leads, for the repo where it's set.
+	c.call("prompts.set", map[string]any{"repo": "shop", "key": "fixCI", "text": "Checks broke on #{pr}."})
+	resp, _ = c.call("chat.compose", map[string]any{"sessionId": "i-1", "kind": "fixCI"})
+	text, _ = resp["result"].(map[string]any)["text"].(string)
+	if !strings.HasPrefix(text, "Checks broke on #7.\n") || !strings.Contains(text, "--- FAIL: TestLogin") {
+		t.Errorf("own fixCI prompt = %q", text)
+	}
+	resp, _ = c.call("prompts.get", map[string]any{"repo": "shop"})
+	var ps wire.Prompts
+	remarshal(t, resp["result"], &ps)
+	if len(ps.Prompts) != 5 || ps.Prompts[0].Own != "Checks broke on #{pr}." {
+		t.Errorf("prompts = %+v", ps)
+	}
+	resp, _ = c.call("chat.compose", map[string]any{"sessionId": "i-1", "kind": "addressComments"})
+	text, _ = resp["result"].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "a.go:3\nrev: rename this") {
+		t.Errorf("addressComments prompt = %q", text)
+	}
+	// The checkout still has uncommitted work: not removed.
+	resp, _ = c.call("sessions.removeMerged", map[string]any{"id": "i-1"})
+	if e, _ := resp["error"].(map[string]any); e == nil || !strings.Contains(e["message"].(string), "uncommitted") {
+		t.Errorf("guarded remove = %v", resp)
+	}
+}
+
+// While the overview is watched, pull requests refresh on a loop of their
+// own and an action (a merge) reads them again at once.
+func TestPullRequestsRefreshOnTheirOwn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{sessions: []pier.Session{{ID: "i-1", Name: "fix", Repo: "shop", Branch: "fix", Origin: "github.com/acme/shop", State: pier.StateRunning}}}
+	c := start(t, f)
+	resp, _ := c.call("overview.watch", nil)
+	reads := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.prReads
+	}
+	var w wire.WatchResult[wire.Overview]
+	remarshal(t, resp["result"], &w)
+	for o := w.Snapshot; len(o.Sessions) != 1 || o.Sessions[0].PR == nil; {
+		remarshal(t, c.next("sub.event")["params"].(map[string]any)["data"], &o)
+	}
+	before := reads()
+	c.call("pr.merge", map[string]any{"sessionId": "i-1", "expectedHeadOid": "abc"})
+	waitFor(t, func() bool { return reads() > before }, func() string { return "a merge didn't read pull requests again" })
+}
+
+func TestAttentionOrder(t *testing.T) {
+	waiting := pier.Session{State: pier.StateRunning, Chats: []wire.ChatSummary{{ID: "c1", State: wire.AgentReady}, {ID: "c2", State: wire.AgentWaiting}}}
+	if a := attention(waiting, &wire.PRSummary{State: "open", Checks: "failing"}); a != "needs_input" {
+		t.Errorf("an agent waiting comes first: %s", a)
+	}
+	ok := pier.Session{State: pier.StateRunning}
+	cases := map[string]wire.PRSummary{
+		"ci_failing":        {State: "open", Checks: "failing", Review: "approved"},
+		"changes_requested": {State: "open", Checks: "passing", Review: "changes_requested"},
+		"ready_to_merge":    {State: "open", Checks: "passing", Review: "approved", Mergeable: "clean"},
+		"":                  {State: "open", Checks: "pending", Review: "approved", Mergeable: "clean"},
+		"merged_cleanup":    {State: "merged"},
+	}
+	for want, pr := range cases {
+		if got := attention(ok, &pr); got != want {
+			t.Errorf("%+v = %q, want %q", pr, got, want)
+		}
+	}
+}
+
+// Removing a merged session asks GitHub, not the last look: a pull request
+// merged a moment ago still reads open in the cache.
+func TestRemoveMergedReadsThePullRequestNow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{prOpen: true, sessions: []pier.Session{{ID: "i-1", Name: "fix", Repo: "shop", Branch: "fix", Origin: "github.com/acme/shop", State: pier.StateRunning}}}
+	c := start(t, f)
+	c.call("overview.get", map[string]any{}) // the cache: open
+	f.mu.Lock()
+	f.prOpen = false // merged since
+	f.mu.Unlock()
+	resp, _ := c.call("sessions.removeMerged", map[string]any{"id": "i-1"})
+	// Past the merge check, held only by the checkout's uncommitted work.
+	if e, _ := resp["error"].(map[string]any); e == nil || !strings.Contains(e["message"].(string), "uncommitted") {
+		t.Errorf("remove after a merge = %v", resp)
+	}
+}

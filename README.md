@@ -4,21 +4,35 @@
 
 [![CI](https://github.com/usepier/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/usepier/pier/actions/workflows/ci.yml)
 
-**Give every agent session its own VM. One command up, zero burn when idle.**
+**Give every agent session its own VM. Idle sessions cost only their disk.**
 
-Full dev environments on your own AWS or GCP account: your repo, your
-secrets, your tools. One command to set up. Detach and it parks itself.
-Attach and it's back in under a minute. Outgrown the box? One command
-resizes it.
+pier is a Mac app for coding agents. Every session runs Claude Code or Codex
+in a VM of its own, on your own AWS or GCP account, with your repo, your
+secrets and your tools. Chat with the agent, open terminals, review the
+diff and merge the pull request, all from one window. Idle sessions park
+themselves and only their disk costs money; open one again and it's back in
+under a minute.
 
-![pier demo](docs/demo.gif)
+![The pier app: a session's chat with Claude, its terminals, and the branch's changes](docs/app.png)
+
+```
+brew install --cask usepier/tap/pier
+```
+
+Open pier, set up your cloud account once, then press ⌘N and describe a
+task. [The docs](https://pier.kak.dev/docs/) walk the rest.
+
+**Prefer the terminal?** The same pier is a CLI and a terminal UI, on macOS
+and Linux, and it sees the same sessions as the app:
+
+![pier in a terminal](docs/demo.gif)
 
 ```
 pier setup          # once: pick your cloud, confirm the defaults, bake this repo
 cd ~/code/myapp
 pier fix-login      # new session: your branch, your secrets, your dev env
 pier proxy          # sessions as hostnames: the dev server at fix-login.pier:3000
-pier                # the app: sessions, repos, settings
+pier                # the terminal UI: sessions, repos, settings
 ```
 
 ## Contents
@@ -27,6 +41,7 @@ pier                # the app: sessions, repos, settings
 - [The solution](#the-solution)
 - [Installation](#installation)
 - [Setup](#setup)
+- [The Mac app](#the-mac-app)
 - [Usage](#usage)
 - [Making your repo pier-ready](#making-your-repo-pier-ready)
 - [The pier-onboard skill](#the-pier-onboard-skill)
@@ -57,22 +72,18 @@ Every existing place to run them fights you:
 
 ## The solution
 
-pier makes each session a micro-VM that manages its own lifecycle.
+pier makes each session a VM that manages its own lifecycle. Describe a
+task in the app, or run `pier checkout-flow`, and a VM starts on your cloud
+account with:
 
-```
-$ pier checkout-flow
-```
-
-One command launches a VM on your cloud account and drops you into tmux
-inside it, with:
-
-- your repo on a fresh branch, uncommitted edits included
+- your repo on a fresh branch off origin's main branch, as origin has it now
+  (`pier <branch> HEAD` starts from your clone instead, uncommitted edits included)
 - Claude Code and Codex installed and authenticated
 - your MCP servers configured
 - your dev environment built by the repo's own setup script
 
-Detach and forget it. An in-VM supervisor parks the VM once the agent goes
-quiet: the instance stops, the disk persists. Attach again and it resumes in
+Walk away. An in-VM supervisor parks the VM once the agent goes quiet: the
+instance stops, the disk persists. Open it again and it resumes in
 about 20 seconds on AWS and about a minute on GCP, with files, branches, and
 credentials exactly as you left them, and your tmux windows back with the
 agents reopened on their conversations. If the session outgrows its hardware,
@@ -103,6 +114,19 @@ are a free state store.
 
 ## Installation
 
+The Mac app (macOS 14 or later), with the `pier` command included:
+
+```
+brew install --cask usepier/tap/pier
+```
+
+or download it: [Apple silicon](https://github.com/usepier/pier/releases/latest/download/Pier_aarch64.dmg),
+[Intel](https://github.com/usepier/pier/releases/latest/download/Pier_x64.dmg).
+It updates itself. If you installed the command-line formula before,
+`brew uninstall pier` first: the cask brings the command along.
+
+The command line only, on macOS or Linux:
+
 ```
 brew install usepier/tap/pier
 ```
@@ -113,7 +137,8 @@ be embedded):
 ```
 git clone https://github.com/usepier/pier
 cd pier
-make install
+make install     # the pier command
+make mac         # the Mac app, unsigned, for this Mac (needs pnpm and Rust)
 ```
 
 You also need, on the laptop:
@@ -121,9 +146,11 @@ You also need, on the laptop:
 - on AWS: `aws` CLI v2 and the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
 - on GCP: the [`gcloud` CLI](https://cloud.google.com/sdk/docs/install)
 - `git` and OpenSSH (already on macOS/Linux)
+- the `gh` CLI, signed in, for pull requests and checks in the app
 - Go 1.24+ (only when building from source)
 
-`pier doctor` checks all of it, plus your cloud auth and account groundwork.
+Setup checks all of it. Later, the app's Settings → Checks or `pier doctor`
+checks it again, plus your cloud auth and account groundwork.
 
 ## Setup
 
@@ -208,48 +235,93 @@ for pier VMs and one allow rule above it for exactly Google's IAP range
 (`35.235.240.0/20`). Both rules target only instances tagged
 `pier-session`. The rest of your network is untouched.
 
+## The Mac app
+
+One window for every session:
+
+- **Repositories and sessions** in a sidebar, each session marked when it
+  needs you: an agent waiting on an answer, a finished turn, a failed setup,
+  failing checks, requested changes, a merged branch to clean up.
+- **New sessions from a prompt.** The session starts from origin's main
+  branch, the agent starts on the prompt once setup is done, and names the
+  branch after it.
+- **Chats with the agents**: Claude Code and Codex, several per session,
+  every model, effort, fast mode and 1M context in one picker; their slash
+  commands and skills; approvals, questions and plans answered in place;
+  the permission mode you pick last becomes the default.
+- **Terminals**: every tmux window of the session as a tab, the same ones
+  `pier attach` shows, and any chat continued in its agent's own interface.
+- **Review**: the branch's diff, live, with line comments sent to the
+  agent; the checkout's files, searchable and editable; commit and push.
+- **Pull requests**: checks with their logs, reviews and comments as GitHub
+  renders them, Fix CI and Address comments for the agent, a merge guarded by
+  what you reviewed, and clean up once merged.
+- **Each repository's page**: its sessions, pool, session image (bake from
+  there, stage by stage), load and cost.
+- **Home**: what runs and what it costs, what needs you, and creates, bakes
+  and pool fills in progress.
+
+It notifies you when an agent finishes or needs you. Quitting stops nothing:
+agents keep working, background jobs finish, sessions park on their own,
+and a message sent just before a quit is delivered once the app is back.
+The app runs its own `pier api` (JSON-RPC over stdio), the same pier as the
+CLI, so both see the same sessions, settings and jobs. The
+[docs](https://pier.kak.dev/docs/app/) cover it page by page.
+
 ## Usage
 
 ```
-pier                      the app: Sessions · Repos · Settings tabs (? for keys)
-pier <branch> [base]      new session off base (default HEAD), then attach
+pier                      the terminal UI: Sessions · Repos · Settings tabs (? for keys)
+pier <branch> [base]      new session off base (default origin's main branch), then attach
     -d, --detach          create without attaching
     --idle <dur|never>    park after this much idle time (default from settings)
     --cap <dur|never>     unattended runaway cap (default 8h)
     --no-park             shorthand for --idle never
     --no-pool             launch fresh instead of claiming a pooled session
+    --agent <claude|codex> start a chat with this agent (default: your default agent)
+    -p, --prompt <text>   the chat's first prompt, sent once setup is done
+    --model <model>       the chat's model
+    --effort <level>      how hard it thinks
+    --permission-mode <m> what it does without asking
+    --fast                the chat's fast mode
+pier new <branch> [base]  the same, for a branch named like a command (new, ls, ...)
+pier new -p <prompt>      a session with a stand-in name; its agent names the branch after the prompt
 pier ls [--json]          plain list, or stable JSON for automation
-pier attach <session>     attach (a parked session resumes, ~20-60s, tmux restored)
+pier attach [-a] <session>  attach (a parked session resumes, ~20-60s, tmux restored); -a: its chats window
 pier logs <session>       show the setup script log (-f follows)
 pier rm <session> [-f]    destroy the session and its disk
 pier keep <session>       pin: never park when idle
+pier park <session>       park now instead of waiting for the idle timer
 pier resize <session> <type>   grow/shrink the VM (~1-2 min, same CPU arch)
 pier repos [--json]       every repo: session image, pool, idle cost, tips
 pier bake                 build this repo's session image (repo prebuilt by default)
     --toolchain-only      keep repo state out of the image for this bake
 pier pool                 this repo's pool (set <n> | fill | drain [repo])
-pier proxy                every running session as <session>.pier (macOS)
+pier proxy                every running session as <session>.pier (macOS); start | stop | status | forget
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
 pier setup [--skills]     first-time setup; --skills only refreshes the agent skill
-pier doctor               environment + account checks
+pier doctor [--json]      environment + account checks
 pier teardown             remove all pier groundwork from the account
 ```
 
 For automation, `pier ls --json` writes a JSON array with stable fields:
-`id`, `name`, `repository`, `branch`, `owner`, `provider`, `state`,
-`setup_state`, `strained`, `created_at`, `machine_type`, and `cost_note`.
-`created_at` is an RFC 3339 UTC timestamp, or `null` when unavailable;
-`setup_state` is empty when no running or failed setup is reported. The JSON
+`id`, `name`, `repository`, `branch`, `origin`, `base`, `owner`, `provider`,
+`state`, `setup_state`, `strained`, `created_at`, `machine_type`, and
+`cost_note`. `origin` is the repo's origin remote as `host/owner/repo` and
+`base` the origin branch the session came off; both are empty for sessions
+created before pier recorded them. `created_at` is an RFC 3339 UTC
+timestamp, or `null` when unavailable; `setup_state` is empty when no
+running or failed setup is reported. The JSON
 mode writes no ANSI styling or explanatory prose to stdout.
 
 A day with pier:
 
 ```
 $ cd ~/code/shop && pier checkout-flow
-creating checkout-flow (shop @ HEAD)
+creating checkout-flow (shop @ origin/main)
   ▸ launching t4g.medium (baked image)
   ▸ pushing secrets + repo (GitHub-first: only secrets ride the tunnel)
-  ▸ bootstrap: branch checkout-flow, dirty patch applied, setup running
+  ▸ bootstrap: branch checkout-flow, setup running
 session checkout-flow ready
 [tmux opens: claude is installed, authenticated, on your branch]
 
@@ -345,7 +417,8 @@ them:
   secrets ride the tunnel.
 - Local-only commits: a thin delta bundle through the tunnel.
 - Anything else: a full-history bundle, slow but universal.
-- Uncommitted edits to tracked files: one git patch, applied after checkout.
+- Uncommitted edits to tracked files, for a session from your clone
+  (`pier <branch> HEAD`): one git patch, applied after checkout.
 
 Private repos reuse whatever GitHub credential the laptop already has (`gh`
 login, git's https credential helper, or ssh keys through a forwarded
@@ -367,11 +440,12 @@ says how to set one.
 Local files and secrets travel once, at create, in the files payload:
 
 - `~/.claude`, `~/.codex`, tokens (`gh auth token`, `claude setup-token`)
-- non-ignored untracked repo files, plus ignored files your `.pier/include` lists
+- ignored files your `.pier/include` lists, plus, for a session from your
+  clone (`HEAD`), its non-ignored untracked files
 
-Untracked files that Git does not ignore ship by default. Ignored files ship
-only when `.pier/include` lists them; create prints which ignored env files it
-is *not* carrying. The VM never holds cloud credentials. On AWS its instance
+Ignored files ship only when `.pier/include` lists them; create prints which
+ignored env files it is *not* carrying. Untracked files that Git does not
+ignore ship with a session from `HEAD`, the clone as it is. The VM never holds cloud credentials. On AWS its instance
 role carries SSM and nothing else. On GCP it runs with no service account at
 all.
 
@@ -416,7 +490,11 @@ proxy up — running sessions resolve as <session>.pier (http + https), ports mi
   It persists on disk, so a proxy restart starts warm too.
 - A live connection counts as attachment, so a session never parks under
   your open browser tab.
-- One sudo on first run. macOS only for now.
+- One sudo, the first time ever: a boot task puts the addresses back
+  after a restart. `pier proxy forget` removes the setup.
+- `pier proxy start` runs it in the background instead (`status`, `stop`).
+  There is only ever one: the app and the command share it.
+- macOS only for now.
 - `pier port <session> 3000` is the manual, zero-sudo fallback everywhere.
 
 ### `pier bake`: per-repo prebuilt images
@@ -426,8 +504,8 @@ container image builds, seeds. A toolchain-only image can't help with any of
 that, so a bake prebuilds the repo:
 
 ```
-pier bake    # one throwaway instance: harnesses + .pier/bake.sh, then your
-             # checkout (HEAD) with .pier/setup.sh run to completion, imaged
+pier bake    # one throwaway instance: harnesses + .pier/bake.sh, then the
+             # repo (origin's main branch) with .pier/setup.sh run to completion, imaged
 ```
 
 `pier bake` returns as soon as the bake instance is done. Saving the image,
@@ -454,8 +532,9 @@ the repo's to keep out. Anyone who can launch the image can read its disk.
 
 Freshness is manual: re-run `pier bake` when dependencies drift enough that
 the warm re-run gets slow. Images are keyed to the repo, so one project's
-toolchain never bleeds into another's. Re-baking supersedes the old image,
-and `pier teardown` sweeps them all by tag.
+toolchain never bleeds into another's. Re-baking supersedes the old image
+and deletes it, its disk snapshots included, so images never pile up;
+`pier teardown` sweeps them all by tag.
 
 ### Warm pools: the create is already done
 
@@ -474,19 +553,19 @@ pier pool drain [repo]  destroy a repo's pooled sessions, from anywhere
 ```
 
 The next `pier <branch>` claims one instead of creating — resume, check out
-your branch, re-push secrets, apply your dirty edits; setup doesn't run
-again — and the pool refills in the background. An empty pool just means a
+your branch, re-push secrets (and your uncommitted edits, for a session from
+`HEAD`); setup doesn't run again — and the pool refills in the background. An empty pool just means a
 normal create: the pool accelerates, never gates, and `--no-pool` skips it
 for one create.
 
 Pooled sessions are stopped instances, so each costs disk only (~$3-4/mo at
 40 GiB). They recycle themselves when they go stale — after a re-bake, a
 setup-script change, or 14 days (`pool.max_age`). Upgrading pier doesn't
-stale them: a claim installs the current pier's in-VM supervisor. Any
-listing (`pier ls`, the app) also removes pooled sessions nothing would
-claim — a repo whose pool is off or has no image, a dead member, a fill that
-never parked — and bake instances whose bake died, from every repo, wherever
-you run it. The app's Repos tab shows every repo's pool with its cost:
+stale them: a claim installs the current pier's in-VM supervisor. Listing
+commands (`pier ls`, `pier repos`, `pier pool`) and the apps, on load and every
+10 minutes after, also remove pooled sessions nothing would claim — a repo
+whose pool is off or has no image, a dead member, a fill that never parked —
+and bake instances whose bake died, from every repo, wherever you run them. The app's Repos tab shows every repo's pool with its cost:
 `+`/`-` sets the size, `f` fills, `x` drains.
 
 ### Rebake reminders
@@ -498,9 +577,9 @@ reminder age (30 days by default), or `.pier/setup.sh` or `.pier/bake.sh`
 changed since the bake. Reminders show after a create (at most once a day
 per repo), as a dot on the Repos tab, and in `pier repos`.
 
-### The app
+### The terminal UI
 
-`pier` with no arguments opens the app: a **Sessions** tab (every session
+`pier` with no arguments opens the terminal UI: a **Sessions** tab (every session
 with a state dot, a detail pane, attach, logs, resize, keep, delete), a
 **Repos** tab (session image, pool, idle cost and reminders per
 repo), and **Settings**, one page grouped into Cloud, New sessions, Idle &
@@ -508,21 +587,23 @@ cost, Speed, and Appearance (the accent color: teal, navy, violet, emerald,
 orange, crimson, pink, amber or graphite), showing only the active cloud's
 fields with a line on what each changes. The header keeps running and
 parked counts and the live hourly cost in view; `?` lists the keys.
-Attaching stays in the app until the session answers, then hands over to
-it.
+Attaching stays in the terminal UI until the session answers, then hands
+over to it; `c` attaches to the session's chats window instead.
 
-Every frontend runs on the same API (`pkg/pier`): the CLI, the app, and the
-coming Mac app.
+Every frontend runs on the same API (`pkg/pier`): the Mac app, the CLI, and
+the terminal UI.
 
 ### Setup that can't fail silently
 
 `.pier/setup.sh` runs async in its own tmux window on first boot, after the
-checkout, dirty patch, untracked files, and `.pier/include` extras are in
-place. The outcome always surfaces:
+checkout and `.pier/include` extras are in place (a session from `HEAD` adds
+its dirty patch and untracked files). The outcome always surfaces:
 
-- `pier ls` and the app show `(setup running)` or `(setup failed)`
+- the Mac app marks the session and shows the log live in its Log and
+  Setup tabs; `pier ls` and the terminal UI show `(setup running)` or
+  `(setup failed)`
 - `pier logs <session>` prints the log from anywhere, no attach needed
-  (`-f` follows, `l` in the app)
+  (`-f` follows, `l` in the terminal UI)
 - `~/.pier-setup.log` ends with `pier setup: done` or `pier setup: FAILED (exit N)`
 - a failed window renames to `setup-failed` and stays open instead of vanishing
 
@@ -541,8 +622,9 @@ checkout-flow  shop  running (strained)  2h   ~$0.04/h
 $ pier resize checkout-flow t4g.xlarge
 ```
 
-Or press `m` in the app. It lists same-arch machines with their vCPU, memory
-and hourly cost, so nobody memorizes instance type names.
+Or **Resize** in the Mac app, `m` in the terminal UI. Both list same-arch
+machines with their vCPU, memory and hourly cost, so nobody memorizes
+instance type names.
 
 One park/resume cycle, about a minute on AWS and about two on GCP, disk and
 state intact. Deliberately not automatic: the VM holds no cloud credentials,
@@ -556,7 +638,8 @@ The cloud says "running" long before a session is usable, so pier doesn't:
   instance ready (a tag on AWS, a label on GCP). A session claimed from the
   pool reads `starting` too, until it's resumed and on your branch.
 - Attaching early gets a plain "still setting up", not a raw connection error.
-- Creates from the app run in the background and the row flips when ready.
+- Creates from the Mac app and the terminal UI run in the background and the
+  row flips when ready.
 - A deleted session lists as `deleting` until the cloud actually removes it.
   GCE takes a minute there and would otherwise read as parked.
 - A create that fails cleans up its own instance.
@@ -673,8 +756,8 @@ The choices contributors should know before proposing changes
   the strained flag: pier reports what is, not what the cloud claims.
 - **`pier ls` stays plain** (pipeable). The app is the pretty view.
 - **One API, many frontends.** Capabilities live in `pkg/pier`, which never
-  prints, exits or reads stdin; the CLI, the app and the Mac app render what
-  it returns.
+  prints, exits or reads stdin; the Mac app (through `pier api`), the CLI
+  and the terminal UI render what it returns.
 
 ## vs. other tools
 
@@ -684,7 +767,7 @@ The choices contributors should know before proposing changes
 | Idle cost | `~$3-4/mo` (self-parks) | metered, auto-stop | per-seat / per-task | full rate unless you script it |
 | Agent-ready | harnesses + auth + MCP travel | you configure | their agent only | you configure |
 | Session lifetime | until you `rm` it | workspace-scoped | task-scoped | until you clean it up |
-| Interface | your terminal, tmux | VS Code / web | web UI | your terminal |
+| Interface | a Mac app, plus a CLI and TUI | VS Code / web | web UI | your terminal |
 | Setup | one wizard | per-repo config | account signup | everything by hand |
 
 Honest framing: Codespaces is more polished for *humans editing in VS

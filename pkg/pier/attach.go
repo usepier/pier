@@ -17,6 +17,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/sshmux"
 )
 
 // While someone is attached, the session behaves as if it ran on their
@@ -54,15 +57,22 @@ func (c *Client) Attach(ctx context.Context, s Session) (cmd *exec.Cmd, stop fun
 		cmd.Args = slices.Insert(cmd.Args, 1, "-R", remoteOpenSocket+":"+sock)
 	}
 
-	// The port mirror rides its own multiplexed connection, so forwards can
-	// come and go while the attach runs.
-	if opts, dest, err := c.drv.SSHTarget(ctx, s.ID); err == nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			mirrorPorts(cctx, opts, dest)
-		}()
+	// The port mirror rides a multiplexed connection, so forwards can come
+	// and go while the attach runs: the client's own when it keeps them,
+	// else one that lives exactly as long as this attach.
+	mux := c.mux
+	if mux == nil {
+		mux = sshmux.New(filepath.Join(config.Dir(), "mux"), c.drv.SSHTarget)
+		mux.CleanStale()
+		stops = append(stops, mux.Close)
 	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if conn, err := mux.Conn(cctx, s.ID); err == nil {
+			mirrorPorts(cctx, conn)
+		}
+	}()
 
 	var once sync.Once
 	stop = func() {
@@ -130,49 +140,19 @@ func openURL(raw string) error {
 var openCommand = exec.Command
 
 // mirrorPorts forwards every port the session listens on to the same port
-// on this machine until ctx ends. Ports already taken here (another
-// session's, a local server's) are left alone; privileged ports are skipped.
-func mirrorPorts(ctx context.Context, opts []string, dest string) {
-	ctl := filepath.Join(os.TempDir(), "pier-mux-"+randHex(6))
-	// The master's session reads a pipe only this process holds, so however
-	// pier ends — even killed — the pipe closes, the session ends, and the
-	// master and every port it forwards go with it.
-	life, hold, err := os.Pipe()
-	if err != nil {
-		return
-	}
-	master := exec.Command("ssh", slices.Concat(opts, []string{"-M", "-S", ctl, dest, "cat >/dev/null"})...)
-	master.Stdin = life
-	if err := master.Start(); err != nil {
-		life.Close()
-		hold.Close()
-		return
-	}
-	life.Close()
-	defer func() {
-		hold.Close()
-		exited := make(chan struct{})
-		go func() { _ = master.Wait(); close(exited) }()
-		select {
-		case <-exited:
-		case <-time.After(5 * time.Second):
-			_ = master.Process.Kill()
-			<-exited
-		}
-		os.Remove(ctl)
-	}()
-	for waited := time.Duration(0); ; waited += 200 * time.Millisecond {
-		if _, err := os.Stat(ctl); err == nil {
-			break
-		}
-		if waited > 60*time.Second || ctx.Err() != nil {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+// on this machine until ctx ends, then takes the forwards down. Ports
+// already taken here (another session's, a local server's) are left alone;
+// privileged ports are skipped.
+func mirrorPorts(ctx context.Context, conn *sshmux.Conn) {
 	forwarded := map[int]bool{}
+	var live []string
+	defer func() {
+		for _, spec := range live {
+			_ = conn.Cancel("-L", spec)
+		}
+	}()
 	for {
-		out, err := exec.CommandContext(ctx, "ssh", "-S", ctl, dest, "cat /run/pier/status.json").Output()
+		out, err := conn.Exec(ctx, "cat /run/pier/status.json", nil)
 		if err == nil {
 			var st struct {
 				Listening []int `json:"listening"`
@@ -184,7 +164,9 @@ func mirrorPorts(ctx context.Context, opts []string, dest string) {
 					}
 					forwarded[p] = true // tried once: a taken port stays skipped
 					spec := fmt.Sprintf("127.0.0.1:%d:localhost:%d", p, p)
-					_ = exec.CommandContext(ctx, "ssh", "-S", ctl, "-O", "forward", "-L", spec, dest).Run()
+					if conn.Forward("-L", spec) == nil {
+						live = append(live, spec)
+					}
 				}
 			}
 		}

@@ -25,7 +25,7 @@ func TestStateLabelDistinguishesCreateFromSetupFailure(t *testing.T) {
 func TestWriteSessionsJSON(t *testing.T) {
 	created := time.Date(2026, time.August, 14, 9, 30, 0, 0, time.FixedZone("test", 4*60*60))
 	sessions := []driver.Session{{
-		ID: "i-123", Name: "json-output", Repo: "pier", Branch: "feat/json",
+		ID: "i-123", Name: "json-output", Repo: "pier", Branch: "feat/json", Origin: "github.com/usepier/pier", Base: "main",
 		User: "arn:aws:iam::123:user/test", Driver: "aws-ec2",
 		State: driver.StateWorking, Strained: true, Setup: "running",
 		InstanceType: "t4g.medium", Created: created, CostNote: "~$0.04/h",
@@ -35,7 +35,7 @@ func TestWriteSessionsJSON(t *testing.T) {
 	if err := writeSessionsJSON(&out, sessions); err != nil {
 		t.Fatal(err)
 	}
-	want := `[{"id":"i-123","name":"json-output","repository":"pier","branch":"feat/json","owner":"arn:aws:iam::123:user/test","provider":"aws-ec2","state":"working","setup_state":"running","strained":true,"created_at":"2026-08-14T05:30:00Z","machine_type":"t4g.medium","cost_note":"~$0.04/h"}]` + "\n"
+	want := `[{"id":"i-123","name":"json-output","repository":"pier","branch":"feat/json","origin":"github.com/usepier/pier","base":"main","owner":"arn:aws:iam::123:user/test","provider":"aws-ec2","state":"working","setup_state":"running","strained":true,"created_at":"2026-08-14T05:30:00Z","machine_type":"t4g.medium","cost_note":"~$0.04/h"}]` + "\n"
 	if got := out.String(); got != want {
 		t.Fatalf("unexpected JSON output\nwant: %s\n got: %s", want, got)
 	}

@@ -12,10 +12,10 @@ package driver
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
+
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 type State string
@@ -37,10 +37,15 @@ const (
 
 // Session is one instance + its persistent disk.
 type Session struct {
-	ID           string // provider instance ID
-	Name         string // branch-derived session name
-	Repo         string
-	Branch       string
+	ID     string // provider instance ID
+	Name   string // branch-derived session name
+	Repo   string
+	Branch string
+	// Origin is the repo's origin remote, canonical host/path (no
+	// credentials); "" for sessions made before pier recorded it, or from
+	// repos without one. Base is the origin branch the session came off.
+	Origin       string
+	Base         string
 	User         string // derived from cloud caller identity, never configured
 	Driver       string
 	State        State
@@ -57,6 +62,34 @@ type Session struct {
 	// LogPath points a tombstone at its create log. Empty when the create ran
 	// in the foreground and its output went to the terminal instead.
 	LogPath string
+
+	// From the supervisor's beacon, for running sessions (zero otherwise):
+	// its load, who listens on which port, and when it parks — ParkAt while
+	// quiet and detached, CapAt while it works with nobody attached.
+	Res    *Resources
+	Ports  []Port
+	ParkAt time.Time
+	CapAt  time.Time
+	// Chats are the session's agent chats, as its supervisor last said.
+	Chats []wire.ChatSummary
+}
+
+// Resources is a session's load. Sizes are bytes; CPU is % of all CPUs.
+type Resources struct {
+	CPU       float64
+	CPUs      int
+	MemUsed   uint64
+	MemTotal  uint64
+	DiskUsed  uint64
+	DiskTotal uint64
+	Load1     float64
+}
+
+// Port is a port a session listens on and the process holding it.
+type Port struct {
+	Port    int
+	Process string
+	PID     int
 }
 
 // Machine is one row in the TUI's resize picker: a curated instance type
@@ -80,7 +113,25 @@ type CreateSpec struct {
 	IdleTimeout   time.Duration // 0 = never auto-park
 	UnattendedCap time.Duration // 0 = no runaway cap
 	PoolGen       string        // non-empty: create a warm pool member (drivers add the pool tag/label; Name is the placeholder)
+	Chat          *ChatSpec     // the chat to start the session with; nil = none
 	Progress      func(step string)
+}
+
+// ChatSpec is the chat a session starts with: its agent, how it runs,
+// and the prompt it begins on (delivered once the repo's setup is done).
+type ChatSpec struct {
+	ID     string
+	Agent  string // claude | codex
+	Model  string
+	Effort string
+	Fast   bool
+	Mode   string // permission mode
+	Prompt string
+	// PromptID makes the prompt's delivery happen once.
+	PromptID string
+	// NameBranch is the session's stand-in branch, to be named after the
+	// prompt in the session (and the session relabeled after it).
+	NameBranch string
 }
 
 // ClaimWindow bounds how long a claimed-but-not-ready session lists as
@@ -97,10 +148,61 @@ var ErrNoKey = errors.New("no ssh key for this session on this machine")
 // candidate.
 var ErrClaimLost = errors.New("pool member claimed by another process")
 
+// LoginError is a cloud CLI failure an interactive login fixes: the CLI's
+// login session expired or was never made. Login is the argv of that login,
+// for a frontend to run in the user's terminal; Err keeps the CLI's message.
+type LoginError struct {
+	Login []string
+	Err   error
+}
+
+func (e *LoginError) Error() string { return e.Err.Error() }
+func (e *LoginError) Unwrap() error { return e.Err }
+
+// ErrQuota: a cloud quota (vCPUs, instances) refused the request; the
+// quota needs raising.
+var ErrQuota = errors.New("a cloud quota refused the request")
+
+// CloudError is a cloud API's refusal as its CLI reports it: the code the
+// API gave (VcpuLimitExceeded, NoSuchEntity, QUOTA_EXCEEDED) and the call
+// it refused. Err keeps the whole failure, with the command.
+type CloudError struct {
+	Code    string
+	Op      string
+	Message string
+	Err     error
+}
+
+func (e *CloudError) Error() string { return e.Err.Error() }
+func (e *CloudError) Unwrap() error { return e.Err }
+
+// Is makes a quota refusal ErrQuota.
+func (e *CloudError) Is(target error) bool {
+	if target != ErrQuota {
+		return false
+	}
+	switch e.Code {
+	case "VcpuLimitExceeded", "InstanceLimitExceeded", "MaxSpotInstanceCountExceeded", "QUOTA_EXCEEDED":
+		return true
+	}
+	return false
+}
+
+// ErrorCode is the cloud API's code for err ("" when it carries none).
+func ErrorCode(err error) string {
+	var ce *CloudError
+	if errors.As(err, &ce) {
+		return ce.Code
+	}
+	return ""
+}
+
 // ClaimSpec names the session a warm pool member becomes.
 type ClaimSpec struct {
 	Name   string
 	Branch string
+	Origin string // canonical origin of the claiming repo (payload.RepoOrigin)
+	Base   string // origin branch the session comes off (payload.BaseBranch)
 	// Nonce is this claimer's unique token. Tags and labels have no
 	// compare-and-swap, so Claim writes the nonce, waits a settle beat, and
 	// reads it back: of two concurrent claimers the later write wins and the
@@ -118,7 +220,8 @@ type ClaimSpec struct {
 type BakeSpec struct {
 	RepoName string // repo basename; keys the image to its repo
 	RepoRoot string // local repo root to prebuild from; "" = toolchains only
-	HookPath string // local path to the repo's .pier/bake.sh; "" = none
+	BaseRef  string // the commit to prebuild ("" = HEAD): origin's default branch
+	HookPath string // local path to the repo's .pier/bake.sh (as BaseRef has it); "" = none
 	Progress func(step string)
 }
 
@@ -147,21 +250,12 @@ func (s BakeSpec) Step(msg string) {
 	}
 }
 
-// BakeHook returns the repo's .pier/bake.sh, "" when absent. It runs on the
-// bake instance (agent user, passwordless sudo, no repo checkout — bake
-// predates any session): toolchains belong here, repo state in .pier/setup.sh.
-func BakeHook(repoRoot string) string {
-	p := filepath.Join(repoRoot, ".pier", "bake.sh")
-	if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
-		return ""
-	}
-	return p
-}
-
 type Check struct {
 	Name   string
 	OK     bool
 	Detail string
+	// Fix is the command that fixes a failed check, when one does.
+	Fix string
 }
 
 type SetupReport struct {
@@ -202,6 +296,10 @@ type Driver interface {
 	// type (its CPU architecture): a claim installs it on the member.
 	Supervisor(ctx context.Context, instanceType string) ([]byte, error)
 
+	// Rename relabels a session — its name and branch — after the session
+	// renamed its branch itself.
+	Rename(ctx context.Context, id, name, branch string) error
+
 	// MarkReady writes the ready tag/label: the session is attachable. It's
 	// a create's last act, and a claim's — Claim clears it at its commit
 	// point, so a claimed session lists as starting, not parked, while it
@@ -237,6 +335,11 @@ type Driver interface {
 	// one remote mechanism is OpenSSH, so this is a contract, not a leak.
 	SSHTarget(ctx context.Context, id string) (opts []string, dest string, err error)
 
+	// InvalidateTarget forgets anything SSHTarget cached about reaching a
+	// session (a probed public IP), so the next connection resolves afresh
+	// — after a failure, or once the session parked and woke elsewhere.
+	InvalidateTarget(id string)
+
 	// Exec runs a one-shot command (status reads, push bootstrap) without a TTY.
 	Exec(ctx context.Context, id string, command string) (string, error)
 
@@ -260,4 +363,14 @@ type Driver interface {
 	// Headroom reports account capacity (vCPU quota) for the create-time
 	// opportunistic check and the TUI header.
 	Headroom(ctx context.Context) (Quota, error)
+}
+
+// BakeName is the name and repo a bake's temporary machine is listed under.
+const BakeName = "bake"
+
+// IsBakeMachine reports whether s is the temporary machine a bake runs on:
+// listed like a session, but no one's — frontends and the proxy leave it
+// out; the sweep doesn't.
+func IsBakeMachine(s Session) bool {
+	return s.Name == BakeName && s.Repo == BakeName && s.PoolGen == ""
 }

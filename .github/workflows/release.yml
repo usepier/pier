@@ -65,3 +65,11 @@ jobs:
             git commit -am "chore: bump pier ${GITHUB_REF_NAME#v}"
             git push
           fi
+
+  # The Mac app, from the same tag, once its release exists.
+  macos:
+    needs: release
+    uses: ./.github/workflows/macos-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

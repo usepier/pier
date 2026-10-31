@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/usepier/pier/internal/driver"
@@ -29,21 +30,53 @@ func (d *Driver) aws(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		n := min(len(args), 2)
-		return "", fmt.Errorf("aws %s: %s", strings.Join(args[:n], " "), strings.TrimSpace(errb.String()))
+		stderr := strings.TrimSpace(errb.String())
+		err := fmt.Errorf("aws %s: %s", strings.Join(args[:n], " "), stderr)
+		if login := loginFix(stderr, d.Profile); login != nil {
+			return "", &driver.LoginError{Login: login, Err: err}
+		}
+		return "", cloudError(stderr, err)
 	}
 	return strings.TrimSpace(out.String()), nil
 }
 
-// LoginExpired recognizes the AWS CLI's opt-in login session expiry. These
-// credentials are renewed with `aws login` (distinct from Identity Center's
-// `aws sso login`), so callers can offer the right interactive recovery
-// without treating every AWS error as an authentication problem.
-func LoginExpired(err error) bool {
-	if err == nil {
-		return false
+// apiError is how the AWS CLI reports an API's refusal.
+var apiError = regexp.MustCompile(`An error occurred \(([A-Za-z0-9.]+)\) when calling the ([A-Za-z0-9]+) operation(?: \([^)]*\))?: (.*)`)
+
+// cloudError types an AWS CLI failure by the code the API gave; a failure
+// without one (a bad flag, no network) stays as it is.
+func cloudError(stderr string, err error) error {
+	m := apiError.FindStringSubmatch(stderr)
+	if m == nil {
+		return err
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "session has expired") && strings.Contains(msg, "aws login")
+	return &driver.CloudError{Code: m[1], Op: m[2], Message: strings.TrimSpace(m[3]), Err: err}
+}
+
+// loginFix names the interactive login that renews an expired AWS CLI
+// session, or nil when stderr is any other failure. The two logins don't
+// substitute for each other: `aws login` renews console-login credentials,
+// `aws sso login` an IAM Identity Center session (or makes its first token).
+func loginFix(stderr, profile string) []string {
+	msg := strings.ToLower(stderr)
+	var login []string
+	switch {
+	case strings.Contains(msg, "enter mfa code"):
+		// The role's session lapsed: a terminal asks for the code, and the
+		// CLI keeps the session it buys.
+		login = []string{"aws", "sts", "get-caller-identity"}
+	case strings.Contains(msg, "session has expired") && strings.Contains(msg, "aws login"):
+		login = []string{"aws", "login"}
+	case strings.Contains(msg, "aws sso login"), strings.Contains(msg, "sso session"),
+		strings.Contains(msg, "sso token"), strings.Contains(msg, "token from sso"):
+		login = []string{"aws", "sso", "login"}
+	default:
+		return nil
+	}
+	if profile != "" {
+		login = append(login, "--profile", profile)
+	}
+	return login
 }
 
 // --- SSH into the session ----------------------------------------------------

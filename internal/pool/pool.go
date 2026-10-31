@@ -44,6 +44,7 @@ const (
 type Params struct {
 	Driver   driver.Driver
 	RepoRoot string // local checkout; fill and claim run from inside it
+	Base     string // what members are made from: origin's default branch ("" = HEAD)
 	Gen      string // current generation (Generation(...))
 	Size     int    // desired warm member count
 	MaxAge   time.Duration
@@ -55,8 +56,15 @@ type Params struct {
 
 	Manifest   []string          // $HOME-relative files, same as the driver gets
 	SessionEnv map[string]string // ~/.config/pier/env content, same as the driver gets
-	Progress   func(string)
-	Out        io.Writer // scp meters during a claim; nil discards
+	// Agent is the agent a claimed session starts with; nil = none.
+	Chat     *driver.ChatSpec
+	Progress func(string)
+	Out      io.Writer // scp meters during a claim; nil discards
+	// Mine says whether this machine made a member. Only its own members
+	// are claimed, counted, recycled or drained here: another machine's
+	// can't be reached from this one (its key lives there) and follow
+	// that machine's config. nil: every member.
+	Mine func(driver.Session) bool
 }
 
 func (p *Params) progress() func(string) {
@@ -80,26 +88,25 @@ func Generation(driverName, image, instanceType string, diskGiB int, setupScript
 }
 
 // SetupScript returns the bytes of the setup script a session of this repo
-// would run: the PIER_SETUP_SCRIPT override when set, else the repo's
-// .pier/setup.sh, else nil. Feeds the generation fingerprint, and tells fill
-// whether a setup status is expected at all.
-func SetupScript(repoRoot string) []byte {
-	p := os.Getenv("PIER_SETUP_SCRIPT")
-	if p == "" {
-		p = filepath.Join(repoRoot, ".pier", "setup.sh")
+// made from base would run: the PIER_SETUP_SCRIPT override when set, else
+// base's .pier/setup.sh, else nil. Feeds the generation fingerprint, and
+// tells fill whether a setup status is expected at all.
+func SetupScript(repoRoot, base string) []byte {
+	if p := os.Getenv("PIER_SETUP_SCRIPT"); p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		return b
 	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return nil
-	}
-	return b
+	return payload.FileAt(repoRoot, base, ".pier/setup.sh")
 }
 
 // Members filters a List to the unclaimed pool members of one repo (basename).
-func Members(sessions []driver.Session, repo string) []driver.Session {
+func Members(sessions []driver.Session, repo string, mine func(driver.Session) bool) []driver.Session {
 	var out []driver.Session
 	for _, s := range sessions {
-		if s.PoolGen != "" && s.Repo == repo {
+		if s.PoolGen != "" && s.Repo == repo && (mine == nil || mine(s)) {
 			out = append(out, s)
 		}
 	}

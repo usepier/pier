@@ -1,14 +1,19 @@
 package pier
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/internal/tombstone"
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 // A failed create used to vanish without trace: the instance rolled itself
@@ -110,5 +115,131 @@ func TestConnectingScreenKeepsTheExitStatus(t *testing.T) {
 	out, err := ConnectingScreen(exec.Command("echo", "hi"), "demo", true).Output()
 	if err != nil || !strings.Contains(string(out), "connecting to demo") || !strings.Contains(string(out), "hi") {
 		t.Errorf("want the connecting line then the command's output, got %q %v", out, err)
+	}
+}
+
+// A beacon from a current supervisor carries load, port owners and the
+// park countdown; one from an older supervisor carries none of it and
+// leaves them zero.
+func TestBeaconCarriesLoadAndCountdown(t *testing.T) {
+	var b beacon
+	in := `{"state":"idle","res":{"cpu":34.5,"cpus":2,"mem_used":1288490188,"mem_total":4294967296,"disk_used":12884901888,"disk_total":42949672960,"load1":0.5},
+		"ports":[{"port":3000,"process":"node","pid":12}],"park_at":"2026-10-08T12:12:00Z"}`
+	if err := json.Unmarshal([]byte(in), &b); err != nil {
+		t.Fatal(err)
+	}
+	var s Session
+	b.apply(&s)
+	if s.Res == nil || s.Res.CPU != 34.5 || len(s.Ports) != 1 || s.Ports[0].Process != "node" {
+		t.Fatalf("session = %+v", s)
+	}
+	now, _ := time.Parse(time.RFC3339, "2026-10-08T12:00:00Z")
+	if got := Countdown(s, now); got != "parks in 12m" {
+		t.Errorf("Countdown = %q", got)
+	}
+	if got := Load(s); got != "cpu 34% · mem 1.2/4.0 GiB · disk 12/40 GiB" && got != "cpu 35% · mem 1.2/4.0 GiB · disk 12/40 GiB" {
+		t.Errorf("Load = %q", got)
+	}
+	var old beacon
+	json.Unmarshal([]byte(`{"state":"idle"}`), &old)
+	var s2 Session
+	old.apply(&s2)
+	if s2.Res != nil || Countdown(s2, now) != "" || Load(s2) != "" {
+		t.Error("an older beacon carries no load or countdown")
+	}
+}
+
+func TestChatSpec(t *testing.T) {
+	sp, err := chatSpec(&ChatRequest{Agent: "claude", Mode: "plan", Prompt: &wire.ChatPrompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sp.ID == "" || sp.PromptID == "" || sp.ID == sp.PromptID || sp.Prompt != "hi" || sp.Mode != "plan" {
+		t.Errorf("spec = %+v", sp)
+	}
+	if sp, _ := chatSpec(&ChatRequest{Agent: "codex"}); sp.Prompt != "" || sp.PromptID != "" {
+		t.Error("no prompt, no prompt id")
+	}
+	if _, err := chatSpec(&ChatRequest{Agent: "other"}); err == nil {
+		t.Error("unknown agents are refused")
+	}
+	if _, err := chatSpec(&ChatRequest{Agent: "codex", Mode: "acceptEdits"}); err == nil {
+		t.Error("a mode the agent doesn't have is refused")
+	}
+}
+
+func TestBeaconCarriesTheChats(t *testing.T) {
+	var b beacon
+	json.Unmarshal([]byte(`{"state":"working","chats":[{"id":"c1","agent":"claude","title":"Fix login","state":"waiting","waiting":"permission","ask":"rm -rf build","queued":1}]}`), &b)
+	var s Session
+	b.apply(&s)
+	if len(s.Chats) != 1 || s.Chats[0].State != "waiting" || s.Chats[0].Waiting != "permission" || s.Chats[0].Queued != 1 || s.Chats[0].Ask != "rm -rf build" {
+		t.Errorf("chats = %+v", s.Chats)
+	}
+}
+
+type renamer struct {
+	driver.Driver
+	got [][3]string
+}
+
+func (r *renamer) Rename(_ context.Context, id, name, branch string) error {
+	r.got = append(r.got, [3]string{id, name, branch})
+	return nil
+}
+
+// A session that named its branch after its first prompt takes the
+// branch's name, unless another session has it.
+func TestRelabelFollowsTheSessionsBranch(t *testing.T) {
+	r := &renamer{}
+	c := &Client{drv: r}
+	sessions := []Session{
+		{ID: "i-1", Name: "oslo", Branch: "oslo"},
+		{ID: "i-2", Name: "fix-login", Branch: "fix-login"},
+		{ID: "i-3", Name: "kyoto", Branch: "kyoto"},
+	}
+	c.relabel(context.Background(), sessions, []string{"fix-login", "", "kyoto"})
+	if len(r.got) != 1 || r.got[0] != [3]string{"i-1", "fix-login-2", "fix-login"} {
+		t.Errorf("relabels = %v", r.got)
+	}
+	if sessions[0].Name != "fix-login-2" || sessions[0].Branch != "fix-login" || sessions[2].Name != "kyoto" {
+		t.Errorf("sessions = %+v", sessions)
+	}
+}
+
+// The machine a bake runs on is listed like a session, but it is no one's:
+// neither a session nor pool inventory, and its "bake" isn't a repo.
+func TestBakeMachineIsNoSession(t *testing.T) {
+	all := []Session{
+		{ID: "i-1", Name: "fix", Repo: "shop", State: driver.StateRunning},
+		{ID: "i-2", Name: "bake", Repo: "bake", Branch: "bake", State: driver.StateRunning},
+	}
+	sessions, pooled := SplitPool(all)
+	if len(sessions) != 1 || sessions[0].ID != "i-1" || len(pooled) != 0 {
+		t.Errorf("sessions = %v, pooled = %v", sessions, pooled)
+	}
+	c := &Client{cfg: config.Default()}
+	for _, r := range c.ReposFor(all, nil) {
+		if r.Name == "bake" {
+			t.Error("the bake machine made a repo of its own")
+		}
+	}
+}
+
+// A branch the agent started and pushed is followed too: a session named
+// after its branch takes the new name, one with a name of its own keeps
+// it, and the branch the session came off is never taken for its own.
+func TestRelabelFollowsAPushedBranch(t *testing.T) {
+	r := &renamer{}
+	c := &Client{drv: r}
+	sessions := []Session{
+		{ID: "i-1", Name: "fix-login", Branch: "fix-login", Base: "main"},
+		{ID: "i-2", Name: "my-work", Branch: "fix-auth", Base: "main"},
+		{ID: "i-3", Name: "docs", Branch: "docs", Base: "main"},
+	}
+	c.relabel(context.Background(), sessions, []string{"kur-12-fix-login", "kur-13-fix-auth", "main"})
+	want := [][3]string{{"i-1", "kur-12-fix-login", "kur-12-fix-login"}, {"i-2", "my-work", "kur-13-fix-auth"}}
+	if !slices.Equal(r.got, want) {
+		t.Errorf("relabels = %v", r.got)
 	}
 }

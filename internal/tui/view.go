@@ -86,11 +86,11 @@ func (m model) header() string {
 	if m.loaded {
 		running, parked, hourly := 0, 0, 0.0
 		for _, s := range m.sessions {
-			switch s.State {
-			case pier.StateRunning, pier.StateWorking, pier.StateIdle, pier.StateCreating:
+			switch {
+			case s.State == pier.StateCreating || pier.Running(s):
 				running++
 				hourly += pier.HourlyUSD(s)
-			case pier.StateParked:
+			case s.State == pier.StateParked:
 				parked++
 			}
 		}
@@ -154,7 +154,7 @@ func (m model) sessionList(w, h int) string {
 	}
 	var lines []string
 	switch {
-	case m.authRequired:
+	case m.authErr != nil:
 		lines = []string{"", sWarn.Render("your cloud login expired"), sDim.Render("press enter to sign in again")}
 	case !m.loaded:
 		lines = []string{"", sDim.Render("fetching sessions…")}
@@ -211,7 +211,7 @@ func scrollStart(cursor, n, rows int) int {
 
 func (m model) sessionDetail(w, h int) string {
 	s, ok := m.current()
-	if !ok || m.authRequired {
+	if !ok || m.authErr != nil {
 		return panel("Details", "", nil, w, h, false)
 	}
 	_, word := badge(s, m.frame)
@@ -229,6 +229,12 @@ func (m model) sessionDetail(w, h int) string {
 		lines = append(lines, field("machine", machine))
 	}
 	lines = append(lines, field("created", ago(s.Created)))
+	if l := pier.Load(s); l != "" {
+		lines = append(lines, field("load", l))
+	}
+	if c := pier.Countdown(s, time.Now()); c != "" {
+		lines = append(lines, field("idle", c))
+	}
 	switch s.Setup {
 	case "running":
 		lines = append(lines, field("setup", sAccent.Render("running")+sDim.Render(" — l follows it")))
@@ -560,16 +566,16 @@ func (m model) footer() string {
 		k = []string{"↑↓", "choose", "enter", "select", "esc", "cancel"}
 	case m.ov == ovHelp:
 		k = []string{"any key", "close"}
-	case m.authRequired:
+	case m.authErr != nil:
 		k = []string{"enter", "sign in", "q", "quit"}
 	case m.tab == tabSessions:
-		k = []string{"enter", "attach", "n", "new", "l", "logs", "m", "resize", "p", "keep", "d", "delete", "tab", "repos"}
+		k = []string{"enter", "attach", "c", "chats", "n", "new", "l", "logs", "m", "resize", "p", "keep", "d", "delete", "tab", "repos"}
 	case m.tab == tabRepos:
 		k = []string{"b", "bake", "+/-", "pool size", "f", "fill", "x", "drain", "tab", "settings"}
 	default:
 		k = []string{"enter", "change", "↑↓", "move", "tab", "sessions"}
 	}
-	if m.ov == ovNone && !m.authRequired && (m.attaching == "" || m.attachStep == stepHanded) {
+	if m.ov == ovNone && m.authErr == nil && (m.attaching == "" || m.attachStep == stepHanded) {
 		k = append(k, "?", "help", "q", "quit")
 	}
 	return fit(status, m.width) + "\n" + fitKeys(k, m.width-1)
@@ -660,6 +666,7 @@ func (m model) helpView() string {
 		"",
 		sec("Sessions"),
 		row("enter", "attach — a parked session resumes with tmux restored"),
+		row("c", "attach to the session's chats window"),
 		row("n", "new session from this repo (runs in the background)"),
 		row("l", "setup log, live"),
 		row("m", "resize the VM"),

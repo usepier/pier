@@ -2,6 +2,7 @@ package gcpgce
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,6 +121,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 
 	return &driver.Session{
 		ID: id, Name: spec.Name, Repo: filepath.Base(spec.Repo), Branch: spec.Branch,
+		Origin: payload.RepoOrigin(spec.Repo), Base: payload.BaseBranch(spec.Repo, spec.BaseRef),
 		User: me, Driver: d.Name(), State: driver.StateRunning, Created: time.Now(),
 		InstanceType: d.MachineType,
 		CostNote:     costNote(driver.StateRunning, d.MachineType),
@@ -139,6 +141,10 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, id, pub
 		MetaRepo + "=" + filepath.Base(spec.Repo),
 		MetaBranch + "=" + spec.Branch,
 		MetaUser + "=" + me,
+		// Both are charset-checked (CanonicalOrigin, branch names), so the
+		// comma join stays safe; empty values are harmless.
+		MetaOrigin + "=" + payload.RepoOrigin(spec.Repo),
+		MetaBase + "=" + payload.BaseBranch(spec.Repo, spec.BaseRef),
 	}, ",")
 	labels := LabelManaged + "=1," + LabelUser + "=" + labelValue(me)
 	if spec.PoolGen != "" {
@@ -163,7 +169,7 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, id, pub
 			"--image-project", stockImageProject)
 	}
 	_, err := d.gcloud(ctx, args...)
-	if err != nil && strings.Contains(strings.ToUpper(err.Error()), "QUOTA") {
+	if errors.Is(err, driver.ErrQuota) {
 		return fmt.Errorf("CPU quota exceeded in %s — request a raise in the console (IAM & Admin → Quotas, metric CPUs, region %s)\n(%w)",
 			regionOf(d.Zone), regionOf(d.Zone), err)
 	}

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/usepier/pier/internal/config"
+	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/internal/ui"
 	"github.com/usepier/pier/pkg/pier"
 )
@@ -28,6 +30,7 @@ type fake struct {
 	ready    map[string]int
 	setErr   error
 	enriched [][]pier.Session // what each status read was given
+	sweeps   int              // stray sweeps run
 }
 
 func newFake() *fake {
@@ -52,8 +55,13 @@ func newFake() *fake {
 }
 
 func (f *fake) Cloud() string { return "AWS eu-central-1" }
+func (f *fake) Stale() bool   { return false }
 func (f *fake) ListSessions(context.Context) ([]pier.Session, error) {
 	return f.sessions, nil
+}
+func (f *fake) Sweep(_ context.Context, s []pier.Session) []pier.Session {
+	f.sweeps++
+	return s
 }
 func (f *fake) Enrich(_ context.Context, s []pier.Session) []pier.Session {
 	f.enriched = append(f.enriched, append([]pier.Session(nil), s...))
@@ -72,9 +80,12 @@ func (f *fake) Keep(_ context.Context, s pier.Session) error {
 	return nil
 }
 func (f *fake) Resume(context.Context, pier.Session) error         { return nil }
-func (f *fake) Resize(context.Context, pier.Session, string) error { return nil }
+func (f *fake) StartResize(pier.Session, string) (pier.Job, error) { return pier.Job{}, nil }
 func (f *fake) Machines(pier.Session) []pier.Machine {
 	return []pier.Machine{{Type: "t4g.medium", CPU: "2", Mem: "4", Cost: "~$0.03/h"}, {Type: "t4g.xlarge", CPU: "4", Mem: "16", Cost: "~$0.13/h"}}
+}
+func (f *fake) ChatWindow(context.Context, pier.Session, string, bool) (string, error) {
+	return "@9", nil
 }
 func (f *fake) Attach(context.Context, pier.Session) (*exec.Cmd, func(), error) {
 	return exec.Command("true"), func() {}, nil
@@ -115,12 +126,15 @@ func (f *fake) Set(key, val string) error {
 	return config.Set(&f.cfg, key, val)
 }
 func (f *fake) MachineCatalog(string) []pier.Machine { return f.Machines(pier.Session{}) }
-func (f *fake) ReauthCommand() *exec.Cmd             { return exec.Command("true") }
+func (f *fake) ReauthCommand(error) *exec.Cmd        { return exec.Command("true") }
 func (f *fake) DiskMonthlyUSD() float64              { return 7.6 }
 
 // loaded returns a model that has received its first list at w×h.
 func loaded(t *testing.T, f *fake, w, h int) model {
 	t.Helper()
+	// What pier keeps under the home folder (a bake running, jobs) is this
+	// test's own, not the machine's.
+	t.Setenv("HOME", t.TempDir())
 	m := newModel(Options{Open: func() (Backend, error) { return f, nil }, RepoRoot: "/code/flb-estimation", Version: "test"}, f)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	m = next.(model)
@@ -358,10 +372,15 @@ func TestLogViewerSanitizesAndFollows(t *testing.T) {
 
 func TestAuthExpiryOffersSignIn(t *testing.T) {
 	m := loaded(t, newFake(), 120, 30)
-	next, _ := m.Update(sessionsMsg{err: errors.New("aws sts get-caller-identity: Your session has expired. Please reauthenticate using 'aws login'.")})
+	expired := &driver.LoginError{Login: []string{"aws", "login"}, Err: errors.New("aws sts get-caller-identity: Your session has expired. Please reauthenticate using 'aws login'.")}
+	next, _ := m.Update(sessionsMsg{err: fmt.Errorf("listing: %w", expired)})
 	m = next.(model)
-	if !m.authRequired || !strings.Contains(m.View(), "sign in") {
+	if m.authErr == nil || !strings.Contains(m.View(), "sign in") {
 		t.Error("an expired login must offer to sign in again")
+	}
+	next, _ = loaded(t, newFake(), 120, 30).Update(sessionsMsg{err: errors.New("aws ec2 describe-instances: access denied")})
+	if next.(model).authErr != nil {
+		t.Error("only login errors offer a sign-in")
 	}
 }
 
@@ -489,13 +508,14 @@ func TestAccentColorSetting(t *testing.T) {
 	f := newFake()
 	m := loaded(t, f, 120, 40)
 	m, _ = press(t, m, "s")
-	if !strings.Contains(m.View(), "Appearance") {
-		t.Fatal("settings must have the Appearance group")
-	}
 	for i, s := range m.settings {
 		if s.Key == "theme" {
 			m.setIdx = i
 		}
+	}
+	// The list scrolls to the selected setting.
+	if !strings.Contains(m.View(), "Appearance") {
+		t.Fatal("settings must have the Appearance group")
 	}
 	m, _ = press(t, m, "enter")
 	if m.ov != ovPick || len(m.pickOpts) != len(ui.ThemeNames) {
@@ -576,5 +596,30 @@ wait:
 	}
 	if got := f.enriched[0][0]; got.State != pier.StateRunning || got.Setup != "" {
 		t.Errorf("the status read must get the cloud's list, got %s/%q", got.State, got.Setup)
+	}
+}
+
+// Refreshing must not double as a cleanup pass: the stray sweep destroys
+// instances, so it runs on the first load and then at most every sweepEvery.
+func TestSweepIsThrottled(t *testing.T) {
+	f := newFake()
+	m := loaded(t, f, 120, 30)
+	next, _ := m.Update(m.fetch())
+	m = next.(model)
+	if f.sweeps != 1 {
+		t.Fatalf("the first fetch must sweep once, swept %d times", f.sweeps)
+	}
+	for range 3 {
+		next, _ := m.Update(m.fetch())
+		m = next.(model)
+	}
+	if f.sweeps != 1 {
+		t.Errorf("refreshes inside sweepEvery must not sweep, swept %d times", f.sweeps)
+	}
+	m.sweptAt = time.Now().Add(-sweepEvery)
+	next, _ = m.Update(m.fetch())
+	m = next.(model)
+	if f.sweeps != 2 || time.Since(m.sweptAt) > time.Minute {
+		t.Errorf("a refresh after sweepEvery must sweep and restart the clock, swept %d times", f.sweeps)
 	}
 }

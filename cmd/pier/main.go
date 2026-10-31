@@ -6,30 +6,14 @@
 package main
 
 import (
-	"bufio"
-	"context"
 	"embed"
-	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
-	"log"
 	"os"
-	"os/signal"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"syscall"
-	"text/tabwriter"
 	"time"
 
-	"github.com/usepier/pier/internal/config"
-	"github.com/usepier/pier/internal/proxy"
-	"github.com/usepier/pier/internal/tombstone"
 	"github.com/usepier/pier/internal/tui"
 	"github.com/usepier/pier/internal/ui"
-	"github.com/usepier/pier/internal/wizard"
 	"github.com/usepier/pier/pkg/pier"
 )
 
@@ -72,16 +56,26 @@ var helpSections = []helpSection{
 	{
 		title: "Sessions",
 		items: []helpItem{
-			{"pier <branch> [base]", "new session off base (default HEAD), then attach"},
+			{"pier <branch> [base]", "new session off base (default origin's main branch; HEAD: this clone as it is), then attach"},
+			{"pier new <branch> [base]", "the same, for a branch named like a command (new, ls, ...)"},
+			{"pier new -p <prompt>", "a session with a stand-in name; its branch is named after the prompt"},
 			{"  -d, --detach", "create without attaching"},
 			{"  --idle <dur|never>", "park after this much idle time (default from settings)"},
 			{"  --cap <dur|never>", "runaway cap for this session"},
 			{"  --no-park", "never park this session when idle"},
 			{"  --no-pool", "launch fresh instead of claiming a pooled session"},
+			{"  --agent <claude|codex>", "start a chat with this agent (default: your default agent)"},
+			{"  -p, --prompt <text>", "the chat's first prompt, sent once setup is done"},
+			{"  --model <model>", "the chat's model"},
+			{"  --effort <level>", "how hard it thinks"},
+			{"  --permission-mode <mode>", "what it does without asking"},
+			{"  --fast", "the chat's fast mode: faster output from the same model"},
 			{"pier ls [--json]", "list sessions"},
-			{"pier attach <session>", "attach; a parked session resumes with its tmux restored"},
+			{"pier attach [-a] <session>", "attach; a parked session resumes with its tmux restored (-a: its chats window)"},
+			{"  -a, --agent", "open on the session's chats, live (t continues one in the terminal)"},
 			{"pier logs <session> [-f]", "show or follow the setup log"},
 			{"pier keep <session>", "never park this session when idle"},
+			{"pier park <session>", "park a session now (attach wakes it)"},
 			{"pier resize <session> <type>", "change the VM size (same CPU architecture)"},
 			{"pier rm <session> [-f]", "destroy a session and its disk"},
 		},
@@ -102,7 +96,7 @@ var helpSections = []helpSection{
 	{
 		title: "Access",
 		items: []helpItem{
-			{"pier proxy", "sessions as <session>.pier, ports mirrored to localhost (macOS)"},
+			{"pier proxy", "sessions as <session>.pier, ports mirrored to localhost (macOS); start | stop | status in the background, forget to undo its setup"},
 			{"pier port <session> <port...>", "forward ports by hand (8080:3000 = local:session)"},
 		},
 	},
@@ -112,7 +106,7 @@ var helpSections = []helpSection{
 			{"pier setup", "first-time setup (re-run any time)"},
 			{"  --print-admin", "print the account setup for a cloud admin to run"},
 			{"  --skills", "only install or refresh the bundled agent skills"},
-			{"pier doctor", "check the environment and cloud account"},
+			{"pier doctor [--json]", "check the environment and cloud account"},
 			{"pier teardown", "remove all pier groundwork and images from the account"},
 			{"pier version", "print the pier version"},
 		},
@@ -120,12 +114,17 @@ var helpSections = []helpSection{
 }
 
 func main() {
-	args := os.Args[1:]
+	args := takeEventsFlag(os.Args[1:])
+	defer jobEvents.Finish(nil, "")
 	if len(args) == 0 {
 		cmdTUI()
 		return
 	}
 	switch args[0] {
+	case "api":
+		cmdAPI(args[1:])
+	case "new":
+		cmdNew(args[1:])
 	case "ls":
 		cmdLS(args[1:])
 	case "attach":
@@ -133,13 +132,17 @@ func main() {
 	case "logs":
 		cmdLogs(args[1:])
 	case "proxy":
-		cmdProxy()
+		cmdProxy(args[1:])
 	case "port":
 		cmdPort(args[1:])
 	case "rm":
 		cmdRM(args[1:])
 	case "keep":
 		cmdKeep(args[1:])
+	case "park":
+		cmdPark(args[1:])
+	case "deliver":
+		cmdDeliver(args[1:]) // hidden: the background half of sending to a parked session
 	case "resize":
 		cmdResize(args[1:])
 	case "repos":
@@ -151,7 +154,7 @@ func main() {
 	case "setup":
 		cmdSetup(args[1:])
 	case "doctor":
-		cmdDoctor()
+		cmdDoctor(len(os.Args) > 2 && os.Args[2] == "--json")
 	case "teardown":
 		cmdTeardown()
 	case "version", "-v", "--version":
@@ -181,7 +184,30 @@ func printUsage() {
 
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, ui.Bad.Render("pier:"), err)
+	jobEvents.Finish(err, "")
 	os.Exit(1)
+}
+
+// jobEvents is set when this process runs as a background job (the hidden
+// --events flag a frontend's Start* adds): progress also lands there as
+// JSON lines, ending in a done or failed event.
+var jobEvents *pier.EventLog
+
+// takeEventsFlag removes `--events <path>` from args, opening the event
+// file it names.
+func takeEventsFlag(args []string) []string {
+	out := args[:0:0]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--events" && i+1 < len(args) {
+			if l, err := pier.OpenEventLog(args[i+1]); err == nil {
+				jobEvents = l
+			}
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
 }
 
 func open() *pier.Client {
@@ -204,6 +230,7 @@ func repoRoot() string {
 // progress renders API events as the CLI's step lines, each with the time
 // since the operation began.
 func progress(e pier.Event) {
+	jobEvents.Write(e)
 	elapsed := ui.Dim.Render(fmt.Sprintf("  +%s", e.Elapsed.Round(time.Second)))
 	switch e.Kind {
 	case pier.EventWarn:
@@ -215,161 +242,12 @@ func progress(e pier.Event) {
 	}
 }
 
-func stepLine(msg string) { fmt.Println(ui.Step(msg)) }
+func stepLine(msg string) {
+	jobEvents.Write(pier.Event{Kind: pier.EventStep, Message: msg})
+	fmt.Println(ui.Step(msg))
+}
 
 // --- new session ---------------------------------------------------------------
-
-func cmdNew(args []string) {
-	// Split positionals from flags so `pier my-branch -d` works (Go's flag
-	// package stops at the first positional).
-	takesValue := map[string]bool{"-idle": true, "--idle": true, "-cap": true, "--cap": true}
-	var pos, flagArgs []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if strings.HasPrefix(a, "-") {
-			flagArgs = append(flagArgs, a)
-			if takesValue[a] && i+1 < len(args) {
-				i++
-				flagArgs = append(flagArgs, args[i])
-			}
-		} else {
-			pos = append(pos, a)
-		}
-	}
-	fs := flag.NewFlagSet("new", flag.ExitOnError)
-	var detach, noPark, noPool bool
-	fs.BoolVar(&detach, "d", false, "")
-	fs.BoolVar(&detach, "detach", false, "")
-	fs.BoolVar(&noPark, "no-park", false, "")
-	fs.BoolVar(&noPool, "no-pool", false, "")
-	idleS := fs.String("idle", "", "")
-	capS := fs.String("cap", "", "")
-	fs.Parse(flagArgs)
-	if len(pos) < 1 || len(pos) > 2 {
-		printUsage()
-		os.Exit(1)
-	}
-	req := pier.CreateRequest{Branch: pos[0], NoPool: noPool, Progress: progress}
-	if len(pos) == 2 {
-		req.Base = pos[1]
-	}
-	if *idleS != "" || noPark {
-		d, err := config.ParkDuration(*idleS)
-		if err != nil {
-			fatal(fmt.Errorf("--idle: %w", err))
-		}
-		if noPark {
-			d = 0
-		}
-		req.Idle = &d
-	}
-	if *capS != "" {
-		d, err := config.ParkDuration(*capS)
-		if err != nil {
-			fatal(fmt.Errorf("--cap: %w", err))
-		}
-		req.Cap = &d
-	}
-
-	c := open()
-	req.RepoRoot = repoRoot()
-	base := req.Base
-	if base == "" {
-		base = "HEAD"
-	}
-	fmt.Printf("%s %s\n", ui.Bold.Render("creating "+req.Branch),
-		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(req.RepoRoot), base)))
-	// ctrl-c mid-create must cancel the ctx (not just kill the process) so
-	// the create's cleanup can terminate the half-made instance.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	res, err := c.Create(ctx, req)
-	if err != nil {
-		fatal(err)
-	}
-	stop() // create done — ctrl-c back to its default for the prompt + attach
-	switch {
-	case res.FillErr != nil:
-		fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(" pool refill didn't start: "+res.FillErr.Error()))
-	case res.FillLog != "":
-		fmt.Println(ui.Dim.Render("refilling the pool in the background — log: " + ui.Tilde(res.FillLog)))
-	}
-	sess := res.Session
-	fmt.Println(ui.OK.Render("session " + sess.Name + " ready"))
-	showReminders(c, req.RepoRoot)
-	if detach {
-		fmt.Println(ui.Dim.Render("attach with: pier attach " + sess.Name))
-		return
-	}
-	attach(c, sess)
-}
-
-// showReminders prints rebake guidance after a create — at most once a day
-// per repo, so it informs without nagging. The Repos tab always shows it.
-func showReminders(c *pier.Client, repoRoot string) {
-	rs := c.Reminders(repoRoot)
-	if len(rs) == 0 || !remindDue(filepath.Base(repoRoot)) {
-		return
-	}
-	for _, r := range rs {
-		fmt.Println(ui.Accent.Render("  tip") + " " + r.Message + ui.Dim.Render(" `"+r.Action+"`"))
-	}
-}
-
-// remindDue reports whether repo's reminders haven't been shown in the last
-// day, and records that they're being shown now.
-func remindDue(repo string) bool {
-	path := filepath.Join(config.Dir(), "reminded.json")
-	seen := map[string]time.Time{}
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &seen)
-	}
-	if time.Since(seen[repo]) < 24*time.Hour {
-		return false
-	}
-	seen[repo] = time.Now()
-	if b, err := json.Marshal(seen); err == nil {
-		_ = os.WriteFile(path, b, 0o600)
-	}
-	return true
-}
-
-func stdinIsTTY() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
-
-// attach runs the interactive ssh+tmux in the foreground. A fresh or
-// just-resumed VM reports cloud-running before its transport answers, so an
-// ssh attempt that dies instantly gets one bounded wait-for-reachability and
-// a retry instead of a raw transport error dump.
-func attach(c *pier.Client, s pier.Session) {
-	fmt.Println(ui.Dim.Render("attaching — detach with C-b d (the session keeps running)"))
-	retried := false
-	for {
-		cmd, stopCompanion, err := c.Attach(context.Background(), s)
-		if err != nil {
-			fatal(err)
-		}
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-		cmd = pier.ConnectingScreen(cmd, s.Name, true)
-		start := time.Now()
-		runErr := cmd.Run()
-		stopCompanion()
-		if runErr == nil {
-			return
-		}
-		if retried || !pier.RetryAttach(runErr, time.Since(start)) {
-			fmt.Fprintln(os.Stderr, ui.Bad.Render("pier:"), "attach:", runErr)
-			return
-		}
-		retried = true
-		fmt.Println(ui.Dim.Render("not reachable yet — waiting for the session to come online (fresh VMs take ~30-60s)"))
-		if err := c.WaitReachable(context.Background(), s, 4*time.Minute); err != nil {
-			fatal(err)
-		}
-	}
-}
 
 // --- sessions ---------------------------------------------------------------------
 
@@ -378,6 +256,8 @@ type sessionJSON struct {
 	Name        string     `json:"name"`
 	Repository  string     `json:"repository"`
 	Branch      string     `json:"branch"`
+	Origin      string     `json:"origin"`
+	Base        string     `json:"base"`
 	Owner       string     `json:"owner"`
 	Provider    string     `json:"provider"`
 	State       pier.State `json:"state"`
@@ -386,306 +266,6 @@ type sessionJSON struct {
 	CreatedAt   *time.Time `json:"created_at"`
 	MachineType string     `json:"machine_type"`
 	CostNote    string     `json:"cost_note"`
-}
-
-func parseLSArgs(args []string) (bool, error) {
-	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	jsonOutput := fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil {
-		return false, err
-	}
-	if fs.NArg() != 0 {
-		return false, fmt.Errorf("usage: pier ls [--json]")
-	}
-	return *jsonOutput, nil
-}
-
-func writeSessionsJSON(w io.Writer, sessions []pier.Session) error {
-	items := make([]sessionJSON, 0, len(sessions))
-	for _, s := range sessions {
-		var createdAt *time.Time
-		if !s.Created.IsZero() {
-			created := s.Created.UTC()
-			createdAt = &created
-		}
-		items = append(items, sessionJSON{
-			ID: s.ID, Name: s.Name, Repository: s.Repo, Branch: s.Branch,
-			Owner: s.User, Provider: s.Driver, State: s.State,
-			SetupState: s.Setup, Strained: s.Strained, CreatedAt: createdAt,
-			MachineType: s.InstanceType, CostNote: s.CostNote,
-		})
-	}
-	return json.NewEncoder(w).Encode(items)
-}
-
-func cmdLS(args []string) {
-	jsonOutput, err := parseLSArgs(args)
-	if err != nil {
-		fatal(err)
-	}
-	c := open()
-	all, err := c.Sessions(context.Background())
-	if err != nil {
-		fatal(err)
-	}
-	// Pooled sessions are inventory, not sessions: kept out of the JSON
-	// entirely, and one dim summary line below the table instead of rows.
-	sessions, pooled := pier.SplitPool(all)
-	poolLine := ""
-	if ready, filling := pier.PoolCounts(pooled); ready+filling > 0 {
-		var parts []string
-		if ready > 0 {
-			parts = append(parts, fmt.Sprintf("%d pooled session(s) ready to claim", ready))
-		}
-		if filling > 0 {
-			parts = append(parts, fmt.Sprintf("%d being set up", filling))
-		}
-		poolLine = ui.Dim.Render("+ " + strings.Join(parts, ", ") + " — `pier pool`")
-	}
-	if jsonOutput {
-		if err := writeSessionsJSON(os.Stdout, sessions); err != nil {
-			fatal(err)
-		}
-		return
-	}
-	if len(sessions) == 0 {
-		fmt.Println(ui.Dim.Render("no sessions — start one with `pier <branch>`"))
-		if poolLine != "" {
-			fmt.Println(poolLine)
-		}
-		return
-	}
-	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
-	anyStrained, anySetupFailed, anyFailedCreate := false, false, false
-	now := time.Now()
-	for _, s := range sessions {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), pier.Age(s.Created, now), s.CostNote)
-		anyStrained = anyStrained || s.Strained
-		anySetupFailed = anySetupFailed || s.Setup == "failed"
-		anyFailedCreate = anyFailedCreate || s.State == pier.StateFailed
-	}
-	w.Flush()
-	if poolLine != "" {
-		fmt.Println(poolLine)
-	}
-	if anyFailedCreate {
-		fmt.Println("\n" + ui.Bad.Render("✗") + ui.Dim.Render(" create failed = the instance was rolled back, nothing is running — `pier rm <session>` clears the row"))
-		for _, s := range sessions {
-			if s.State != pier.StateFailed || s.FailReason == "" {
-				continue
-			}
-			fmt.Println(ui.Dim.Render("  " + s.Name + ": " + tombstone.Summarize(s.FailReason)))
-		}
-	}
-	if anyStrained {
-		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`"))
-	}
-	if anySetupFailed {
-		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" setup failed = the setup script exited nonzero — `pier logs <session>` shows why"))
-	}
-}
-
-// stateLabel renders the row's state plus the supervisor's strain and setup
-// flags.
-func stateLabel(s pier.Session) string {
-	l := pier.Label(s)
-	if s.Strained {
-		l += " (strained)"
-	}
-	switch s.Setup {
-	case "running":
-		l += " (setup running)"
-	case "failed":
-		l += " (setup failed)"
-	}
-	return l
-}
-
-func match(c *pier.Client, query string) pier.Session {
-	s, err := c.Match(context.Background(), query)
-	if err != nil {
-		fatal(err)
-	}
-	return s
-}
-
-func requireReady(s pier.Session) {
-	if err := pier.CheckReady(s); err != nil {
-		fatal(err)
-	}
-}
-
-func resumeIfParked(c *pier.Client, s pier.Session) {
-	if s.State == pier.StateParked {
-		fmt.Println(ui.Dim.Render("resuming " + s.Name + " (~20-60s)..."))
-		if err := c.Resume(context.Background(), s); err != nil {
-			fatal(err)
-		}
-	}
-}
-
-func cmdAttach(args []string) {
-	if len(args) != 1 {
-		fatal(fmt.Errorf("usage: pier attach <session>"))
-	}
-	c := open()
-	s := match(c, args[0])
-	requireReady(s)
-	resumeIfParked(c, s)
-	attach(c, s)
-}
-
-// cmdLogs prints the session's setup log without an attach — the first
-// question after "(setup failed)" is always "what broke". -f follows a
-// still-running setup live.
-func cmdLogs(args []string) {
-	follow := false
-	var rest []string
-	for _, a := range args {
-		if a == "-f" || a == "--follow" {
-			follow = true
-		} else {
-			rest = append(rest, a)
-		}
-	}
-	if len(rest) != 1 {
-		fatal(fmt.Errorf("usage: pier logs <session> [-f]"))
-	}
-	c := open()
-	s := match(c, rest[0])
-	if s.State != pier.StateFailed {
-		requireReady(s)
-		if s.State == pier.StateParked {
-			resumeIfParked(c, s)
-			if err := c.WaitReachable(context.Background(), s, 4*time.Minute); err != nil {
-				fatal(err)
-			}
-		}
-	}
-	if follow && s.State != pier.StateFailed {
-		cmd, err := c.FollowLogCommand(context.Background(), s)
-		if err != nil {
-			fatal(err)
-		}
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		_ = cmd.Run() // a followed log ends with ctrl-c; that interrupt is not an error
-		return
-	}
-	out, err := c.SetupLog(context.Background(), s, 0)
-	if err != nil {
-		fatal(fmt.Errorf("logs: %w", err))
-	}
-	fmt.Println(out)
-}
-
-// cmdProxy: `pier proxy` — every running session gets a hostname
-// (<session>.pier) with its listening ports mirrored automatically; live
-// connections keep the session from parking. Runs in the foreground until
-// ctrl-c.
-func cmdProxy() {
-	// net/http logs transport chatter ("Unsolicited response received...")
-	// through the global logger when probed ports answer oddly. All of the
-	// proxy's real output goes through Options.Out, so drop the rest.
-	log.SetOutput(io.Discard)
-	c := open()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := proxy.Run(ctx, c.Driver(), proxy.Options{StateDir: config.Dir(), Out: os.Stdout}); err != nil {
-		fatal(err)
-	}
-}
-
-// cmdPort: `pier port <session> <port> [port...]` — hold ssh -L forwards open
-// by hand. The zero-sudo, works-anywhere fallback to `pier proxy`.
-func cmdPort(args []string) {
-	if len(args) < 2 {
-		fatal(fmt.Errorf("usage: pier port <session> <port> [port...]   (3000, or local:session like 8080:3000)"))
-	}
-	c := open()
-	s := match(c, args[0])
-	var pairs [][2]int
-	for _, a := range args[1:] {
-		p, err := pier.ParsePortPair(a)
-		if err != nil {
-			fatal(err)
-		}
-		pairs = append(pairs, p)
-	}
-	resumeIfParked(c, s)
-	for _, p := range pairs {
-		fmt.Printf("  %s -> %s\n", ui.Bold.Render(fmt.Sprintf("localhost:%d", p[0])),
-			ui.Dim.Render(fmt.Sprintf("%s:%d", s.Name, p[1])))
-	}
-	fmt.Println(ui.Dim.Render("  forwarding — ctrl-c to stop"))
-	cmd, err := c.PortForwardCommand(context.Background(), s, pairs)
-	if err != nil {
-		fatal(err)
-	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		fatal(fmt.Errorf("port forward: %w", err))
-	}
-}
-
-func cmdRM(args []string) {
-	force := false
-	var names []string
-	for _, a := range args {
-		if a == "-f" || a == "--force" {
-			force = true
-		} else {
-			names = append(names, a)
-		}
-	}
-	if len(names) != 1 {
-		fatal(fmt.Errorf("usage: pier rm <session> [-f]"))
-	}
-	c := open()
-	s := match(c, names[0])
-	if s.State != pier.StateFailed && !force && !confirm(fmt.Sprintf("destroy session %q and its disk?", s.Name), false) {
-		return
-	}
-	if err := c.Remove(context.Background(), s); err != nil {
-		fatal(err)
-	}
-	if s.State == pier.StateFailed {
-		fmt.Println(ui.OK.Render("cleared failed create " + s.Name))
-		return
-	}
-	fmt.Println(ui.OK.Render("destroyed " + s.Name))
-}
-
-func cmdKeep(args []string) {
-	if len(args) != 1 {
-		fatal(fmt.Errorf("usage: pier keep <session>"))
-	}
-	c := open()
-	s := match(c, args[0])
-	if err := c.Keep(context.Background(), s); err != nil {
-		fatal(err)
-	}
-	fmt.Println(ui.OK.Render(s.Name+" pinned") + ui.Dim.Render(" — never parks when idle (the runaway cap still applies)"))
-}
-
-func cmdResize(args []string) {
-	if len(args) != 2 {
-		fatal(fmt.Errorf("usage: pier resize <session> <machine-type>"))
-	}
-	c := open()
-	s := match(c, args[0])
-	requireReady(s)
-	itype := args[1]
-	if s.State == pier.StateParked {
-		fmt.Printf("%s %s\n", ui.Bold.Render("resizing "+s.Name+" to "+itype), ui.Dim.Render("(parked — stays parked)"))
-	} else {
-		fmt.Printf("%s %s\n", ui.Bold.Render("resizing "+s.Name+" to "+itype), ui.Dim.Render("(parks, resizes, resumes ~1-2 min)"))
-	}
-	if err := c.Resize(context.Background(), s, itype); err != nil {
-		fatal(err)
-	}
-	fmt.Println(ui.OK.Render(s.Name + " is now a " + itype))
 }
 
 // --- repos ------------------------------------------------------------------------
@@ -702,356 +282,7 @@ type repoJSON struct {
 	Reminders  []pier.Reminder `json:"reminders"`
 }
 
-func cmdRepos(args []string) {
-	jsonOutput := len(args) > 0 && args[0] == "--json"
-	c := open()
-	sessions, err := c.Sessions(context.Background())
-	if err != nil {
-		fatal(err)
-	}
-	cur, _ := pier.RepoRoot("")
-	repos := c.Repos(sessions, cur)
-	if jsonOutput {
-		items := make([]repoJSON, 0, len(repos))
-		for _, r := range repos {
-			j := repoJSON{Name: r.Name, Image: r.Image, PoolSize: r.PoolSize, Ready: r.Ready,
-				Filling: r.Filling, Sessions: r.Sessions, MonthlyUSD: r.MonthlyUSD, Reminders: r.Reminders}
-			if r.Baked != nil {
-				t := r.Baked.BakedAt
-				j.BakedAt = &t
-			}
-			items = append(items, j)
-		}
-		if err := json.NewEncoder(os.Stdout).Encode(items); err != nil {
-			fatal(err)
-		}
-		return
-	}
-	if len(repos) == 0 {
-		fmt.Println(ui.Dim.Render("no repos yet — `pier <branch>` inside one starts a session"))
-		return
-	}
-	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "REPO\tIMAGE\tPOOL\tSESSIONS\tIDLE COST")
-	for _, r := range repos {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", r.Name, imageLabel(r), poolLabel(r), r.Sessions, money(r.MonthlyUSD))
-	}
-	w.Flush()
-	for _, r := range repos {
-		for _, rem := range r.Reminders {
-			fmt.Println(ui.Accent.Render("  tip") + " " + rem.Message + ui.Dim.Render(" `"+rem.Action+"`"))
-		}
-	}
-}
-
-func imageLabel(r pier.Repo) string {
-	switch {
-	case r.Image == "":
-		return "none"
-	case r.Baked == nil:
-		return "baked"
-	}
-	kind := "prebuilt"
-	if !r.Baked.RepoIncluded {
-		kind = "toolchains"
-	}
-	if a := pier.Age(r.Baked.BakedAt, time.Now()); a != "now" {
-		return kind + ", " + a + " old"
-	}
-	return kind + ", just baked"
-}
-
-func poolLabel(r pier.Repo) string {
-	if r.PoolSize == 0 && r.Ready == 0 && r.Filling == 0 {
-		return "off"
-	}
-	l := fmt.Sprintf("%d/%d", r.Ready, r.PoolSize)
-	if r.Filling > 0 {
-		l += fmt.Sprintf(" (+%d filling)", r.Filling)
-	}
-	return l
-}
-
-func money(usd float64) string {
-	if usd == 0 {
-		return "$0"
-	}
-	return fmt.Sprintf("~$%.0f/mo", usd)
-}
-
-func cmdBake(args []string) {
-	var include *bool
-	for _, a := range args {
-		switch a {
-		case "--finish":
-			// Hidden: a bake's background half, spawned by the bake itself.
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			if err := open().FinishBake(ctx, repoRoot(), progress); err != nil {
-				fatal(err)
-			}
-			return
-		case "--toolchain-only":
-			f := false
-			include = &f
-		case "--with-repo":
-			t := true
-			include = &t
-		default:
-			fatal(fmt.Errorf("usage: pier bake [--toolchain-only | --with-repo]"))
-		}
-	}
-	c := open()
-	root := repoRoot() // images are repo-specific: bake from inside the repo it serves
-	name := filepath.Base(root)
-	withRepo := c.Config().Speed.ImageRepo
-	if include != nil {
-		withRepo = *include
-	}
-	what := "harnesses ~5 min, then one full .pier/setup.sh run"
-	if !withRepo {
-		what = "harnesses and .pier/bake.sh toolchains, ~5 min"
-	}
-	fmt.Printf("%s %s\n", ui.Bold.Render("baking "+name), ui.Dim.Render("("+what+" on a temporary instance, then an image — ~$1-3/mo storage)"))
-	if withRepo {
-		stepLine("prebuilding from HEAD — the checkout and setup's artifacts go into the image; every secret pier pushed is scrubbed first")
-	}
-	// ctrl-c mid-bake must cancel the ctx (not just kill the process) so
-	// the bake's cleanup can terminate the temporary instance — it has no
-	// supervisor, so a leaked one never parks itself.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	res, err := c.Bake(ctx, pier.BakeRequest{RepoRoot: root, IncludeRepo: include, Progress: progress})
-	if err != nil {
-		fatal(err)
-	}
-	if res.FinishLog == "" {
-		// The finish couldn't go to the background and ran here instead.
-		fmt.Println(ui.OK.Render("baked "+res.Image) + ui.Dim.Render(" — new "+name+" sessions start from it"))
-		return
-	}
-	fmt.Println(ui.OK.Render("baked "+name) + ui.Dim.Render(" — image "+res.Image+" is being saved in the background; new sessions start from it once it's saved, and the pool fills from it then"))
-	fmt.Println(ui.Dim.Render("log: " + ui.Tilde(res.FinishLog)))
-}
-
-// cmdPool: this repo's pool — parked, setup-complete sessions `pier <branch>`
-// claims instead of launching. `pier pool` shows it; set/fill/drain change it.
-// Fills also happen by themselves after setup, every bake, every create and
-// every size change.
-func cmdPool(args []string) {
-	if len(args) == 0 {
-		poolStatus()
-		return
-	}
-	switch args[0] {
-	case "set":
-		if len(args) != 2 {
-			fatal(fmt.Errorf("usage: pier pool set <n>   (0-8; 0 turns the pool off and removes its sessions)"))
-		}
-		n, err := strconv.Atoi(args[1])
-		if err != nil || n < 0 || n > 8 {
-			fatal(fmt.Errorf("pool size: want a number 0-8 (got %q)", args[1]))
-		}
-		c := open()
-		root := repoRoot()
-		logPath, err := c.SetPoolSize(context.Background(), root, n, func(e pier.Event) { stepLine(e.Message) })
-		if err != nil {
-			fatal(err)
-		}
-		repo := filepath.Base(root)
-		if n == 0 {
-			fmt.Println(ui.OK.Render("pool off for " + repo))
-			return
-		}
-		fmt.Println(ui.OK.Render(fmt.Sprintf("pool size %d for %s", n, repo)) +
-			ui.Dim.Render(fmt.Sprintf(" — each pooled session ~$%.0f/mo parked (disk only)", c.DiskMonthlyUSD())))
-		fmt.Println(ui.Dim.Render("filling in the background — log: " + ui.Tilde(logPath)))
-	case "fill":
-		detach := len(args) > 1 && (args[1] == "-d" || args[1] == "--detach")
-		c := open()
-		root := repoRoot()
-		if c.Config().PoolSize(filepath.Base(root)) == 0 {
-			fatal(fmt.Errorf("no pool for %s — `pier pool set <n>` first", filepath.Base(root)))
-		}
-		if detach {
-			logPath, err := c.SpawnFill(root)
-			if err != nil {
-				fatal(err)
-			}
-			fmt.Println(ui.Dim.Render("filling in the background — log: " + ui.Tilde(logPath)))
-			return
-		}
-		// ctrl-c must cancel the ctx so a half-made member is terminated.
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		if err := c.FillPool(ctx, root, progress); err != nil {
-			fatal(err)
-		}
-	case "drain":
-		c := open()
-		repo := ""
-		if len(args) > 1 {
-			repo = args[1]
-		} else {
-			repo = filepath.Base(repoRoot())
-		}
-		n, err := c.DrainPool(context.Background(), repo, func(e pier.Event) { stepLine(e.Message) })
-		if err != nil {
-			fatal(err)
-		}
-		if n == 0 {
-			fmt.Println(ui.Dim.Render("no pooled sessions for " + repo))
-			return
-		}
-		fmt.Println(ui.OK.Render(fmt.Sprintf("drained %d pooled session(s) from %s", n, repo)))
-		if size := c.Config().PoolSize(repo); size > 0 {
-			fmt.Println(ui.Dim.Render(fmt.Sprintf("pool size for %s is still %d — the next create or `pier pool fill` refills it; `pier pool set 0` turns it off", repo, size)))
-		}
-	default:
-		fatal(fmt.Errorf("usage: pier pool [set <n> | fill [-d] | drain [repo]]"))
-	}
-}
-
-// poolStatus prints every repo's pool — this repo's first — with its cost.
-func poolStatus() {
-	c := open()
-	sessions, err := c.Sessions(context.Background())
-	if err != nil {
-		fatal(err)
-	}
-	cur, _ := pier.RepoRoot("")
-	any := false
-	for _, r := range c.Repos(sessions, cur) {
-		if r.PoolSize == 0 && r.Ready+r.Filling+r.Stale == 0 {
-			if r.Current {
-				fmt.Println(r.Name + ": no pool" + ui.Dim.Render(poolHint(r)))
-			}
-			continue
-		}
-		any = true
-		line := fmt.Sprintf("%s: %d/%d ready", r.Name, r.Ready, r.PoolSize)
-		if r.Filling > 0 {
-			line += fmt.Sprintf(", %d filling", r.Filling)
-		}
-		if r.Stale > 0 {
-			line += ui.Warn.Render(fmt.Sprintf(", %d stale", r.Stale)) + ui.Dim.Render(" (recycle on the next fill)")
-		}
-		if r.Ready+r.Filling > 0 {
-			line += ui.Dim.Render(fmt.Sprintf(" — ~$%.0f/mo parked", float64(r.Ready+r.Filling)*c.DiskMonthlyUSD()))
-		}
-		fmt.Println(line)
-	}
-	if !any && cur == "" {
-		fmt.Println(ui.Dim.Render("no pools — `pier pool set <n>` inside a repo keeps set-up sessions ready to claim"))
-	}
-}
-
-func poolHint(r pier.Repo) string {
-	if r.Image == "" {
-		return " — pools follow the speed settings for repos with a session image; `pier bake` first"
-	}
-	return " — `pier pool set <n>` keeps set-up sessions ready to claim"
-}
-
 // --- setup / doctor / teardown ------------------------------------------------------
-
-func cmdSetup(args []string) {
-	printAdmin := false
-	for _, a := range args {
-		switch a {
-		case "--print-admin":
-			printAdmin = true
-		case "--skills":
-			cmdSkills()
-			return
-		default:
-			fatal(fmt.Errorf("usage: pier setup [--print-admin | --skills]"))
-		}
-	}
-	if err := wizard.Run(options(), printAdmin); err != nil {
-		fatal(err)
-	}
-}
-
-// cmdSkills refreshes the bundled skills for every agent on the machine,
-// e.g. after a pier upgrade. Idempotent; a no-op prints as such.
-func cmdSkills() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fatal(err)
-	}
-	agents := wizard.AgentDirs(home)
-	if len(agents) == 0 {
-		fmt.Println(ui.Dim.Render("  no agent config found (~/.claude or ~/.codex) — nothing to install into"))
-		return
-	}
-	notes, err := wizard.InstallSkills(home, agents)
-	for _, n := range notes {
-		fmt.Println(n)
-	}
-	if err != nil {
-		fatal(err)
-	}
-}
-
-func cmdDoctor() {
-	cfg, cfgErr := config.Load()
-	if cfgErr != nil {
-		fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(" no config yet — checking with defaults (run `pier setup`)"))
-		cfg = config.Default()
-	}
-	c, err := pier.New(cfg, options())
-	if err != nil {
-		fatal(err)
-	}
-	var checks []pier.Check
-	if cfgErr == nil {
-		checks = c.Doctor(context.Background())
-	} else {
-		checks = c.Driver().Doctor(context.Background())
-	}
-	if !printChecks(checks) {
-		os.Exit(1)
-	}
-}
-
-func printChecks(checks []pier.Check) bool {
-	allOK := true
-	for _, c := range checks {
-		allOK = allOK && c.OK
-		line := "  " + ui.Mark(c.OK) + " " + c.Name
-		if c.Detail != "" {
-			line += ui.Dim.Render(" — " + c.Detail)
-		}
-		fmt.Println(line)
-	}
-	return allOK
-}
-
-func cmdTeardown() {
-	c := open()
-	if !confirm("remove all pier groundwork, images and pooled sessions from the account?", false) {
-		return
-	}
-	if err := c.Teardown(context.Background(), func(e pier.Event) { stepLine(e.Message) }); err != nil {
-		fatal(err)
-	}
-	fmt.Println(ui.OK.Render("groundwork removed — the account is clean"))
-}
-
-func confirm(prompt string, def bool) bool {
-	hint := "y/N"
-	if def {
-		hint = "Y/n"
-	}
-	fmt.Printf("%s [%s] ", prompt, hint)
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	line = strings.ToLower(strings.TrimSpace(line))
-	if line == "" {
-		return def
-	}
-	return line == "y" || line == "yes"
-}
 
 // --- app ----------------------------------------------------------------------------
 

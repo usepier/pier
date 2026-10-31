@@ -41,6 +41,29 @@ func TestGcloudErr(t *testing.T) {
 // The instance name is the session ID and a GCE resource name: it must stay
 // under 63 chars, never end in "-" before the hash, and differ per principal
 // so two devs on one project can hold the same session name.
+// An expired gcloud login reaches every caller as a LoginError carrying
+// `gcloud auth login`, so frontends can offer to run it.
+func TestGcloudFailureCarriesItsLogin(t *testing.T) {
+	d, _ := setupTestDriver(t, map[string]mockResponse{
+		"compute instances list": {Stderr: "ERROR: (gcloud.compute.instances.list) There was a problem refreshing your current auth tokens: Reauthentication failed. cannot prompt during non-interactive execution.\n", ExitCode: 1},
+	})
+	_, err := d.List(context.Background())
+	var le *driver.LoginError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected a LoginError, got %v", err)
+	}
+	if got := strings.Join(le.Login, " "); got != "gcloud auth login" {
+		t.Errorf("login = %q", got)
+	}
+
+	d, _ = setupTestDriver(t, map[string]mockResponse{
+		"compute instances list": {Stderr: "ERROR: (gcloud.compute.instances.list) Could not fetch resource: quota\n", ExitCode: 1},
+	})
+	if _, err := d.List(context.Background()); err == nil || errors.As(err, &le) {
+		t.Errorf("other failures are not login problems, got %v", err)
+	}
+}
+
 func TestInstanceName(t *testing.T) {
 	a := instanceName("fix-auth", "kerem@example.com")
 	b := instanceName("fix-auth", "other@example.com")
@@ -123,7 +146,7 @@ func TestAttachCommandFallsBackForUnknownTerminal(t *testing.T) {
 	// and happens before tmux starts.
 	gate := strings.Index(remote, `[ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]`)
 	wait := strings.Index(remote, `[ -e /run/pier/restored ] && break`)
-	exec := strings.Index(remote, "exec tmux new-session -A -s main")
+	exec := strings.Index(remote, "tmux has-session -t main")
 	if gate < 0 || wait < gate || exec < wait {
 		t.Errorf("attach must wait for the restore marker, gated, before tmux; got %q", remote)
 	}
@@ -293,7 +316,7 @@ func TestList(t *testing.T) {
 	// A mix of states
 	listJSON := `[
 		{"name": "pier-s1-111111", "status": "PROVISIONING", "labels": {"pier-user": "testuser-example-com"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s1"}]}},
-		{"name": "pier-s2-222222", "status": "RUNNING", "labels": {"pier-user": "testuser-example-com", "pier-ready": "1"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s2"}]}},
+		{"name": "pier-s2-222222", "status": "RUNNING", "labels": {"pier-user": "testuser-example-com", "pier-ready": "1"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s2"}, {"key": "pier-origin", "value": "github.com/o/r"}, {"key": "pier-base", "value": "main"}]}},
 		{"name": "pier-s3-333333", "status": "RUNNING", "labels": {"pier-user": "testuser-example-com", "pier-deleting": "1"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s3"}]}},
 		{"name": "pier-s4-444444", "status": "TERMINATED", "labels": {"pier-user": "testuser-example-com"}, "metadata": {"items": [{"key": "pier-user", "value": "testuser@example.com"}, {"key": "pier-session", "value": "s4"}]}}
 	]`
@@ -342,6 +365,9 @@ func TestList(t *testing.T) {
 	}
 	if states[3] != driver.StateParked {
 		t.Errorf("s4 should be parked, got %s", states[3])
+	}
+	if sessions[1].Origin != "github.com/o/r" || sessions[1].Base != "main" {
+		t.Errorf("s2 origin/base = %q/%q", sessions[1].Origin, sessions[1].Base)
 	}
 }
 
@@ -493,5 +519,34 @@ func TestLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(actions, "instances delete "+id+" --zone "+d.Zone) {
 		t.Errorf("destroy missing delete, got: %s", actions)
+	}
+}
+
+// Only images labeled with your identity are yours: a teammate's, or one
+// with no owner label at all, never are.
+func TestImagesAreOnlyYours(t *testing.T) {
+	me := labelValue("testuser@example.com")
+	d, _ := setupTestDriver(t, map[string]mockResponse{
+		"compute images list": {Stdout: `[
+ {"name":"pier-shop-mine","creationTimestamp":"2026-10-01T10:00:00Z","labels":{"pier-managed":"1","` + MetaRepo + `":"shop","` + LabelUser + `":"` + me + `"}},
+ {"name":"pier-shop-alice","creationTimestamp":"2026-10-02T10:00:00Z","labels":{"pier-managed":"1","` + MetaRepo + `":"shop","` + LabelUser + `":"alice-example-com"}},
+ {"name":"pier-legacy","creationTimestamp":"2026-10-03T10:00:00Z","labels":{"pier-managed":"1","` + MetaRepo + `":"legacy"}}]`},
+	})
+	imgs, err := d.Images(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 1 || imgs[0].ID != "pier-shop-mine" {
+		t.Errorf("images = %+v", imgs)
+	}
+}
+
+func TestQuotaError(t *testing.T) {
+	stderr := "ERROR: (gcloud.compute.instances.create) Could not fetch resource:\n - Quota 'CPUS' exceeded.  Limit: 24.0 in region us-central1."
+	if err := cloudError(stderr, errors.New("gcloud: x")); !errors.Is(err, driver.ErrQuota) || driver.ErrorCode(err) != "QUOTA_EXCEEDED" {
+		t.Errorf("quota = %v", err)
+	}
+	if err := cloudError("ERROR: (gcloud.compute.instances.describe) not found", errors.New("x")); errors.Is(err, driver.ErrQuota) {
+		t.Error("not found isn't a quota")
 	}
 }

@@ -1,0 +1,297 @@
+@import "tailwindcss";
+
+/* A modern Mac app: neutral grays that work in light and dark, one accent,
+   dense and quiet chrome. Everything clickable says so — a pointer cursor
+   and a hover state — and everything reads at a glance. The tokens keep
+   the names the components use (label, secondary, separator…), so the
+   palette lives here alone. */
+
+@theme {
+  --font-sans: "SF Pro Text", system-ui, -apple-system, "Inter", "Helvetica Neue", sans-serif;
+  --font-display: "SF Pro Display", system-ui, -apple-system, "Inter", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+
+  --text-2xs: 10.5px;
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text-base: 13.5px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 24px;
+
+  --color-label: var(--fg);
+  --color-secondary: var(--fg-muted);
+  --color-tertiary: var(--fg-subtle);
+  --color-quaternary: var(--fg-faint);
+  --color-separator: var(--border);
+  --color-strong: var(--border-strong);
+  --color-surface: var(--bg);
+  --color-sidebar: var(--bg-sidebar);
+  --color-raised: var(--bg-raised);
+  --color-popover: var(--bg-popover);
+  --color-control: var(--bg-input);
+  --color-hover: var(--hover);
+  --color-selected: var(--active);
+  --color-accent: var(--accent);
+  --color-accent-fill: var(--accent-fill);
+  --color-on-accent: var(--on-accent);
+  --color-accent-soft: color-mix(in oklch, var(--accent) 16%, transparent);
+
+  --color-ok: #2fb35a;
+  --color-warn: #e8a12a;
+  --color-bad: #ec4a40;
+  --color-merged: #9a6af0;
+  --color-info: #3a8cf0;
+
+  --radius-ctl: 7px;
+  --radius-card: 10px;
+
+  --shadow-pop: 0 10px 30px -6px rgb(0 0 0 / 0.35), 0 0 0 1px var(--border-strong);
+}
+
+:root {
+  --bg: #ffffff;
+  --bg-sidebar: #f7f7f7;
+  --bg-raised: #f8f8f8;
+  --bg-popover: #ffffff;
+  --bg-input: #ffffff;
+  --fg: #171717;
+  --fg-muted: #585858;
+  /* The faintest text still reads at 4.5:1 (WCAG AA) on every surface. */
+  --fg-subtle: #737373;
+  --fg-faint: #c9c9c9;
+  --border: #ebebeb;
+  --border-strong: #dcdcdc;
+  --hover: rgb(0 0 0 / 0.045);
+  --active: rgb(0 0 0 / 0.075);
+  --accent: #13a596;
+  --accent-fill: #0d7d71;
+  --on-accent: #ffffff;
+  /* Code: the editor's and the chat's highlighting. */
+  --hl-keyword: #ad3da4;
+  --hl-string: #c41a16;
+  --hl-number: #1c00cf;
+  --hl-comment: #707f8c;
+  --hl-function: #326d74;
+  --hl-type: #703daa;
+  --hl-property: #3e8087;
+  --hl-tag: #0b4f79;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141414;
+    --bg-sidebar: #191919;
+    --bg-raised: #1c1c1c;
+    --bg-popover: #202020;
+    --bg-input: #1b1b1b;
+    --fg: #ececec;
+    --fg-muted: #a8a8a8;
+    --fg-subtle: #8c8c8c;
+    --fg-faint: #474747;
+    --border: #262626;
+    --border-strong: #353535;
+    --hover: rgb(255 255 255 / 0.05);
+    --active: rgb(255 255 255 / 0.085);
+    --hl-keyword: #fc5fa3;
+    --hl-string: #fc6a5d;
+    --hl-number: #d0bf69;
+    --hl-comment: #7f8c98;
+    --hl-function: #67b7a4;
+    --hl-type: #d0a8ff;
+    --hl-property: #a167e6;
+    --hl-tag: #5dd8ff;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.45;
+  letter-spacing: -0.003em;
+  color: var(--fg);
+  background: var(--bg-sidebar);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* Thin scrollbars that keep out of the way. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--fg-faint) transparent;
+}
+
+img,
+a {
+  -webkit-user-drag: none;
+}
+
+/* What can be clicked looks it. */
+a,
+button,
+summary,
+select,
+label[for],
+[role="button"],
+[role="link"],
+[role="tab"],
+[role="menuitem"],
+[role="menuitemradio"],
+[role="menuitemcheckbox"],
+[role="option"],
+[role="switch"],
+[role="checkbox"],
+[role="radio"],
+[role="treeitem"],
+[role="row"][data-href],
+[data-clickable] {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled="true"],
+[data-disabled] {
+  cursor: default;
+}
+
+/* Text people read or copy is selectable; chrome is not. */
+.selectable,
+.selectable * {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.selectable a,
+.selectable button {
+  cursor: pointer;
+}
+
+/* In the base layer, so a control's own focus style (a utility) wins. */
+@layer base {
+  :focus {
+    outline: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-radius: var(--radius-ctl);
+  }
+}
+
+::selection {
+  background: color-mix(in oklch, var(--accent) 32%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes pier-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes pier-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pier-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes pier-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-pulse-soft {
+  animation: pier-pulse 1.6s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: pier-spin 1s linear infinite;
+}
+
+/* Text the agent is working on: a soft sheen moving through it. */
+.shimmer {
+  background: linear-gradient(90deg, var(--fg-subtle) 25%, var(--fg) 50%, var(--fg-subtle) 75%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: pier-shimmer 2.4s linear infinite;
+}
+
+.pop-in {
+  animation: pier-in 0.12s ease-out;
+}
+
+/* The caret at the end of text being written: after the last paragraph,
+   heading or list item, never under a code block or table. */
+.typing-caret-last .md > :is(p, h3, h4, blockquote):last-child::after,
+.typing-caret-last .md > :is(ul, ol):last-child > li:last-child::after,
+.typing-caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  border-radius: 1px;
+  background: var(--fg-subtle);
+  animation: pier-pulse 1s ease-in-out infinite;
+}
+
+/* Highlighted code (Shiki, both themes in variables). */
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  background-color: transparent !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .shiki,
+  .shiki span {
+    color: var(--shiki-dark);
+  }
+}
+
+.shiki {
+  margin: 0;
+  font-family: var(--font-mono);
+}

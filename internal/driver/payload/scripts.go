@@ -51,7 +51,9 @@ runcmd:
     # StreamLocalBindUnlink: an attach forwards the laptop's browser opener
     # as a unix socket; a reconnecting attach must be able to replace the
     # previous connection's socket.
-    printf 'ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\n' > /etc/ssh/sshd_config.d/10-pier.conf
+    # MaxSessions: one multiplexed connection carries a client's terminals,
+    # streams and commands as channels; the default of 10 is too few.
+    printf '` + sshdConf + `' > /etc/ssh/sshd_config.d/10-pier.conf
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
     install -d -m 700 -o agent -g agent /home/agent/.ssh
     grep -qxF '{{PUBKEY}}' /home/agent/.ssh/authorized_keys 2>/dev/null || echo '{{PUBKEY}}' >> /home/agent/.ssh/authorized_keys
@@ -132,7 +134,7 @@ const tmuxEnsure = `# SSH_AUTH_SOCK points at the attach-refreshed symlink (dang
 # server, so .pier/setup.sh and the user's shells all get docker.sock denied.
 # sudo re-runs initgroups, picking up /etc/group as it stands after the
 # cloud-init wait above.
-tmux has-session -t main 2>/dev/null || sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
+tmux has-session -t main 2>/dev/null || { sudo -u agent tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}" && tmux set-option -w -t main @pier-role home; }
 `
 
 // setupWindow runs the repo's .pier/setup.sh in its own tmux window, once,
@@ -168,11 +170,12 @@ func sessionUp(runSetup bool) string {
 # running when this does, and tmux must not start with the old line).
 sed -i 's#^cd ~/work/\* 2>/dev/null || true$#if [ "$PWD" = "$HOME" ]; then cd ~/work/* 2>/dev/null; fi#' "$HOME/.bashrc" 2>/dev/null || true
 # sshd: drop dead connections (a dropped attach must not leave a phantom
-# tmux client), and let an attach replace the browser-opener socket a
-# previous connection forwarded. Written here too so sessions from older
-# images and pooled sessions get it.
-if ! grep -q StreamLocalBindUnlink /etc/ssh/sshd_config.d/10-pier.conf 2>/dev/null; then
-  printf 'ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\n' | sudo tee /etc/ssh/sshd_config.d/10-pier.conf >/dev/null
+# tmux client), let an attach replace the browser-opener socket a previous
+# connection forwarded, and allow enough channels on one multiplexed
+# connection. Written here too so sessions from older images and pooled
+# sessions get it.
+if ! grep -q MaxSessions /etc/ssh/sshd_config.d/10-pier.conf 2>/dev/null; then
+  printf '` + sshdConf + `' | sudo tee /etc/ssh/sshd_config.d/10-pier.conf >/dev/null
   sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true
 fi
 mkdir -p "$HOME/.pier" # where an attach forwards the browser opener
@@ -185,8 +188,16 @@ grep -q 'BROWSER=/usr/local/bin/xdg-open' "$HOME/.bashrc" 2>/dev/null || echo 'e
 	if runSetup {
 		s += setupWindow
 	}
+	// The session's first chat, if it was made with one, came in the files
+	// tar; the supervisor picks it up and gives it its prompt once setup is
+	// done.
 	return s
 }
+
+// InstallSupervisorScript is the step that installs /tmp/pier-supervisor
+// and its units and restarts it: what a frontend runs to bring an older
+// session's supervisor up to this pier's.
+func InstallSupervisorScript() string { return installSupervisor }
 
 // installSupervisor installs /tmp/pier-supervisor and its units and
 // (re)starts it. Bootstrap runs it on every new session, freshen on every
@@ -196,7 +207,10 @@ const installSupervisor = `sudo install -m 0755 /tmp/pier-supervisor /usr/local/
 sudo tee /etc/systemd/system/pier-supervisor.service >/dev/null <<'UNIT'
 [Unit]
 Description=pier session supervisor (self-park watchdog)
-After=multi-user.target
+# Stops before pier-restore.service at shutdown (the reverse of start
+# order), so its last snapshot of the layout runs while the tmux server
+# that unit holds is still up.
+After=multi-user.target pier-restore.service
 
 [Service]
 User=agent
@@ -237,6 +251,16 @@ KillMode=process
 [Install]
 WantedBy=multi-user.target
 UNIT
+# Agents run headless under the supervisor now; the hooks file earlier
+# supervisors installed for agents in tmux is no longer read.
+sudo rm -f /etc/pier/claude-hooks.json
+# Agent sandboxes (codex's bwrap, browsers') need user namespaces, which
+# Ubuntu's AppArmor keeps from unprivileged users. A session is a machine
+# of its own user's: let them.
+if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+  echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-pier-userns.conf >/dev/null
+  sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+fi
 sudo systemctl daemon-reload
 # restart, not enable --now: a baked image boots its own (older) supervisor
 # before this runs, and --now leaves a running unit alone — the session
@@ -285,6 +309,7 @@ case '{{MODE}}' in
 esac
 if [ -n "$prebuilt" ]; then git checkout -qf -B '{{BRANCH}}' {{SHA}}; fi
 git reset -q --hard {{SHA}}
+` + recordBase + `
 if [ -n "$prebuilt" ] && [ '{{BRANCH}}' != '` + PrebuildBranch + `' ]; then git branch -qD '` + PrebuildBranch + `' 2>/dev/null || true; fi
 # Uncommitted edits to tracked files, exactly as the laptop had them (a
 # failed apply fails the create — better than silently missing work).
@@ -329,6 +354,7 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin, gitcfg string) s
 	return strings.NewReplacer(
 		"{{REPO}}", filepath.Base(spec.Repo),
 		"{{BRANCH}}", spec.Branch,
+		"{{BASE}}", BaseBranch(spec.Repo, spec.BaseRef),
 		"{{GITCONFIG}}", gitcfg,
 		"{{MODE}}", mode,
 		"{{SHA}}", sha,
@@ -336,6 +362,16 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin, gitcfg string) s
 		"{{EXPORTREF}}", exportRef(spec.Name),
 	).Replace(bootstrapTmpl)
 }
+
+// sshdConf is pier's sshd drop-in, as a printf format.
+const sshdConf = `ClientAliveInterval 15\nClientAliveCountMax 4\nStreamLocalBindUnlink yes\nMaxSessions 64\n`
+
+// recordBase marks what the session started from, inside the checkout, so
+// in-VM tooling compares its changes against the right point without asking
+// the laptop: refs/pier/base is the commit, pier.base the origin branch it
+// came off ({{BASE}}, validated branch charset; empty when origin had none).
+const recordBase = `git update-ref refs/pier/base {{SHA}}
+if [ -n '{{BASE}}' ]; then git config pier.base '{{BASE}}'; else git config --unset pier.base 2>/dev/null || true; fi`
 
 // gitPortable are the laptop git settings a session carries: behavior with
 // no path or program in it. Credential helpers, includes, editors and

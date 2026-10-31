@@ -31,7 +31,7 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	if err != nil {
 		return driver.Baked{}, err
 	}
-	cspec := driver.CreateSpec{Name: "bake", Repo: "bake", Branch: "bake"} // timeouts 0 = never park mid-bake
+	cspec := driver.CreateSpec{Name: driver.BakeName, Repo: driver.BakeName, Branch: driver.BakeName} // timeouts 0 = never park mid-bake
 	// Unique per bake: a finished bake holds its instance until the image
 	// is saved, and the next bake must not collide with it.
 	suffix := make([]byte, 2)
@@ -43,8 +43,16 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	if err != nil {
 		return driver.Baked{}, err
 	}
-	defer os.Remove(d.keyPath(id))
-	defer os.Remove(d.keyPath(id) + ".pub")
+	// The key stays while the instance does: it marks the instance as this
+	// machine's for the sweep, which collects a handed-off bake instance
+	// whose FinishBake never ran. Destroy removes it.
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			os.Remove(d.keyPath(id))
+			os.Remove(d.keyPath(id) + ".pub")
+		}
+	}()
 
 	work, err := os.MkdirTemp("", "pier-bake-*")
 	if err != nil {
@@ -64,7 +72,6 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (driver.Baked, 
 	// A failed bake leaves nothing behind. A successful one hands the stopped
 	// instance to FinishBake: GCE won't delete a disk an image is still being
 	// created from.
-	handedOff := false
 	defer func() {
 		if !handedOff {
 			d.Destroy(context.WithoutCancel(ctx), id)
@@ -116,7 +123,7 @@ exit 1`
 			},
 		}
 		step := func(s string) { fmt.Println(ui.Step(s)) }
-		if err := payload.Prebuild(ctx, spec.RepoRoot, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
+		if err := payload.Prebuild(ctx, spec.RepoRoot, spec.BaseRef, supervisor, d.Manifest, d.SessionEnv, remote, step); err != nil {
 			return driver.Baked{}, fmt.Errorf("prebuild failed — nothing baked: %w", err)
 		}
 	}
@@ -217,8 +224,10 @@ func (d *Driver) Images(ctx context.Context) ([]driver.Image, error) {
 		if r.Labels[MetaRepo] == "" {
 			continue
 		}
-		if u, ok := r.Labels[LabelUser]; ok && u != labelValue(me) {
-			continue // a teammate's
+		if u := r.Labels[LabelUser]; u == "" || u != labelValue(me) {
+			// A teammate's — or one with no owner at all, from before
+			// images carried one: never assumed to be yours.
+			continue
 		}
 		img := driver.Image{ID: r.Name, Repo: r.Labels[MetaRepo]}
 		img.Created, _ = time.Parse(time.RFC3339, r.Created)

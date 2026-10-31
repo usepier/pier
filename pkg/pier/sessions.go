@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,23 +16,27 @@ import (
 	"github.com/usepier/pier/internal/config"
 	"github.com/usepier/pier/internal/driver"
 	"github.com/usepier/pier/internal/tombstone"
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 // Sessions is the one list every surface shows: the cloud's sessions with
 // their supervisor beacons read (working/idle, strain, setup state), plus a
 // failed row per create that died before becoming a session. Unclaimed
-// pooled sessions are included — SplitPool separates them.
+// pooled sessions are included — SplitPool separates them. It sweeps
+// strays first (see Sweep): a one-shot command is the natural moment to
+// collect what nothing will use.
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	sessions, err := c.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return c.Enrich(ctx, sessions), nil
+	return c.Enrich(ctx, c.Sweep(ctx, sessions)), nil
 }
 
-// ListSessions is Sessions without the per-session status reads: one cloud
-// call plus the local failed-create records. A frontend shows it at once and
-// fills in Enrich's answer when it lands.
+// ListSessions is Sessions without the sweep and the per-session status
+// reads: one cloud call plus the local failed-create records. It changes
+// nothing in the cloud, so frontends that refresh on a timer can call it as
+// often as they like and Sweep on their own, slower schedule.
 func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 	sessions, err := c.drv.List(ctx)
 	if err != nil {
@@ -41,7 +46,7 @@ func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 	for _, name := range revived {
 		tombstone.Dismiss(config.Dir(), name)
 	}
-	return c.sweep(ctx, merged), nil
+	return merged, nil
 }
 
 // Enrich returns a copy of sessions with each running session's supervisor
@@ -52,12 +57,18 @@ func (c *Client) Enrich(ctx context.Context, sessions []Session) []Session {
 	return out
 }
 
+// BakeMachine reports whether s is the temporary machine a bake runs on
+// (driver.IsBakeMachine).
+func BakeMachine(s Session) bool { return driver.IsBakeMachine(s) }
+
 // SplitPool separates real sessions from unclaimed pooled sessions (warm
 // pool members): those are inventory, not work, and never sit in the
-// session table. Members on their way out are in neither.
+// session table. Members on their way out are in neither, and bake
+// machines in neither.
 func SplitPool(all []Session) (sessions, pooled []Session) {
 	for _, s := range all {
 		switch {
+		case BakeMachine(s):
 		case s.PoolGen == "":
 			sessions = append(sessions, s)
 		case s.State != driver.StateDeleting:
@@ -84,6 +95,7 @@ func PoolCounts(pooled []Session) (ready, filling int) {
 // session's supervisor beacon in parallel.
 func (c *Client) enrich(ctx context.Context, sessions []Session) {
 	var wg sync.WaitGroup
+	branches := make([]string, len(sessions))
 	for i := range sessions {
 		// Pooled sessions run headless between create and park; their beacon
 		// detail is nobody's business until they're claimed.
@@ -91,11 +103,11 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 			continue
 		}
 		wg.Add(1)
-		go func(s *Session) {
+		go func(i int, s *Session) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			out, err := c.drv.Exec(ctx, s.ID, "cat /run/pier/status.json 2>/dev/null || echo absent")
+			out, err := c.exec(ctx, s.ID, "cat /run/pier/status.json 2>/dev/null || echo absent")
 			if err != nil {
 				return // unreachable (ssm blip) — keep plain "running"
 			}
@@ -106,14 +118,13 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 				// plain "running".
 				return
 			}
-			var st struct {
-				State         string `json:"state"`
-				Bootstrapping bool   `json:"bootstrapping"`
-				Strained      bool   `json:"strained"`
-				Setup         string `json:"setup"`
-			}
+			var st beacon
 			if json.Unmarshal([]byte(out), &st) != nil {
 				return
+			}
+			branches[i] = st.Branch
+			if branches[i] == "" {
+				branches[i] = st.Renamed
 			}
 			// Supervisor up but bootstrap not done: the repo is still on its
 			// way (or the create died) — either way, not attachable yet.
@@ -131,9 +142,94 @@ func (c *Client) enrich(ctx context.Context, sessions []Session) {
 			}
 			s.Strained = st.Strained
 			s.Setup = st.Setup
-		}(&sessions[i])
+			st.apply(s)
+		}(i, &sessions[i])
 	}
 	wg.Wait()
+	c.relabel(ctx, sessions, branches)
+}
+
+// relabel catches the cloud up with sessions whose branch changed — named
+// after their first prompt, or one the agent started and pushed — so the
+// session's pull request is found by it. A session named after its branch
+// takes the new one's name (made unique among the others); one given a
+// name of its own keeps it. A relabel that fails is tried again next time.
+func (c *Client) relabel(ctx context.Context, sessions []Session, branches []string) {
+	names := map[string]bool{}
+	for _, s := range sessions {
+		names[s.Name] = true
+	}
+	for i := range sessions {
+		s := &sessions[i]
+		branch := branches[i]
+		if branch == "" || branch == s.Branch || branch == s.Base {
+			continue
+		}
+		name := s.Name
+		if s.Name == s.Branch {
+			name = branch
+			for n := 2; names[name] && name != s.Name; n++ {
+				name = fmt.Sprintf("%s-%d", branch, n)
+			}
+		}
+		if err := c.drv.Rename(ctx, s.ID, name, branch); err != nil {
+			continue
+		}
+		delete(names, s.Name)
+		names[name] = true
+		s.Name, s.Branch = name, branch
+	}
+}
+
+// beacon is /run/pier/status.json as the supervisor writes it. Fields newer
+// supervisors added are absent from older ones' beacons and stay zero.
+type beacon struct {
+	State         string `json:"state"`
+	Bootstrapping bool   `json:"bootstrapping"`
+	Strained      bool   `json:"strained"`
+	Setup         string `json:"setup"`
+	Ports         []struct {
+		Port    int    `json:"port"`
+		Process string `json:"process"`
+		PID     int    `json:"pid"`
+	} `json:"ports"`
+	Res *struct {
+		CPU       float64 `json:"cpu"`
+		CPUs      int     `json:"cpus"`
+		MemUsed   uint64  `json:"mem_used"`
+		MemTotal  uint64  `json:"mem_total"`
+		DiskUsed  uint64  `json:"disk_used"`
+		DiskTotal uint64  `json:"disk_total"`
+		Load1     float64 `json:"load1"`
+	} `json:"res"`
+	ParkAt *time.Time         `json:"park_at"`
+	CapAt  *time.Time         `json:"cap_at"`
+	Chats  []wire.ChatSummary `json:"chats"`
+	// Renamed is the branch the session named itself after its first
+	// prompt; Branch the checkout's own branch once it's pushed — an agent
+	// may start one — which wins.
+	Renamed string `json:"renamed"`
+	Branch  string `json:"branch"`
+}
+
+// apply copies the beacon's load, ports and countdowns onto s.
+func (b beacon) apply(s *Session) {
+	if b.Res != nil {
+		r := Resources(*b.Res)
+		s.Res = &r
+	}
+	s.Ports = nil
+	for _, p := range b.Ports {
+		s.Ports = append(s.Ports, Port{Port: p.Port, Process: p.Process, PID: p.PID})
+	}
+	s.ParkAt, s.CapAt = time.Time{}, time.Time{}
+	if b.ParkAt != nil {
+		s.ParkAt = *b.ParkAt
+	}
+	if b.CapAt != nil {
+		s.CapAt = *b.CapAt
+	}
+	s.Chats = b.Chats
 }
 
 // mergeTombstones appends a failed row per tombstone and reports the ones the
@@ -232,7 +328,12 @@ func (c *Client) Remove(ctx context.Context, s Session) error {
 	if s.State == driver.StateFailed {
 		return tombstone.Dismiss(config.Dir(), s.Name)
 	}
-	return c.drv.Destroy(ctx, s.ID)
+	c.forget(s.ID)
+	if err := c.drv.Destroy(ctx, s.ID); err != nil {
+		return err
+	}
+	os.RemoveAll(MirrorDir(s.ID)) // this machine's copy of its chat
+	return nil
 }
 
 // Keep disables idle self-park; the supervisor re-reads its conf every
@@ -241,7 +342,7 @@ func (c *Client) Keep(ctx context.Context, s Session) error {
 	if s.State == driver.StateParked {
 		return fmt.Errorf("%w: %s — attach first", ErrParked, s.Name)
 	}
-	_, err := c.drv.Exec(ctx, s.ID,
+	_, err := c.exec(ctx, s.ID,
 		"sudo sed -i 's/^idle_timeout=.*/idle_timeout=never/' /etc/pier/supervisor.conf")
 	return err
 }
@@ -255,9 +356,31 @@ func (c *Client) Resize(ctx context.Context, s Session, machineType string) erro
 	return c.drv.Resize(ctx, s.ID, machineType)
 }
 
+// Park stops a running session now, as its own idle park would: the
+// instance stops, the disk stays, and the supervisor saves the tmux layout
+// on its way down.
+func (c *Client) Park(ctx context.Context, s Session) error {
+	if err := CheckReady(s); err != nil {
+		return err
+	}
+	if s.State == driver.StateParked {
+		return nil
+	}
+	c.forget(s.ID)
+	return c.drv.Park(ctx, s.ID)
+}
+
 // Machines is the resize catalog for a session: same-arch types with shape
 // and rough cost.
 func (c *Client) Machines(s Session) []Machine { return c.drv.Machines(s.InstanceType) }
+
+// HasKey reports whether this machine holds the session's ssh key. Each
+// session's key lives only on the machine that created (or claimed) it, so
+// a session listed from elsewhere can be seen but not reached.
+func (c *Client) HasKey(s Session) bool {
+	_, err := os.Stat(filepath.Join(config.Dir(), "keys", s.ID+".pem"))
+	return err == nil
+}
 
 // Headroom reports the account's vCPU quota use.
 func (c *Client) Headroom(ctx context.Context) (Quota, error) { return c.drv.Headroom(ctx) }
@@ -342,7 +465,7 @@ func (c *Client) SetupLog(ctx context.Context, s Session, lines int) (string, er
 	if lines > 0 {
 		read = fmt.Sprintf("tail -n %d ~/.pier-setup.log", lines)
 	}
-	out, err := c.drv.Exec(ctx, s.ID, `[ -f ~/.pier-setup.log ] && `+read+` || `+noSetupLog)
+	out, err := c.exec(ctx, s.ID, `[ -f ~/.pier-setup.log ] && `+read+` || `+noSetupLog)
 	if err == nil && lines > 0 && strings.Count(out, "\n") >= lines-1 {
 		out = "… older lines trimmed — pier logs " + s.Name + " prints everything\n" + out
 	}
@@ -383,17 +506,27 @@ func ParsePortPair(s string) ([2]int, error) {
 	return p, nil
 }
 
+// Running reports a session whose VM is up — whatever its supervisor says
+// it is doing (working, idle).
+func Running(s Session) bool {
+	switch s.State {
+	case driver.StateRunning, driver.StateWorking, driver.StateIdle:
+		return true
+	}
+	return false
+}
+
 // Label is the one word a session's row shows: starting, running, parked,
 // deleting or create failed. The supervisor's finer activity reading
 // (attached, working, idle) changes every few seconds and is detail, not
 // state — Activity has it.
 func Label(s Session) string {
-	switch s.State {
-	case driver.StateCreating:
+	switch {
+	case s.State == driver.StateCreating:
 		return "starting"
-	case driver.StateRunning, driver.StateWorking, driver.StateIdle:
+	case Running(s):
 		return "running"
-	case driver.StateFailed:
+	case s.State == driver.StateFailed:
 		// "create failed", never a bare "failed": a running session whose
 		// setup script died reads "setup failed", and the two mean very
 		// different things — one has a VM, this one does not.
@@ -415,4 +548,65 @@ func Activity(s Session) string {
 		return "quiet — parks itself when the idle timer runs out"
 	}
 	return ""
+}
+
+// CarryStatus copies the previous status read onto a fresh list, for the
+// sessions still in the same cloud state, so a frontend that shows the list
+// before Enrich lands doesn't blink rows between states on every refresh.
+// It edits next in place and returns it.
+func CarryStatus(prev, next []Session) []Session {
+	old := map[string]Session{}
+	for _, s := range prev {
+		old[s.ID] = s
+	}
+	for i, s := range next {
+		p, ok := old[s.ID]
+		if !ok || s.ID == "" || s.State != driver.StateRunning {
+			continue
+		}
+		if Running(p) {
+			next[i].State, next[i].Attached = p.State, p.Attached
+			next[i].Strained, next[i].Setup = p.Strained, p.Setup
+			next[i].Res, next[i].Ports = p.Res, p.Ports
+			next[i].ParkAt, next[i].CapAt = p.ParkAt, p.CapAt
+			next[i].Chats = p.Chats
+		}
+	}
+	return next
+}
+
+// Countdown says when a running session stops on its own: "parks in 12m"
+// while it is quiet and detached, "runaway cap in 3h" while it works with
+// nobody attached; "" otherwise.
+func Countdown(s Session, now time.Time) string {
+	switch {
+	case !s.ParkAt.IsZero():
+		return "parks in " + shortDur(s.ParkAt.Sub(now))
+	case !s.CapAt.IsZero():
+		return "runaway cap in " + shortDur(s.CapAt.Sub(now))
+	}
+	return ""
+}
+
+func shortDur(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "under a minute"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
+// Load is a running session's load in one line: "cpu 34% · mem 1.2/4.0 GiB
+// · disk 12/40 GiB"; "" before the supervisor has reported it.
+func Load(s Session) string {
+	r := s.Res
+	if r == nil {
+		return ""
+	}
+	gib := func(b uint64) float64 { return float64(b) / (1 << 30) }
+	return fmt.Sprintf("cpu %.0f%% · mem %.1f/%.1f GiB · disk %.0f/%.0f GiB",
+		r.CPU, gib(r.MemUsed), gib(r.MemTotal), gib(r.DiskUsed), gib(r.DiskTotal))
 }

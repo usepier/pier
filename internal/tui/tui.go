@@ -23,17 +23,22 @@ import (
 // can drive the app without a cloud.
 type Backend interface {
 	Cloud() string
+	// Stale: the config now asks for another cloud or machine than this
+	// backend was built for (changed by another process) — open a new one.
+	Stale() bool
 	ListSessions(ctx context.Context) ([]pier.Session, error)
+	Sweep(ctx context.Context, sessions []pier.Session) []pier.Session
 	Enrich(ctx context.Context, sessions []pier.Session) []pier.Session
 	Repos(sessions []pier.Session, curRoot string) []pier.Repo
 	Headroom(ctx context.Context) (pier.Quota, error)
 	Remove(ctx context.Context, s pier.Session) error
 	Keep(ctx context.Context, s pier.Session) error
 	Resume(ctx context.Context, s pier.Session) error
-	Resize(ctx context.Context, s pier.Session, machineType string) error
+	StartResize(s pier.Session, machineType string) (pier.Job, error)
 	Machines(s pier.Session) []pier.Machine
 	Attach(ctx context.Context, s pier.Session) (*exec.Cmd, func(), error)
 	WaitReachable(ctx context.Context, s pier.Session, timeout time.Duration) error
+	ChatWindow(ctx context.Context, s pier.Session, chatID string, takeover bool) (string, error)
 	SetupLog(ctx context.Context, s pier.Session, lines int) (string, error)
 	SpawnCreate(repoRoot, branch string) (string, error)
 	SpawnBake(repoRoot string) (string, error)
@@ -43,7 +48,7 @@ type Backend interface {
 	Settings() []pier.SettingValue
 	Set(key, value string) error
 	MachineCatalog(currentType string) []pier.Machine
-	ReauthCommand() *exec.Cmd
+	ReauthCommand(err error) *exec.Cmd
 	DiskMonthlyUSD() float64
 }
 
@@ -121,7 +126,7 @@ type model struct {
 	quota    string
 
 	loading, loaded bool
-	authRequired    bool
+	authErr         error // a cloud login expired: enter runs the login that fixes it
 
 	sessIdx, repoIdx, setIdx int
 
@@ -137,7 +142,8 @@ type model struct {
 
 	frame   int
 	polling bool
-	watch   int // extra poll rounds after a spawn, until the new row shows
+	watch   int       // extra poll rounds after a spawn, until the new row shows
+	sweptAt time.Time // last stray sweep; see sweepEvery
 
 	// attach in flight: one bounded reconnect per attach, like the CLI.
 	// While attaching is set the app shows only the attach screen and
@@ -147,6 +153,8 @@ type model struct {
 	attachSince   time.Time // when the current step began
 	attachStart   time.Time // when ssh took the terminal
 	attachRetried bool
+	// attachChats: the attach opens on the session's chats window.
+	attachChats bool
 
 	machines []pier.Machine
 	pickIdx  int
@@ -180,6 +188,7 @@ type sessionsMsg struct {
 	all      []pier.Session
 	err      error
 	enriched bool
+	swept    bool // the list went through a stray sweep
 }
 type quotaMsg string
 type tickMsg struct{}
@@ -222,11 +231,23 @@ func pollCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return pollMsg{} })
 }
 
+// sweepEvery spaces out the stray sweep. The list refreshes every few
+// seconds; the sweep destroys instances, so it runs on first load and then
+// only this often.
+const sweepEvery = 10 * time.Minute
+
 func (m model) fetch() tea.Msg {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	all, err := m.be.ListSessions(ctx)
-	return sessionsMsg{all: all, err: err}
+	if err != nil {
+		return sessionsMsg{err: err}
+	}
+	swept := time.Since(m.sweptAt) >= sweepEvery
+	if swept {
+		all = m.be.Sweep(ctx, all)
+	}
+	return sessionsMsg{all: all, swept: swept}
 }
 
 // enrich reads the running sessions' statuses for a list already on screen.
@@ -307,7 +328,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err != nil {
 			if pier.IsAuthExpired(msg.err) {
-				m.authRequired = true
+				m.authErr = msg.err
 				m.status, m.statusBad = "your cloud login expired — enter signs in again", true
 				return m, nil
 			}
@@ -319,16 +340,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		m.loaded, m.authRequired = true, false
+		m.loaded, m.authErr = true, nil
+		if msg.swept {
+			m.sweptAt = time.Now()
+		}
 		// The status read runs on the list as the cloud returned it. The
 		// carried copy below is display-only: reading that one would skip
 		// every session last seen idle or working (only plain running
 		// sessions are read) and freeze their status for good.
-		fresh := append([]pier.Session(nil), msg.all...) // carryStatus edits in place
+		fresh := append([]pier.Session(nil), msg.all...) // CarryStatus edits in place
 		if !msg.enriched {
 			// Keep what the last status read said until the new one lands,
 			// so rows don't blink between states on every refresh.
-			msg.all = carryStatus(m.all, msg.all)
+			msg.all = pier.CarryStatus(m.all, msg.all)
 		}
 		m.all = msg.all
 		m.sessions, m.ready = pier.SplitPool(msg.all)
@@ -360,6 +384,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Background refreshes stay quiet: the spinner is for the first load
 		// and for refreshes the user asked for.
 		m.polling = false
+		if m.be.Stale() {
+			return m, func() tea.Msg {
+				be, err := m.opts.Open()
+				return reopenedMsg{be, err}
+			}
+		}
 		return m, m.fetch
 
 	case doneMsg:
@@ -387,9 +417,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := msg.s
 		s.State = pier.StateRunning
 		m.attachStep, m.attachSince = stepConnect, time.Now()
-		return m, func() tea.Msg {
-			return reachableMsg{s, m.be.WaitReachable(context.Background(), s, 4*time.Minute)}
-		}
+		return m, m.reachable(s, 4*time.Minute)
 
 	case attachDoneMsg:
 		if msg.err != nil && !m.attachRetried && pier.RetryAttach(msg.err, time.Since(m.attachStart)) {
@@ -450,27 +478,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// carryStatus copies the previous status read onto a fresh list, for the
-// sessions still in the same cloud state.
-func carryStatus(prev, next []pier.Session) []pier.Session {
-	old := map[string]pier.Session{}
-	for _, s := range prev {
-		old[s.ID] = s
-	}
-	for i, s := range next {
-		p, ok := old[s.ID]
-		if !ok || s.ID == "" || s.State != pier.StateRunning {
-			continue
-		}
-		switch p.State {
-		case pier.StateRunning, pier.StateWorking, pier.StateIdle:
-			next[i].State, next[i].Attached = p.State, p.Attached
-			next[i].Strained, next[i].Setup = p.Strained, p.Setup
-		}
-	}
-	return next
-}
-
 func clamp(i, n int) int {
 	if i >= n {
 		i = n - 1
@@ -508,10 +515,10 @@ func (m model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.authRequired {
+	if m.authErr != nil {
 		switch k.String() {
 		case "enter":
-			return m, tea.ExecProcess(m.be.ReauthCommand(), func(err error) tea.Msg { return reauthMsg{err} })
+			return m, tea.ExecProcess(m.be.ReauthCommand(m.authErr), func(err error) tea.Msg { return reauthMsg{err} })
 		case "q", "esc":
 			return m, tea.Quit
 		}
@@ -579,6 +586,10 @@ func (m model) keySessions(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch k.String() {
 	case "enter":
+		m.attachChats = false
+		return m.startAttach(s)
+	case "c":
+		m.attachChats = true
 		return m.startAttach(s)
 	case "d":
 		q := "destroy " + s.Name + " and its disk?"
@@ -646,8 +657,19 @@ func (m model) startAttach(s pier.Session) (tea.Model, tea.Cmd) {
 	// terminal to an ssh that's still connecting (or will fail) looks like
 	// pier quit, and its errors land outside the app.
 	m.attachStep = stepConnect
-	return m, func() tea.Msg {
-		return reachableMsg{s, m.be.WaitReachable(context.Background(), s, 90*time.Second)}
+	return m, m.reachable(s, 90*time.Second)
+}
+
+// reachable waits for the session to answer — and, for an attach to its
+// chats, opens their window — before the terminal is handed over.
+func (m model) reachable(s pier.Session, timeout time.Duration) tea.Cmd {
+	chats := m.attachChats
+	return func() tea.Msg {
+		err := m.be.WaitReachable(context.Background(), s, timeout)
+		if err == nil && chats {
+			_, err = m.be.ChatWindow(context.Background(), s, "", false)
+		}
+		return reachableMsg{s, err}
 	}
 }
 
@@ -727,11 +749,29 @@ func (m model) keyResize(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.note("resizing " + s.Name + " to " + t + " — parks, resizes, resumes (~1-2 min)")
 		return m, act(func() doneMsg {
-			err := m.be.Resize(context.Background(), s, t)
+			err := resize(m.be, s, t)
 			return doneMsg{note: s.Name + " is now a " + t, err: err, refresh: true}
 		})
 	}
 	return m, nil
+}
+
+// resize runs as a background job, followed to its end: quitting the app
+// halfway leaves the resize to finish rather than the session parked.
+func resize(be Backend, s pier.Session, machineType string) error {
+	j, err := be.StartResize(s, machineType)
+	if err != nil {
+		return err
+	}
+	var failed error
+	if err := pier.FollowJob(context.Background(), j.ID, 0, func(e pier.Event) {
+		if e.Kind == pier.EventFailed {
+			failed = errors.New(e.Message)
+		}
+	}); err != nil {
+		return err
+	}
+	return failed
 }
 
 // --- repos ---------------------------------------------------------------------------

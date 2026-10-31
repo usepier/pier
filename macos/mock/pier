@@ -1,0 +1,3 @@
+#!/bin/sh
+# pier, as far as the app is concerned: the mock api (see api.mjs).
+exec node "$(dirname "$0")/api.mjs"

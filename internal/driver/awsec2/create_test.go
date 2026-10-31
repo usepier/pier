@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -272,5 +273,63 @@ func TestFinishBakeReleasesTheBakeInstance(t *testing.T) {
 	}
 	if ran, _ := os.ReadFile(log); strings.Contains(string(ran), "terminate-instances") || strings.Contains(string(ran), "deregister-image") {
 		t.Errorf("an image still saving must keep its instance and itself, ran:\n%s", ran)
+	}
+}
+
+// A session from a repo with an origin carries it and its base as tags, so
+// every machine groups it with its repository and finds its pull request.
+func TestTagListCarriesOriginAndBase(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "init")
+	git("remote", "add", "origin", "https://token@github.com/Owner/Repo.git")
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+	got := map[string]string{}
+	for _, tag := range tagList(driver.CreateSpec{Name: "x", Repo: root, Branch: "feat"}, "me", "pier-x") {
+		got[tag["Key"]] = tag["Value"]
+	}
+	if got[TagOrigin] != "github.com/owner/repo" || got[TagBase] != "main" {
+		t.Errorf("origin/base tags = %q/%q", got[TagOrigin], got[TagBase])
+	}
+	none := tagList(driver.CreateSpec{Name: "x", Repo: t.TempDir(), Branch: "feat"}, "me", "pier-x")
+	for _, tag := range none {
+		if tag["Key"] == TagOrigin || tag["Key"] == TagBase {
+			t.Errorf("a repo without an origin must not carry %s", tag["Key"])
+		}
+	}
+}
+
+// A claim stamps the claiming repo's origin and base, and drops a base the
+// fill left when the claim has none.
+func TestClaimWritesOriginAndBase(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls.log")
+	script := "#!/bin/sh\necho \"$*\" >> " + log + "\ncase \"$2\" in\n" +
+		"describe-tags) printf 'nonce-1\\tgen\\n' ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "aws"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	d := &Driver{}
+	if err := d.Claim(context.Background(), "i-1", driver.ClaimSpec{Name: "s", Branch: "s", Origin: "github.com/o/r", Nonce: "nonce-1"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	calls := string(b)
+	if !strings.Contains(calls, "Key="+TagOrigin+",Value=github.com/o/r") {
+		t.Errorf("claim must tag the origin:\n%s", calls)
+	}
+	for _, line := range strings.Split(calls, "\n") {
+		if strings.HasPrefix(line, "ec2 delete-tags") && strings.Contains(line, "Key="+TagPool) && !strings.Contains(line, "Key="+TagBase) {
+			t.Errorf("a claim without a base must drop the fill's:\n%s", line)
+		}
 	}
 }

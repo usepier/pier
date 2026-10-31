@@ -30,7 +30,7 @@ func (c *Client) Doctor(ctx context.Context) []Check {
 		case s.State != driver.StateParked && s.State != driver.StateDead &&
 			time.Since(s.Created) >= pool.FillGrace:
 			stuck[s.Repo]++
-		case c.cfg.PoolSize(s.Repo) == 0:
+		case c.conf().PoolSize(s.Repo) == 0:
 			orphans[s.Repo]++
 		}
 	}
@@ -38,12 +38,14 @@ func (c *Client) Doctor(ctx context.Context) []Check {
 		checks = append(checks, Check{
 			Name:   "pool " + repo,
 			Detail: fmt.Sprintf("%d pooled session(s) but no pool configured — `pier pool drain %s` removes them", n, repo),
+			Fix:    "pier pool drain " + repo,
 		})
 	}
 	for repo, n := range stuck {
 		checks = append(checks, Check{
 			Name:   "pool " + repo,
 			Detail: fmt.Sprintf("%d stuck filling for 2h+ — running at full price; `pier pool drain %s` removes them", n, repo),
+			Fix:    "pier pool drain " + repo,
 		})
 	}
 	return checks
@@ -65,7 +67,9 @@ func (c *Client) Teardown(ctx context.Context, progress Progress) error {
 		}
 	}
 	for repo := range repos {
-		if _, err := pool.Drain(ctx, c.drv, sessions, repo, progress.stepper(start)); err != nil {
+		// Every member of yours, whichever machine made it: teardown takes
+		// away the groundwork they all depend on.
+		if _, err := pool.Drain(ctx, c.drv, sessions, repo, nil, progress.stepper(start)); err != nil {
 			return err
 		}
 	}
@@ -78,7 +82,7 @@ func (c *Client) Teardown(ctx context.Context, progress Progress) error {
 		return nil
 	})
 	if err == nil {
-		c.cfg = next
+		c.setConf(next)
 	}
 	return err
 }
@@ -88,10 +92,10 @@ func (c *Client) Teardown(ctx context.Context, progress Progress) error {
 func (c *Client) Settings() []SettingValue {
 	var out []SettingValue
 	for _, f := range config.Settings {
-		if !c.cfg.Visible(f) {
+		if !c.conf().Visible(f) {
 			continue
 		}
-		v := config.Get(c.cfg, f.Key)
+		v := config.Get(c.conf(), f.Key)
 		out = append(out, SettingValue{Field: f, Value: v, Display: f.Display(v)})
 	}
 	return out
@@ -114,7 +118,7 @@ func (c *Client) Set(key, value string) error {
 	if err != nil {
 		return err
 	}
-	c.cfg = next
+	c.setConf(next)
 	return nil
 }
 

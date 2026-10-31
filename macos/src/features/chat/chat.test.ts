@@ -1,0 +1,142 @@
+import { describe, expect, it } from "vitest";
+import type { ChatItem } from "@/api/protocol.gen";
+import { applyChange, emptyChat, fromSnapshot, prependPage } from "@/state/chat";
+import { groupItems, summarize } from "./group";
+import { insertMention, mentionAt, rank } from "./mentions";
+
+const t = "2026-10-08T10:00:00Z";
+const user = (id: string, text = "hi"): ChatItem => ({ id, kind: "user", time: t, text });
+const tool = (id: string, view = "bash", status = "ok"): ChatItem => ({
+  id,
+  kind: "tool",
+  time: t,
+  tool: { id, name: "Bash", view, status, summary: "ls" } as ChatItem["tool"],
+});
+
+describe("chat changes", () => {
+  it("appends, updates, resets and tracks the chat", () => {
+    let st = fromSnapshot({ items: [user("a"), tool("b", "bash", "running")], more: true, live: true });
+    st = applyChange(st, { op: "update", items: [tool("b")] });
+    expect(st.items[1]!.tool!.status).toBe("ok");
+    st = applyChange(st, { op: "append", items: [tool("b"), user("c")] });
+    expect(st.items.map((i) => i.id)).toEqual(["a", "b", "c"]);
+    st = applyChange(st, { op: "chat", live: false, asOf: t });
+    expect([st.live, st.asOf]).toEqual([false, t]);
+    st = applyChange(st, { op: "reset", items: [user("z")], more: false });
+    expect([st.items.length, st.more]).toEqual([1, false]);
+  });
+  it("streams text in, and lets the finished item replace it", () => {
+    let st = fromSnapshot({ items: [user("a")], more: false, live: true, streaming: [] });
+    st = applyChange(st, { op: "delta", deltas: [{ id: "m:0", kind: "assistant", text: "Fix" }] });
+    st = applyChange(st, { op: "delta", deltas: [{ id: "m:0", kind: "assistant", text: "ed it." }] });
+    expect(st.streaming.map((i) => i.text)).toEqual(["Fixed it."]);
+    st = applyChange(st, {
+      op: "append",
+      items: [{ id: "m:0", kind: "assistant", time: t, text: "Fixed it." }],
+    });
+    expect([st.streaming.length, st.items.length]).toEqual([0, 2]);
+    // A late delta of a finished item changes nothing.
+    st = applyChange(st, { op: "delta", deltas: [{ id: "m:0", kind: "assistant", text: "!" }] });
+    expect(st.streaming).toEqual([]);
+    st = applyChange(st, { op: "streaming", items: [{ id: "m:1", kind: "thinking", time: t, text: "hmm" }] });
+    expect(st.streaming.map((i) => i.id)).toEqual(["m:1"]);
+    st = applyChange(st, {
+      op: "chat",
+      chat: { id: "c", agent: "claude", title: "", state: "ready", since: t, created: t, queue: [] },
+    });
+    expect(st.streaming).toEqual([]);
+  });
+  it("puts older pages in front once", () => {
+    const st = prependPage({ ...emptyChat, items: [user("c")] }, [user("a"), user("b"), user("c")], false);
+    expect(st.items.map((i) => i.id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("grouping", () => {
+  it("makes each run of steps between messages one block", () => {
+    const blocks = groupItems([user("u"), tool("1"), tool("2", "edit"), tool("3"), user("v")]);
+    expect(blocks.map((b) => b.kind)).toEqual(["item", "steps", "item"]);
+    expect(summarize((blocks[1] as { items: ChatItem[] }).items)).toBe("Ran 2 commands, edited 1 file");
+  });
+  it("keeps a run the same block as it grows, live while its last step runs", () => {
+    const at = (items: ChatItem[]) =>
+      groupItems(items).map((b) => (b.kind === "steps" ? [b.id, b.live] : b.kind));
+    expect(at([user("u"), tool("1", "bash", "running")])).toEqual(["item", ["1", true]]);
+    expect(at([user("u"), tool("1"), tool("2", "bash", "running")])).toEqual(["item", ["1", true]]);
+    expect(at([user("u"), tool("1"), tool("2"), tool("3")])).toEqual(["item", ["1", false]]);
+    // A run that's over isn't live, whatever its steps say.
+    expect(at([tool("1", "bash", "running"), user("u")])).toEqual([["1", false], "item"]);
+  });
+});
+
+describe("mentions", () => {
+  it("finds the @-query at the caret and replaces it", () => {
+    const text = "look at @src/ma please";
+    const at = mentionAt(text, 15)!;
+    expect(at).toEqual({ start: 8, query: "src/ma" });
+    expect(insertMention(text, at, "src/main.go")).toEqual({
+      text: "look at @src/main.go  please",
+      caret: 21,
+    });
+    expect(mentionAt("mail@example", 12)).toBeNull();
+  });
+  it("ranks file names over paths, tight matches over loose", () => {
+    const paths = ["docs/main.md", "src/main.go", "src/domain/admin.go", "Makefile"];
+    expect(rank(paths, "main")).toEqual(["src/main.go", "docs/main.md", "src/domain/admin.go"]);
+    expect(rank(paths, "mkf")).toEqual(["Makefile"]);
+  });
+});
+
+import { rankEntries } from "@/features/palette/rank";
+
+describe("palette", () => {
+  const run = () => {};
+  const entries = [
+    { id: "s:1", kind: "session" as const, title: "fix-login", detail: "shop · idle", run },
+    { id: "r:shop", kind: "repo" as const, title: "shop", detail: "repository", run },
+    { id: "c:new", kind: "command" as const, title: "New Session", keywords: "create start", run },
+  ];
+  it("finds by name, and > lists actions only", () => {
+    expect(rankEntries(entries, "login").map((e) => e.id)).toEqual(["s:1"]);
+    expect(rankEntries(entries, ">").map((e) => e.id)).toEqual(["c:new"]);
+    expect(rankEntries(entries, ">create").map((e) => e.id)).toEqual(["c:new"]);
+  });
+});
+
+import { answerOf, collect, emptyState } from "./answers";
+
+describe("question answers", () => {
+  const choice = {
+    id: "db",
+    question: "Which DB?",
+    kind: "choice",
+    options: [{ label: "Postgres" }, { label: "SQLite" }],
+  };
+  const multi = { ...choice, id: "features", question: "Which features?", multiSelect: true };
+  const number = {
+    id: "workers",
+    question: "Workers?",
+    kind: "number",
+    min: 1,
+    max: 8,
+    default: 2,
+    unit: "workers",
+  };
+  const text = { id: "else", question: "Anything else?", kind: "text" };
+  it("reads each kind of question", () => {
+    expect(answerOf(choice, { ...emptyState(choice), picked: ["SQLite"] })).toBe("SQLite");
+    expect(answerOf(multi, { ...emptyState(multi), picked: ["Postgres", "SQLite"], other: "Redis" })).toBe(
+      "Postgres, SQLite, Redis",
+    );
+    expect(answerOf(number, emptyState(number))).toBe("2 workers");
+    expect(answerOf(text, emptyState(text))).toBeUndefined();
+  });
+  it("leaves unanswered questions out, keeps notes", () => {
+    const { answers, notes } = collect(
+      [choice, text],
+      [{ ...emptyState(choice), picked: ["Postgres"], note: "we run it" }, emptyState(text)],
+    );
+    expect(answers).toEqual({ db: "Postgres" });
+    expect(notes).toEqual({ db: "we run it" });
+  });
+});

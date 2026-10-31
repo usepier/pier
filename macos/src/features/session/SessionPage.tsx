@@ -1,0 +1,206 @@
+import { useQuery } from "@tanstack/react-query";
+import { useParams } from "@tanstack/react-router";
+import { KeyRound, Power } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { rpc } from "@/api/client";
+import type { Session } from "@/api/protocol.gen";
+import { FilesPanel } from "@/features/files/FilesPanel";
+import { PRPanel } from "@/features/github/PRPanel";
+import { JobProgress } from "@/features/jobs/JobProgress";
+import { ChangesPanel } from "@/features/review/ChangesPanel";
+import { preloadDiffs } from "@/features/review/DiffView";
+import { age, until } from "@/lib/format";
+import { readable, running } from "@/lib/session";
+import { useNow } from "@/lib/useNow";
+import { type InspectorTab, useInspector } from "@/state/inspector";
+import { useRunningJobs } from "@/state/jobs";
+import { useSession } from "@/state/overview";
+import { attempt } from "@/state/toasts";
+import { Banner } from "@/ui/Banner";
+import { Button } from "@/ui/Button";
+import { Empty } from "@/ui/Empty";
+import { LogView } from "@/ui/LogView";
+import { Facts } from "@/ui/Panel";
+import { Spinner } from "@/ui/Spinner";
+import { EnvironmentPanel } from "./EnvironmentPanel";
+import { SessionCenter } from "./SessionCenter";
+import { SessionHeader } from "./SessionHeader";
+
+export function SessionPage() {
+  const { id } = useParams({ from: "/session/$id" });
+  const s = useSession(id);
+  const [resizeJob, setResizeJob] = useState<string>();
+  const tab = useInspector((i) => i.tab);
+  const setTab = useInspector((i) => i.setTab);
+  const [openWindow, setOpenWindow] = useState<string>();
+  const layout = useDefaultLayout({ id: "pier.session", storage: localStorage });
+  useEffect(preloadDiffs, []);
+  const resizing = useRunningJobs((j) => j.kind === "resize" && j.session === s?.name)[0]?.id ?? resizeJob;
+  if (!s) return <Empty title="Session" detail="Gone, or still loading." />;
+  const live = running(s);
+  return (
+    <div className="flex h-full flex-col">
+      <SessionHeader session={s} onResize={setResizeJob} />
+      {!s.hasKey && s.state !== "failed" && (
+        <Banner tone="warn">
+          <span className="inline-flex items-center gap-1.5">
+            <KeyRound size={13} /> Created on another machine — its key lives there, so this Mac can see it
+            but not reach it.
+          </span>
+        </Banner>
+      )}
+      {resizing && (
+        <div className="border-b border-separator px-5 py-2">
+          <JobProgress id={resizing} compact />
+        </div>
+      )}
+      <Group orientation="horizontal" className="min-h-0 flex-1" {...layout}>
+        <Panel id="center" minSize={360} className="min-w-0">
+          {(live || s.state === "parked") && (s.hasKey || (s.chats?.length ?? 0) > 0) ? (
+            <SessionCenter session={s} openWindow={openWindow} />
+          ) : (
+            <Idle session={s} />
+          )}
+        </Panel>
+        <Separator className="w-px bg-separator outline-none data-[separator=active]:bg-accent" />
+        <Panel id="inspector" defaultSize={390} minSize={260} maxSize={720} className="flex min-w-0 flex-col">
+          <div
+            role="tablist"
+            className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-separator px-1.5 [scrollbar-width:none]"
+          >
+            {(
+              [
+                ["changes", "Changes"],
+                ["pr", s.pr ? `PR #${s.pr.number}` : "PR"],
+                ["files", "Files"],
+                ["env", "Environment"],
+                ["log", s.state === "failed" ? "Create log" : "Log"],
+                ["details", "Details"],
+              ] as [InspectorTab, string][]
+            ).map(([k, title]) => (
+              <button
+                key={k}
+                type="button"
+                role="tab"
+                aria-selected={tab === k}
+                onClick={() => setTab(k)}
+                className={`h-7 shrink-0 rounded-ctl px-2 text-sm ${tab === k ? "bg-selected text-label" : "text-secondary hover:bg-hover"}`}
+              >
+                {title}
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1">
+            {tab === "changes" && <ChangesPanel session={s} />}
+            {tab === "pr" && <PRPanel session={s} />}
+            {tab === "files" && <FilesPanel session={s} />}
+            {tab === "env" && (
+              <EnvironmentPanel
+                session={s}
+                onOpenWindow={(w) => {
+                  setOpenWindow(w);
+                  setTimeout(() => setOpenWindow(undefined), 0);
+                }}
+              />
+            )}
+            {tab === "log" && <SetupLog session={s} />}
+            {tab === "details" && <Details session={s} />}
+          </div>
+        </Panel>
+      </Group>
+    </div>
+  );
+}
+
+/** The center while there is no live terminal to show. */
+function Idle({ session: s }: { session: Session }) {
+  const [waking, setWaking] = useState(false);
+  if (s.state === "parked") {
+    return (
+      <Empty
+        icon={<Power size={26} strokeWidth={1.5} />}
+        title="Parked"
+        detail="Nothing runs and nothing bills but the disk. Waking brings its windows and agent conversations back, in about 20 seconds to a minute."
+      >
+        <Button
+          variant="primary"
+          icon={<Power size={13} />}
+          isPending={waking}
+          isDisabled={!s.hasKey}
+          onPress={async () => {
+            setWaking(true);
+            await attempt(() => rpc.call("sessions.resume", { id: s.id }));
+            setWaking(false);
+          }}
+        >
+          {waking ? "Waking…" : "Wake"}
+        </Button>
+      </Empty>
+    );
+  }
+  if (s.state === "creating")
+    return (
+      <Empty icon={<Spinner size={20} />} title="Setting up" detail="It opens here as soon as it's ready." />
+    );
+  if (s.state === "failed") return <Empty title="The create failed" detail={s.failReason} />;
+  if (s.state === "deleting") return <Empty title="Being removed" />;
+  return <Empty title="Not reachable from this Mac" />;
+}
+
+/** When the session stops on its own, if it will. */
+function stops(s: Session): string | undefined {
+  const park = until(s.parkAt);
+  if (park) return `parks in ${park}`;
+  const cap = until(s.capAt);
+  if (cap) return `runaway cap in ${cap}`;
+  return undefined;
+}
+
+function Details({ session: s }: { session: Session }) {
+  useNow(30_000); // the countdown moves on
+  const stop = stops(s);
+  return (
+    <div className="px-4 py-4">
+      <Facts
+        rows={[
+          ["State", s.activity || s.label],
+          ["Repository", s.origin || s.repo],
+          ["Branch", s.branch],
+          ["Based on", s.base || "—"],
+          ["Machine", s.machineType],
+          ["Cost", s.costNote],
+          ...(stop ? ([["Stops", stop]] as [string, string][]) : []),
+          ["Created", s.createdAt ? `${age(s.createdAt)} ago` : "—"],
+          ...(s.failReason ? ([["Failed", s.failReason]] as [string, string][]) : []),
+        ]}
+      />
+    </div>
+  );
+}
+
+function SetupLog({ session: s }: { session: Session }) {
+  // A failed create's log is on this Mac; a running session's in it.
+  const canRead = s.state === "failed" || readable(s);
+  const log = useQuery({
+    queryKey: ["setup-log", s.id],
+    queryFn: () => rpc.call("logs.setup", { id: s.id, lines: 2000 }),
+    enabled: canRead,
+    refetchInterval: s.setup === "running" ? 4000 : false,
+  });
+  if (!canRead) {
+    return (
+      <div className="p-4 text-sm text-secondary">
+        {s.state === "parked" ? "Parked — wake it to read its setup log." : "Not readable yet."}
+      </div>
+    );
+  }
+  if (log.error) return <div className="selectable p-4 text-sm text-bad">{(log.error as Error).message}</div>;
+  return (
+    <LogView
+      text={log.data?.text ?? ""}
+      className="h-full rounded-none"
+      empty={log.isLoading ? "reading…" : "no setup log"}
+    />
+  );
+}

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/usepier/pier/internal/driver"
+	"github.com/usepier/pier/internal/driver/payload"
 )
 
 const (
@@ -38,6 +39,8 @@ const (
 	TagCreated    = "pier:created" // RFC3339 create time; launch time resets on every resume
 	TagPool       = "pier:pool"    // warm-pool generation fingerprint; present = unclaimed member
 	TagClaim      = "pier:claim"   // claim nonce (tags have no CAS: written, then read back)
+	TagOrigin     = "pier:origin"  // canonical origin remote (host/path), for grouping and PR lookups
+	TagBase       = "pier:base"    // origin branch the session came off
 	amiParamBase  = "/aws/service/canonical/ubuntu/server/24.04/stable/current/%s/hvm/ebs-gp3/ami-id"
 )
 
@@ -154,6 +157,10 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Repo = t.Value
 			case TagBranch:
 				s.Branch = t.Value
+			case TagOrigin:
+				s.Origin = t.Value
+			case TagBase:
+				s.Base = t.Value
 			case TagReady:
 				ready = true
 			case TagCreated:
@@ -229,7 +236,7 @@ func (d *Driver) Resume(ctx context.Context, id string) error {
 		// already calls that parked, so resuming right after a park (or
 		// claiming a just-filled pool member) lands here. Wait out the stop
 		// and start again.
-		if !strings.Contains(err.Error(), "IncorrectInstanceState") {
+		if driver.ErrorCode(err) != "IncorrectInstanceState" {
 			return err
 		}
 		if _, werr := d.aws(ctx, "ec2", "wait", "instance-stopped", "--instance-ids", id); werr != nil {
@@ -331,20 +338,7 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 	if err := d.needKey(id); err != nil {
 		return nil, err
 	}
-	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
-[ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
-# SSH forwards the client's TERM, but newer terminals (for example Ghostty)
-# may not exist in the VM image's terminfo database yet. Keep the richer entry
-# when it is installed and otherwise use the portable 256-colour baseline.
-if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
-# A woken session rebuilds its saved tmux layout at boot (pier-restore.service);
-# give that a moment so this attach lands in the restored windows instead of
-# racing it to an empty main. Sessions without the unit or a saved layout
-# never wait.
-if [ -f /etc/systemd/system/pier-restore.service ] && [ -f ~/.pier/tmux/state.json ]; then
-  for _ in $(seq 30); do [ -e /run/pier/restored ] && break; sleep 0.5; done
-fi
-exec tmux new-session -A -s main`
+	remote := payload.AttachScript(payload.MainAttach)
 	args := append(d.sshOpts(ctx, id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -367,8 +361,15 @@ func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]i
 }
 
 func (d *Driver) SSHTarget(ctx context.Context, id string) ([]string, string, error) {
+	if err := d.needKey(id); err != nil {
+		return nil, "", err
+	}
 	return d.sshOpts(ctx, id), "agent@" + id, nil
 }
+
+// InvalidateTarget drops the cached direct-connect probe: a woken instance
+// has a new public IP.
+func (d *Driver) InvalidateTarget(id string) { d.dropProbe(id) }
 
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)

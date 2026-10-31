@@ -12,9 +12,9 @@ import (
 )
 
 // The look: ANSI palette colors, so pier follows the user's terminal theme;
-// one teal accent; titled panels with the title set into the border (btop);
-// a soft highlight bar for the selected row (opencode); a colored state dot
-// per session (herdr). Everything else stays quiet.
+// one teal accent; titled panels with the title set into the border; a soft
+// highlight bar for the selected row; a colored state dot per session.
+// Everything else stays quiet.
 var (
 	cAccent lipgloss.TerminalColor = lipgloss.Color("6")
 	cDim                           = lipgloss.Color("8")

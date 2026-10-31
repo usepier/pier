@@ -31,11 +31,17 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
+
+	"github.com/usepier/pier/pkg/pier/wire"
 )
 
 const (
@@ -68,6 +74,34 @@ type status struct {
 	// when there is no script (or it succeeded — quiet is the happy path).
 	Setup  string `json:"setup,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// Ports names who listens on each port (process and pid), for the
+	// environment view; Listening stays the plain list older readers know.
+	Ports []port `json:"ports,omitempty"`
+	// Res is the session's load this tick.
+	Res *resources `json:"res,omitempty"`
+	// Renamed is the branch the session named itself after its first
+	// prompt, while it's still on it; Branch the checkout's branch once
+	// it's pushed as the session's own (branchname.go). The laptop
+	// relabels the session after them, Branch first.
+	Renamed string `json:"renamed,omitempty"`
+	Branch  string `json:"branch,omitempty"`
+	// ParkAt is when the session parks if nothing changes: set while it is
+	// quiet and detached. CapAt is when the runaway cap stops it: set while
+	// it works with nobody attached.
+	ParkAt *time.Time `json:"park_at,omitempty"`
+	CapAt  *time.Time `json:"cap_at,omitempty"`
+	// IdleTimeout and Cap are the configured limits, in seconds (0 = never).
+	IdleTimeout int64 `json:"idle_timeout,omitempty"`
+	Cap         int64 `json:"cap,omitempty"`
+	// Chats are the session's agent chats.
+	Chats []wire.ChatSummary `json:"chats,omitempty"`
+}
+
+// port is a listening port and who holds it.
+type port struct {
+	Port    int    `json:"port"`
+	Process string `json:"process"`
+	PID     int    `json:"pid,omitempty"`
 }
 
 func main() {
@@ -77,6 +111,48 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "open" {
 		os.Exit(openMain(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "ps" {
+		os.Exit(psMain())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "stream" {
+		os.Exit(streamMain())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		// Agents an earlier supervisor launched in tmux still run its hooks
+		// until they exit: no opinion, never an error.
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "chat" {
+		os.Exit(chatMain(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "install-agents" {
+		// The pinned agent programs, now (a bake keeps them in its image).
+		home, _ := os.UserHomeDir()
+		newPinned(home).installAll()
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "op" {
+		os.Exit(opMain(os.Args[2:]))
+	}
+	if len(os.Args) > 1 {
+		// Only systemd starts the supervisor itself, with no arguments: a
+		// command this one doesn't know must not start a second one.
+		fmt.Fprintln(os.Stderr, "pier-supervisor: unknown command", os.Args[1])
+		os.Exit(2)
+	}
+
+	// A stop from outside (the cloud stopping the instance, a resize) shuts
+	// the machine down without asking: systemd's SIGTERM is the last chance
+	// to save the tmux layout, as park() does for a park of its own.
+	term := make(chan os.Signal, 1)
+	signal.Notify(term, syscall.SIGTERM)
+	go func() {
+		<-term
+		if !restoring() {
+			snapshotNow()
+		}
+		os.Exit(0)
+	}()
 
 	// Bring back the containers the session had running before it parked,
 	// alongside the loop: docker may still be starting.
@@ -95,13 +171,55 @@ func main() {
 	detachedBusySince := time.Time{}
 	last := status{}
 	lastSnap := time.Time{}
+	// The branches take three git runs: read every few ticks, not each.
+	var branchesAt time.Time
+	var renamed, own string
+	var cpu cpuSampler
+	var procs procSampler
+	h := newHub()
+	home, _ := os.UserHomeDir()
+	host := newChatHost(home)
+	h.host = host
+	var touchedAt atomic.Int64
+	registerChatOps(host, func() { touchedAt.Store(time.Now().UnixNano()) })
+	registerTakeoverOps(host)
+	host.notify = func() { h.publish("chats", host.topic()) }
+	host.deltas = h.deltas
+	host.setupRunning = func() bool { return setupState() == "running" }
+	host.load()
+	h.publish("chats", host.topic())
+	go host.pins.installAll()
+	go h.watchGit()
+	go func() {
+		if err := h.serve(); err != nil {
+			fmt.Println("pier-supervisor: stream socket:", err)
+		}
+	}()
+	// Prompts go in as soon as their chat is free, not on the slower status
+	// tick.
+	go func() {
+		for {
+			host.deliverAll()
+			time.Sleep(time.Second)
+		}
+	}()
+	lastTouch := int64(0)
 
 	for {
 		idleTimeout, cap_ := readConf()
-		listening, tunnels := netSnapshot()
+		listening, ports, tunnels := netSnapshot()
 		setup := setupState()
 		attached := tmuxAttached() || tunnels > 0
-		busy := setup == "running" || agentBusy() || ptyActive()
+		host.load()
+		host.reap()
+		host.reapTakeovers()
+		busy := setup == "running" || host.turnOpen() || agentBusy() || ptyActive()
+		// Someone acting on a chat from a frontend (a prompt, an answer)
+		// is a human in the loop: the runaway clock starts over.
+		if t := touchedAt.Load(); t != lastTouch {
+			lastTouch = t
+			detachedBusySince = time.Time{}
+		}
 
 		now := time.Now()
 		st := "idle"
@@ -124,14 +242,41 @@ func main() {
 		if last.State != st {
 			last = status{State: st, Since: now}
 		}
-		last.Listening, last.Tunnels = listening, tunnels
+		last.Listening, last.Ports, last.Tunnels = listening, ports, tunnels
 		last.Bootstrapping = bootstrapping()
 		last.Strained = strained()
 		last.Setup = setup
+		res := readResources(&cpu)
+		last.Res = &res
+		load.add(now, res)
+		last.IdleTimeout, last.Cap = int64(idleTimeout.Seconds()), int64(cap_.Seconds())
+		last.ParkAt, last.CapAt = nil, nil
+		if idleTimeout > 0 && !attached && !busy {
+			at := idleSince.Add(idleTimeout)
+			last.ParkAt = &at
+		}
+		if cap_ > 0 && !detachedBusySince.IsZero() {
+			at := detachedBusySince.Add(cap_)
+			last.CapAt = &at
+		}
+		last.Chats = host.summaries()
+		if now.Sub(branchesAt) >= branchesEvery {
+			renamed, own = sessionBranches(home)
+			branchesAt = now
+		}
+		last.Renamed, last.Branch = renamed, own
 		writeStatus(last)
+		h.publish("status", last)
+		if h.watching("env") {
+			var e envState
+			json.Unmarshal(envSnapshot(&procs), &e)
+			e.Ports, e.Res = ports, &res
+			h.publish("env", e)
+		}
 
 		if now.Sub(lastSnap) >= snapEvery && !restoring() {
 			snapshotNow()
+			reapTabs()
 			lastSnap = now
 		}
 
@@ -258,12 +403,44 @@ func setupState() string {
 // agent user's NOPASSWD sudo covers it. Any failure reads as "no ports, no
 // tunnels": the proxy just sees nothing and parking falls back to the
 // tmux/CPU heuristics.
-func netSnapshot() ([]int, int) {
+func netSnapshot() ([]int, []port, int) {
 	out, err := exec.Command("sudo", "-n", "ss", "-Htnap").Output()
 	if err != nil {
-		return []int{}, 0
+		return []int{}, nil, 0
 	}
-	return parseSS(string(out))
+	listening, tunnels := parseSS(string(out))
+	return listening, portOwners(string(out), listening), tunnels
+}
+
+var ssUser = regexp.MustCompile(`users:\(\("([^"]+)",pid=(\d+)`)
+
+// portOwners names the process behind each listening port in ss output.
+func portOwners(out string, listening []int) []port {
+	want := map[int]bool{}
+	for _, p := range listening {
+		want[p] = true
+	}
+	seen := map[int]bool{}
+	var ports []port
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 || f[0] != "LISTEN" {
+			continue
+		}
+		p := addrPort(f[3])
+		if !want[p] || seen[p] {
+			continue
+		}
+		seen[p] = true
+		pt := port{Port: p}
+		if m := ssUser.FindStringSubmatch(line); m != nil {
+			pt.Process = m[1]
+			pt.PID, _ = strconv.Atoi(m[2])
+		}
+		ports = append(ports, pt)
+	}
+	sort.Slice(ports, func(i, j int) bool { return ports[i].Port < ports[j].Port })
+	return ports
 }
 
 // parseSS reads `ss -Htnap` output. Listening ports exclude the plumbing

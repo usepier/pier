@@ -3,6 +3,7 @@ package awsec2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -134,6 +135,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 
 	return &driver.Session{
 		ID: id, Name: spec.Name, Repo: filepath.Base(spec.Repo), Branch: spec.Branch,
+		Origin: payload.RepoOrigin(spec.Repo), Base: payload.BaseBranch(spec.Repo, spec.BaseRef),
 		User: me, Driver: d.Name(), State: driver.StateRunning, Created: time.Now(),
 		InstanceType: d.InstanceType,
 		CostNote:     costNote(driver.StateRunning, d.InstanceType),
@@ -181,7 +183,7 @@ func (d *Driver) push(ctx context.Context, id, local, remote string, progress fu
 		if ctx.Err() != nil {
 			return err
 		}
-		if !transportBroken(err) {
+		if !driver.TransportBroken(err) {
 			return err // the remote refused it; retrying changes nothing
 		}
 		if i == attempts-1 {
@@ -280,11 +282,11 @@ func (d *Driver) launch(ctx context.Context, spec driver.CreateSpec, me, ami, ud
 			args[slices.Index(args, "--block-device-mappings")+1] = bdm("")
 			continue
 		}
-		if strings.Contains(err.Error(), "Invalid IAM Instance Profile") {
+		if driver.ErrorCode(err) == "InvalidParameterValue" && strings.Contains(err.Error(), "IAM Instance Profile") {
 			time.Sleep(3 * time.Second) // IAM propagation
 			continue
 		}
-		if strings.Contains(err.Error(), "VcpuLimitExceeded") {
+		if errors.Is(err, driver.ErrQuota) {
 			return "", fmt.Errorf("vCPU quota exceeded — request a raise:\n"+
 				"  aws service-quotas request-service-quota-increase --service-code ec2 --quota-code L-1216C47A --desired-value 32\n(%w)", err)
 		}
@@ -302,6 +304,12 @@ func tagList(spec driver.CreateSpec, me, name string) []map[string]string {
 		{"Key": TagRepo, "Value": filepath.Base(spec.Repo)},
 		{"Key": TagBranch, "Value": spec.Branch},
 		{"Key": TagCreated, "Value": time.Now().UTC().Format(time.RFC3339)},
+	}
+	if o := payload.RepoOrigin(spec.Repo); o != "" {
+		tags = append(tags, map[string]string{"Key": TagOrigin, "Value": o})
+	}
+	if b := payload.BaseBranch(spec.Repo, spec.BaseRef); b != "" {
+		tags = append(tags, map[string]string{"Key": TagBase, "Value": b})
 	}
 	if spec.PoolGen != "" {
 		tags = append(tags, map[string]string{"Key": TagPool, "Value": spec.PoolGen})

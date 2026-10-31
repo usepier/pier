@@ -18,6 +18,24 @@ Requires: Go, `git`, OpenSSH, and the CLI of the cloud you test against
 (`aws` v2 + `session-manager-plugin`, or `gcloud`). `pier doctor` checks the
 runtime dependencies.
 
+### The Mac app
+
+`macos/` is the Mac app: a React/TypeScript UI in a thin native shell, which
+bundles pier and talks to it through `pier api` (docs/SPEC.md §11.1). All
+behavior lives in Go; the app only renders.
+
+```
+make mac-dev    # the app against this checkout's pier (rebuilt on each reload)
+make mac        # a local, unsigned build for this Mac
+make api-types  # regenerate macos/src/api/protocol.gen.ts after changing pkg/pier/wire
+cd macos && pnpm check && pnpm test
+```
+
+Requires Node 24, pnpm and Rust (the toolchain is pinned in
+`macos/src-tauri/rust-toolchain.toml`). The UI also runs in a plain browser
+with `cd macos && pnpm dev`, against the same pier. It drives your real
+cloud account — point `HOME` at a scratch directory to try it without one.
+
 ## Design ground rules
 
 [docs/SPEC.md](docs/SPEC.md) is the source of truth for architecture and
@@ -46,8 +64,8 @@ open decisions — TODOs in code point there. The short version:
   (or a stated reason it doesn't have the problem).
 - **One API, many frontends.** Capabilities live in `pkg/pier`, which never
   prints, exits or reads stdin; the CLI (`cmd/pier`), the app
-  (`internal/tui`) and the coming Mac app render what it returns. Drivers
-  don't write to the terminal either.
+  (`internal/tui`) and the Mac app (`macos/`) render what it returns.
+  Drivers don't write to the terminal either.
 - **Failures are loud.** Setup outcomes, bake failures, unreachable
   sessions — every failure names itself and says where to look next.
 
@@ -88,6 +106,26 @@ The tap push authenticates with the `HOMEBREW_TAP_TOKEN` repository secret,
 a fine-grained PAT with contents read/write on usepier/homebrew-tap (the
 default `GITHUB_TOKEN` cannot push across repositories). If it expires,
 mint a new one and update the secret.
+
+The same tag ships the Mac app (`.github/workflows/macos-release.yml`): for
+each CPU arch it builds the app around that tag's pier, signs it with the
+Developer ID, notarizes and staples it, and uploads the DMG and the
+updater's signed archive to the release; then it writes the updater's
+`latest.json` and points the cask in the tap at the new DMGs. It needs:
+
+| Secret | What |
+|---|---|
+| `APPLE_CERTIFICATE` | the Developer ID Application certificate with its key, exported as .p12, base64 |
+| `APPLE_CERTIFICATE_PASSWORD` | the .p12's password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: <name> (<team id>)` |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarization: the developer account's Apple ID, an app-specific password for it (account.apple.com → Sign-In and Security), the team id |
+| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater's signing key and its password |
+
+and the repository variable `TAURI_UPDATER_PUBKEY`, the updater key's
+public half, which goes into every build. The updater key was made once
+with `pnpm tauri signer generate`; keep a copy of it and its password
+offline. Installed apps only accept updates signed with it, so losing it
+strands every install on its current version.
 
 Versioning is semver. While pier is 0.x, breaking changes bump the minor
 version.
