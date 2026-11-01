@@ -1,20 +1,20 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { FitAddon, Ghostty, Terminal } from "ghostty-web";
+import wasm from "ghostty-web/ghostty-vt.wasm?url";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { rpc } from "@/api/client";
 import type { LocalPurpose } from "@/api/protocol.gen";
 import { RpcError } from "@/api/rpc";
 import { attachSink, pause, resume, sendInput, sendResize } from "@/api/terminal";
-import { inTauri } from "@/api/transport";
 import { useBackgroundExpired } from "@/state/background";
 import { usePrefs } from "@/state/prefs";
 import { Button } from "@/ui/Button";
 import { Spinner } from "@/ui/Spinner";
+import { optionAsMeta, wireText } from "./keys";
+import { reportMouse } from "./mouse";
+
+// Ghostty's terminal, compiled to WebAssembly: loaded once, from the app's
+// own files, and shared by every tab.
+const ghostty = Ghostty.load(wasm);
 
 type Phase = "idle" | "connecting" | "attached" | "detached" | "ended" | "failed";
 
@@ -52,70 +52,83 @@ export function TerminalView({
   const termId = useRef<string | null>(null);
   const unsink = useRef<(() => void) | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
-  // Bumped for every xterm instance, so each one gets its own attach.
+  // Bumped for every terminal instance, so each one gets its own attach.
   const [instance, setInstance] = useState(0);
   const [error, setError] = useState("");
   const backgroundExpired = useBackgroundExpired();
   const hiddenDetachMs = usePrefs((p) => p.hiddenDetachMs);
   const fontSize = usePrefs((p) => p.terminalFontSize);
 
-  // The xterm instance lives as long as the tab.
+  // The terminal lives as long as the tab.
   useEffect(() => {
-    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-    const t = new Terminal({
-      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
-      fontSize: usePrefs.getState().terminalFontSize,
-      lineHeight: 1.15,
-      cursorBlink: true,
-      allowProposedApi: true,
-      macOptionIsMeta: true,
-      scrollback: 5000,
-      theme: palette(dark),
-    });
-    const f = new FitAddon();
-    t.loadAddon(f);
-    t.loadAddon(new Unicode11Addon());
-    t.unicode.activeVersion = "11";
-    t.loadAddon(new WebLinksAddon((_e, uri) => (inTauri ? void openUrl(uri) : window.open(uri, "_blank"))));
-    // ⌘-combos belong to the menu bar, not the shell.
-    t.attachCustomKeyEventHandler((e) => !e.metaKey);
-    t.open(host.current!);
-    try {
-      const gl = new WebglAddon();
-      gl.onContextLoss(() => gl.dispose());
-      t.loadAddon(gl);
-    } catch {
-      // the DOM renderer it is
-    }
-    t.onData((d) => termId.current && sendInput(termId.current, d));
-    t.onBinary(
-      (d) =>
-        termId.current &&
-        sendInput(
-          termId.current,
-          Uint8Array.from(d, (c) => c.charCodeAt(0)),
-        ),
+    let made: Terminal | undefined;
+    let ro: ResizeObserver | undefined;
+    let unwire: (() => void) | undefined;
+    let gone = false;
+    void ghostty.then(
+      (g) => {
+        if (gone) return;
+        const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+        const t = new Terminal({
+          fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+          fontSize: usePrefs.getState().terminalFontSize,
+          cursorBlink: true,
+          scrollback: 5000,
+          theme: palette(dark),
+          ghostty: g,
+        });
+        const f = new FitAddon();
+        t.loadAddon(f);
+        t.attachCustomKeyEventHandler((e) => {
+          // ⌘-combos belong to the menu bar, not the shell. ghostty-web cancels
+          // a key it's told to leave alone, which would keep it from the menu
+          // too: its one call to preventDefault does nothing.
+          if (e.metaKey) {
+            e.preventDefault = () => void Reflect.deleteProperty(e, "preventDefault");
+            return true;
+          }
+          const meta = optionAsMeta(e);
+          if (meta) t.input(meta, true);
+          return !!meta;
+        });
+        const unmouse = reportMouse(t, host.current!);
+        t.open(host.current!);
+        const untext = wireText(t, host.current!);
+        unwire = () => {
+          unmouse();
+          untext();
+        };
+        t.onData((d) => termId.current && sendInput(termId.current, d));
+        t.onResize(({ cols, rows }) => termId.current && sendResize(termId.current, cols, rows));
+        made = t;
+        term.current = t;
+        fit.current = f;
+        setInstance((n) => n + 1);
+        ro = new ResizeObserver(() => {
+          try {
+            f.fit();
+          } catch {
+            // not laid out
+          }
+        });
+        ro.observe(host.current!);
+      },
+      (e) => {
+        if (gone) return;
+        setPhase("failed");
+        setError(`The terminal couldn't start: ${e instanceof Error ? e.message : String(e)}`);
+      },
     );
-    term.current = t;
-    fit.current = f;
-    setInstance((n) => n + 1);
-    const ro = new ResizeObserver(() => {
-      try {
-        f.fit();
-      } catch {
-        return;
-      }
-      if (termId.current) sendResize(termId.current, t.cols, t.rows);
-    });
-    ro.observe(host.current!);
     return () => {
-      ro.disconnect();
+      gone = true;
+      ro?.disconnect();
+      unwire?.();
       if (termId.current) void rpc.call("term.close", { termId: termId.current }).catch(() => {});
       unsink.current?.();
       unsink.current = null;
       termId.current = null;
       term.current = null;
-      t.dispose();
+      made?.dispose();
       setPhase("idle");
     };
   }, []);

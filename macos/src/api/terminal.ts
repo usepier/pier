@@ -1,4 +1,4 @@
-// Terminal plumbing between pier api and xterm.js: output routed to the
+// Terminal plumbing between pier api and the terminal tabs: output routed to the
 // terminal it belongs to, acknowledged as it renders (so a flood can't
 // swamp the app), keystrokes and resizes sent back.
 import { rpc } from "./client";

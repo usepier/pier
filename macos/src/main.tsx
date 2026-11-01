@@ -6,11 +6,13 @@ import { rpc } from "@/api/client";
 import { queryClient } from "@/api/queryClient";
 import { inTauri } from "@/api/transport";
 import { router } from "@/app/router";
+import { openLinksOutside } from "@/lib/open";
 import { plainInput } from "@/lib/plainInput";
 import "@/styles/app.css";
 
 if (!inTauri) document.documentElement.classList.add("browser");
 plainInput();
+openLinksOutside();
 
 void rpc.start();
 
