@@ -26,6 +26,18 @@ jobs:
       - name: build
         run: make build
 
+  # The iOS app's Go half: its own module, on its own Go version.
+  ios-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ios/core/go.mod
+      - name: vet and test
+        working-directory: ios/core
+        run: go vet ./... && go test ./...
+
   # The fresh path: what a brew user gets. The formula builds a release
   # tarball (no .git) with VERSION passed in, so this job does exactly
   # that instead of building the checkout. macOS is the primary target.
