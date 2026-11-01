@@ -7,6 +7,18 @@ export function openExternal(url: string) {
   else window.open(url, "_blank", "noopener");
 }
 
+/**
+ * A web view has no windows to open: what asks for one with window.open (a
+ * ⌘-click on a link in a terminal) gets the browser instead.
+ */
+export function openLinksOutside() {
+  if (!inTauri) return;
+  window.open = (url) => {
+    if (url) void openUrl(String(url));
+    return null;
+  };
+}
+
 export function showInFinder(path: string) {
   if (inTauri) void revealItemInDir(path);
 }
