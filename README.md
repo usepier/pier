@@ -212,7 +212,7 @@ role, the instance profile, and the security group. Daily use needs only:
 `pier resize` adds `ec2:ModifyInstanceAttribute`. `pier bake` adds
 `ec2:CreateImage`, `ec2:DeregisterImage` and `ec2:DeleteSnapshot`. The vCPU
 headroom display reads `servicequotas:GetServiceQuota` and degrades politely
-without it. The same list ships as comments in `pier setup --print-admin`.
+without it. The iOS app adds `ec2-instance-connect:SendSSHPublicKey`. The same list ships as comments in `pier setup --print-admin`.
 
 ### GCP permissions
 
@@ -267,6 +267,12 @@ and a message sent just before a quit is delivered once the app is back.
 The app runs its own `pier api` (JSON-RPC over stdio), the same pier as the
 CLI, so both see the same sessions, settings and jobs. The
 [docs](https://pier.kak.dev/docs/app/) cover it page by page.
+
+On the phone, the [iOS app](ios/README.md) shows the same sessions: wake or
+park them, watch their agents' chats or carry one on, and work in their
+terminals (Ghostty's renderer, with a key bar for Esc, Ctrl and the arrows).
+It signs in with your IAM Identity Center portal. New sessions still start on
+the Mac.
 
 ## Usage
 

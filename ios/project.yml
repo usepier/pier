@@ -1,0 +1,99 @@
+name: Pier
+
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "18.0"
+  developmentLanguage: en
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CLANG_ENABLE_MODULES: YES
+    OTHER_LDFLAGS: $(inherited) -lc++
+
+targets:
+  Pier:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - framework: Frameworks/GhosttyKit.xcframework
+        embed: false
+      - framework: Frameworks/PierCore.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreText.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreVideo.framework
+      - sdk: IOSurface.framework
+    settings:
+      base:
+        PRODUCT_NAME: Pier
+        PRODUCT_BUNDLE_IDENTIFIER: com.usepier.pier
+        PRODUCT_MODULE_NAME: Pier
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Pier
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        ASSETCATALOG_COMPILER_APPICON_NAME: Anchor
+        CODE_SIGN_ENTITLEMENTS: Config/Pier.entitlements
+
+  PierTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Pier
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.usepier.pier.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Pier.app/Pier
+        BUNDLE_LOADER: $(TEST_HOST)
+
+  PierUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Pier
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.usepier.pier.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Pier
+
+schemes:
+  Pier:
+    build:
+      targets:
+        Pier: all
+        PierTests: [test]
+        PierUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - PierTests
+        - PierUITests
+    archive:
+      config: Release
